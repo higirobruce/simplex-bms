@@ -109,7 +109,7 @@ function DialogTitle({
     <h2
       id="dialog-title"
       className={cn(
-        "font-serif text-2xl leading-tight tracking-tight text-ink",
+        "font-display text-xl font-semibold leading-tight tracking-tight text-ink uppercase",
         className
       )}
       {...props}

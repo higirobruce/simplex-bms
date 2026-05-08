@@ -112,7 +112,7 @@ export default function NewPurchaseOrderPage() {
         )}
 
         <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-6 mb-5">
-          <h3 className="font-serif text-xl mb-5">Order details</h3>
+          <h3 className="font-display text-xl font-semibold uppercase tracking-tight mb-5">Order details</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <div className="space-y-2">
               <Label>Vendor</Label>
@@ -150,7 +150,7 @@ export default function NewPurchaseOrderPage() {
         </div>
 
         <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-6 mb-5">
-          <h3 className="font-serif text-xl mb-5">Line items</h3>
+          <h3 className="font-display text-xl font-semibold uppercase tracking-tight mb-5">Line items</h3>
           <div className="space-y-3">
             {lines.map((line, i) => (
               <div key={i} className="flex gap-2 items-end">
@@ -228,7 +228,7 @@ export default function NewPurchaseOrderPage() {
             <span className="text-[0.7rem] tracking-[0.2em] uppercase text-ink-mute font-medium">
               Subtotal
             </span>
-            <span className="font-serif text-3xl tabular">
+            <span className="font-display text-3xl font-bold uppercase tracking-tight tabular">
               {formatCurrency(subtotal)}
             </span>
           </div>

@@ -77,11 +77,11 @@ export default function InvoicesPage() {
       </div>
 
       {isLoading ? (
-        <div className="text-center py-16 text-ink-mute font-serif italic">Loading invoices…</div>
+        <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">Loading invoices…</div>
       ) : invoices?.data?.length === 0 ? (
         <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line">
           <FileText className="mx-auto h-10 w-10 text-ink-mute mb-4" strokeWidth={1.5} />
-          <p className="font-serif italic text-lg text-ink">No invoices yet</p>
+          <p className="font-display font-bold text-xl uppercase tracking-tight text-ink">No invoices yet</p>
         </div>
       ) : (
         <div className="rounded-[var(--radius-lg)] border border-line bg-surface overflow-hidden">

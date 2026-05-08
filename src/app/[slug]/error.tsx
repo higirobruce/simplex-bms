@@ -18,7 +18,7 @@ export default function TenantError({
           strokeWidth={1.75}
         />
       </div>
-      <h2 className="font-serif text-3xl text-ink mb-3">
+      <h2 className="font-display text-3xl font-bold uppercase tracking-tight text-ink mb-3">
         A small disturbance.
       </h2>
       <p className="text-ink-soft mb-7 max-w-md leading-relaxed">

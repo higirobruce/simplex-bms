@@ -43,47 +43,70 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-bg">
-      {/* Left — editorial panel */}
-      <div className="hidden lg:flex relative overflow-hidden bg-accent text-surface flex-col justify-between p-14 m-5 rounded-[var(--radius-lg)]">
+      {/* Left — industrial spec sheet */}
+      <div className="hidden lg:flex relative overflow-hidden brushed flex-col justify-between p-12 m-4 rounded-[var(--radius-lg)]">
+        {/* Grid texture overlay */}
         <div
-          className="absolute inset-0 opacity-30 pointer-events-none"
+          className="absolute inset-0 opacity-[0.06] pointer-events-none"
           style={{
-            background:
-              "radial-gradient(circle at 30% 20%, var(--gold) 0%, transparent 45%), radial-gradient(circle at 80% 80%, rgba(255,255,255,0.06) 0%, transparent 50%)",
+            backgroundImage:
+              "linear-gradient(var(--surface) 1px, transparent 1px), linear-gradient(90deg, var(--surface) 1px, transparent 1px)",
+            backgroundSize: "32px 32px",
           }}
         />
+        <div
+          className="absolute top-0 left-0 right-0 h-1 pointer-events-none"
+          style={{ background: "var(--gold)" }}
+        />
+
         <div className="relative">
           <div className="flex items-center gap-3">
-            <div className="h-11 w-11 rounded-xl bg-surface/10 backdrop-blur flex items-center justify-center border border-surface/15">
-              <span className="font-serif italic text-2xl leading-none -mt-0.5">
-                S
-              </span>
+            <div className="stencil-block h-11 w-11 text-lg bg-surface/10 border border-surface/20">
+              ◼
             </div>
             <div className="leading-tight">
-              <p className="font-serif italic text-2xl">Simplex</p>
-              <p className="text-[0.6rem] tracking-[0.22em] uppercase text-gold-soft mt-0.5">
-                Atelier
+              <p className="font-display font-bold text-xl text-surface uppercase tracking-tight">
+                Simplex
+              </p>
+              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-gold mt-1">
+                / Workbench
               </p>
             </div>
           </div>
         </div>
 
-        <div className="relative max-w-md">
-          <p className="font-serif italic text-5xl leading-[1.1] text-surface">
-            Business management,
-            <br />
-            <span className="text-gold-soft">refined.</span>
+        <div className="relative max-w-lg">
+          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-gold font-semibold mb-4 flex items-center gap-2">
+            <span className="inline-block h-[2px] w-8 bg-gold" />
+            Hardware Operations
           </p>
-          <p className="mt-6 text-surface/70 leading-relaxed">
-            A considered system for inventory, invoicing and the quiet rituals
-            of running a fine business. Composed with care.
+          <h2 className="font-display text-5xl sm:text-6xl font-bold uppercase leading-[1.0] tracking-tight text-surface">
+            Stock.
+            <br />
+            Sell.
+            <br />
+            Restock.
+          </h2>
+          <p className="mt-6 text-surface/70 leading-relaxed max-w-md">
+            A no-nonsense system for hardware shops — inventory across
+            warehouses, sales orders, goods receipts, and the daily counter
+            work.
           </p>
         </div>
 
-        <div className="relative flex items-center gap-4 text-xs tracking-[0.18em] uppercase text-surface/50">
-          <span>Est. 2025</span>
-          <span className="h-px flex-1 bg-surface/15" />
-          <span>Volume I</span>
+        <div className="relative grid grid-cols-3 gap-px bg-surface/10 font-mono text-[0.62rem] tracking-[0.18em] uppercase">
+          <div className="bg-[#1A1B1E] px-3 py-2.5">
+            <p className="text-surface/40">Build</p>
+            <p className="text-surface mt-0.5">v1.0</p>
+          </div>
+          <div className="bg-[#1A1B1E] px-3 py-2.5">
+            <p className="text-surface/40">Module</p>
+            <p className="text-surface mt-0.5">HW-OPS</p>
+          </div>
+          <div className="bg-[#1A1B1E] px-3 py-2.5">
+            <p className="text-surface/40">Status</p>
+            <p className="text-success mt-0.5">● Online</p>
+          </div>
         </div>
       </div>
 
@@ -91,27 +114,26 @@ export default function LoginPage() {
       <div className="flex items-center justify-center p-6 lg:p-12">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="h-10 w-10 rounded-xl bg-accent text-surface flex items-center justify-center">
-              <span className="font-serif italic text-xl leading-none -mt-0.5">
-                S
-              </span>
-            </div>
-            <p className="font-serif italic text-xl text-ink">Simplex</p>
+            <div className="stencil-block h-10 w-10 text-base">◼</div>
+            <p className="font-display font-bold text-xl text-ink uppercase tracking-tight">
+              Simplex
+            </p>
           </div>
 
-          <p className="text-[0.7rem] tracking-[0.22em] uppercase text-gold font-medium mb-3">
-            Welcome back
+          <p className="font-mono text-[0.65rem] tracking-[0.22em] uppercase text-gold font-semibold mb-3 flex items-center gap-2">
+            <span className="inline-block h-[2px] w-6 bg-gold" />
+            Sign in
           </p>
-          <h1 className="font-serif text-4xl text-ink leading-tight">
-            Sign in to your <span className="italic">atelier.</span>
+          <h1 className="font-display text-4xl font-bold uppercase tracking-tight text-ink leading-[1.05]">
+            Workbench access.
           </h1>
           <p className="mt-3 text-sm text-ink-soft">
-            Enter your credentials to access your workspace.
+            Enter your credentials to clock in.
           </p>
 
-          <form onSubmit={handleSubmit} className="mt-9 space-y-5">
+          <form onSubmit={handleSubmit} className="mt-8 space-y-5">
             {error && (
-              <div className="rounded-[var(--radius)] border border-danger/20 bg-danger-soft px-4 py-3 text-sm text-danger">
+              <div className="rounded-[var(--radius)] border-l-4 border-danger bg-danger-soft px-4 py-3 text-sm text-danger font-mono">
                 {error}
               </div>
             )}
@@ -120,7 +142,7 @@ export default function LoginPage() {
               <Input
                 id="email"
                 type="email"
-                placeholder="you@company.com"
+                placeholder="you@hardware.shop"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -144,16 +166,16 @@ export default function LoginPage() {
               className="w-full"
               disabled={loading}
             >
-              {loading ? "Signing in…" : "Sign in"}
+              {loading ? "Authenticating…" : "Clock in"}
             </Button>
 
-            <p className="text-center text-sm text-ink-soft pt-2">
+            <p className="text-center text-sm text-ink-soft pt-2 font-mono uppercase tracking-wider text-[0.7rem]">
               Don&apos;t have an account?{" "}
               <Link
                 href="/auth/signup"
-                className="text-accent font-medium hover:underline underline-offset-4"
+                className="text-gold font-semibold hover:underline underline-offset-4"
               >
-                Create one
+                Set up shop
               </Link>
             </p>
           </form>

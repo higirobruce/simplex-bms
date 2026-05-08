@@ -95,8 +95,8 @@ export default function ExpensesPage() {
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-mute" strokeWidth={1.75} />
         <Input placeholder="Search by category or description…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-11 rounded-full" />
       </div>
-      {isLoading ? <div className="text-center py-16 text-ink-mute font-serif italic">Loading…</div> : expenses?.data?.length === 0 ? (
-        <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line"><DollarSign className="mx-auto h-10 w-10 text-ink-mute mb-4" strokeWidth={1.5} /><p className="font-serif italic text-lg text-ink">No expenses yet</p></div>
+      {isLoading ? <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">Loading…</div> : expenses?.data?.length === 0 ? (
+        <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line"><DollarSign className="mx-auto h-10 w-10 text-ink-mute mb-4" strokeWidth={1.5} /><p className="font-display font-bold text-xl uppercase tracking-tight text-ink">No expenses yet</p></div>
       ) : (
         <>
           <div className="rounded-[var(--radius-lg)] border border-line bg-surface overflow-hidden mb-4">
@@ -120,7 +120,7 @@ export default function ExpensesPage() {
               </TableBody>
             </Table>
           </div>
-          <div className="text-right text-sm text-ink-soft">Total: <span className="font-serif text-xl text-ink ml-1 tabular">{formatCurrency(totalExpenses)}</span></div>
+          <div className="text-right text-sm text-ink-soft">Total: <span className="font-display text-xl font-semibold uppercase tracking-tight text-ink ml-1 tabular">{formatCurrency(totalExpenses)}</span></div>
           <Pagination page={page} totalPages={expenses?.meta?.pages || 1} onPageChange={setPage} />
         </>
       )}
