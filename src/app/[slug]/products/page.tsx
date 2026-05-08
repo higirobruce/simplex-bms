@@ -162,7 +162,7 @@ export default function ProductsPage() {
       </div>
 
       {isLoading ? (
-        <div className="text-center py-16 text-ink-mute font-serif italic">
+        <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">
           Curating products…
         </div>
       ) : products?.data?.length === 0 ? (
@@ -171,7 +171,7 @@ export default function ProductsPage() {
             className="mx-auto h-10 w-10 text-ink-mute mb-4"
             strokeWidth={1.5}
           />
-          <p className="font-serif italic text-lg text-ink">No products yet</p>
+          <p className="font-display font-bold text-xl uppercase tracking-tight text-ink">No products yet</p>
           <p className="text-sm text-ink-soft mt-1">
             Begin by adding your first piece.
           </p>

@@ -225,7 +225,7 @@ export default function InventoryPage() {
           <p className="text-[0.65rem] tracking-[0.2em] uppercase text-ink-mute font-medium">
             Total units
           </p>
-          <p className="font-serif text-3xl mt-2 text-ink tabular">
+          <p className="font-display text-3xl font-bold uppercase tracking-tight mt-2 text-ink tabular">
             {totalUnits.toLocaleString()}
           </p>
         </div>
@@ -233,7 +233,7 @@ export default function InventoryPage() {
           <p className="text-[0.65rem] tracking-[0.2em] uppercase text-ink-mute font-medium">
             Warehouses
           </p>
-          <p className="font-serif text-3xl mt-2 text-ink tabular">
+          <p className="font-display text-3xl font-bold uppercase tracking-tight mt-2 text-ink tabular">
             {locations.length}
           </p>
         </div>
@@ -241,7 +241,7 @@ export default function InventoryPage() {
           <p className="text-[0.65rem] tracking-[0.2em] uppercase text-ink-mute font-medium">
             Low stock items
           </p>
-          <p className="font-serif text-3xl mt-2 text-warning tabular">
+          <p className="font-display text-3xl font-bold uppercase tracking-tight mt-2 text-warning tabular">
             {lowStockCount}
           </p>
         </div>
@@ -312,7 +312,7 @@ export default function InventoryPage() {
                 className="mx-auto h-10 w-10 text-ink-mute mb-4"
                 strokeWidth={1.5}
               />
-              <p className="font-serif italic text-lg text-ink">
+              <p className="font-display font-bold text-xl uppercase tracking-tight text-ink">
                 No stock here
               </p>
               <p className="text-sm text-ink-soft mt-1">

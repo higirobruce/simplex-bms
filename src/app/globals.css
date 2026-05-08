@@ -2,43 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===== WORKSHOP STEEL — Hardware Operations ===== */
 :root {
-  /* Surfaces */
-  --bg: #efeae2;            /* warm champagne canvas */
-  --bg-tint: #e8e1d4;       /* deeper edge */
-  --surface: #ffffff;       /* primary panel */
-  --surface-2: #faf7f0;     /* nested panel */
-  --surface-3: #f3eee4;     /* subtle wash */
+  /* Surfaces — concrete + brushed paper */
+  --bg: #ECEAE3;            /* concrete canvas */
+  --bg-tint: #DCD9CF;       /* deeper edge */
+  --surface: #FFFFFF;       /* primary panel */
+  --surface-2: #F4F2EC;     /* paper / brushed */
+  --surface-3: #E8E5DD;     /* subtle wash */
 
-  /* Ink */
-  --ink: #15110d;           /* near-black espresso */
-  --ink-soft: #57504a;      /* secondary text */
-  --ink-mute: #9a9085;      /* tertiary / placeholders */
+  /* Ink — graphite */
+  --ink: #1A1B1E;           /* graphite */
+  --ink-soft: #4F535A;      /* steel */
+  --ink-mute: #8E939B;      /* light steel */
 
-  /* Accents */
-  --accent: #1f3a2e;        /* deep forest emerald */
-  --accent-hover: #15291f;
-  --accent-soft: #e3ebe5;   /* emerald wash */
-  --gold: #b8945f;          /* champagne gold */
-  --gold-soft: #f3ead9;
+  /* Accents — graphite primary, workshop orange "gold" slot */
+  --accent: #1A1B1E;        /* graphite primary */
+  --accent-hover: #2D3035;
+  --accent-soft: #E0DFDA;   /* steel wash */
+  --gold: #E8651F;          /* WORKSHOP ORANGE */
+  --gold-soft: #FAE3D2;     /* orange wash */
 
-  /* Lines */
-  --line: #e3dccd;
-  --line-strong: #d3c9b3;
+  /* Lines — cool steel */
+  --line: #D2CFC6;
+  --line-strong: #B6B2A8;
 
-  /* Status */
-  --success: #1f3a2e;
-  --success-soft: #e3ebe5;
-  --warning: #a16a1f;
-  --warning-soft: #f7ecd6;
-  --danger: #8b2e2e;
-  --danger-soft: #f4dede;
-  --info: #2f4a6b;
-  --info-soft: #e0e8f0;
+  /* Status — hi-vis */
+  --success: #1F6B3A;       /* OK green */
+  --success-soft: #DDEDDF;
+  --warning: #C77A0F;       /* hi-vis amber */
+  --warning-soft: #F8E5C5;
+  --danger: #B23F2E;        /* alert red */
+  --danger-soft: #F5DDD7;
+  --info: #2C547D;
+  --info-soft: #DCE5EE;
 
-  --radius: 14px;
-  --radius-lg: 22px;
-  --radius-xl: 28px;
+  /* Sharp corners */
+  --radius: 4px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 }
 
 html,
@@ -48,15 +50,23 @@ body {
 }
 
 body {
-  font-feature-settings: "ss01", "cv11";
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* "font-serif" Tailwind class is repurposed as the display heading font */
 .font-serif {
-  font-family: var(--font-serif), "Cormorant Garamond", "Times New Roman", serif;
-  font-feature-settings: "liga", "dlig";
-  letter-spacing: -0.01em;
+  font-family: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* Mono utility for SKUs and codes */
+.font-mono,
+code,
+.tabular-mono {
+  font-family: var(--font-mono), ui-monospace, "JetBrains Mono", "Menlo",
+    monospace;
 }
 
 @layer base {
@@ -64,8 +74,8 @@ body {
     border-color: var(--line);
   }
   ::selection {
-    background: var(--accent);
-    color: var(--surface);
+    background: var(--gold);
+    color: #ffffff;
   }
   .tabular {
     font-variant-numeric: tabular-nums;
@@ -77,10 +87,10 @@ body {
   .panel {
     background: var(--surface);
     border-radius: var(--radius-lg);
+    border: 1px solid var(--line);
     box-shadow:
-      0 1px 0 rgba(21, 17, 13, 0.02),
-      0 1px 2px rgba(21, 17, 13, 0.04),
-      0 8px 24px -12px rgba(21, 17, 13, 0.08);
+      0 1px 0 rgba(26, 27, 30, 0.02),
+      0 1px 2px rgba(26, 27, 30, 0.04);
   }
 
   .panel-flat {
@@ -93,39 +103,78 @@ body {
     border-color: var(--line);
   }
 
+  /* Industrial pill — sharp-ish corners, dot indicator */
   .pill {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    padding: 0.25rem 0.65rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 500;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius);
+    font-size: 0.7rem;
+    font-weight: 600;
     line-height: 1;
-    letter-spacing: 0.005em;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
   .pill::before {
     content: "";
     width: 6px;
     height: 6px;
-    border-radius: 999px;
+    border-radius: 1px;
     background: currentColor;
-    opacity: 0.9;
+    opacity: 0.95;
   }
 
-  .link-gold {
-    color: var(--gold);
-    text-underline-offset: 3px;
-    text-decoration-thickness: 1px;
-  }
-  .link-gold:hover {
-    text-decoration: underline;
-  }
-
-  .monogram {
-    font-family: var(--font-serif), serif;
-    font-style: italic;
+  /* Stencil block — used for brand mark */
+  .stencil-block {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      linear-gradient(135deg, var(--ink) 0%, #2D3035 100%);
+    color: var(--surface);
+    font-family: var(--font-display), system-ui, sans-serif;
+    font-weight: 700;
     letter-spacing: -0.02em;
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  /* Brushed-metal subtle texture for emphasis cards */
+  .brushed {
+    background:
+      linear-gradient(180deg, #1F2125 0%, #15161A 100%);
+    color: var(--surface);
+    border-radius: var(--radius-lg);
+    border: 1px solid #0E0F12;
+    position: relative;
+    overflow: hidden;
+  }
+  .brushed::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: repeating-linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.018) 0px,
+      rgba(255, 255, 255, 0.018) 1px,
+      transparent 1px,
+      transparent 2px
+    );
+    pointer-events: none;
+  }
+
+  /* Eyebrow / caption — uppercase technical label */
+  .eyebrow {
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+  }
+
+  .eyebrow-accent {
+    color: var(--gold);
   }
 }
 
@@ -138,7 +187,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--line-strong);
-  border-radius: 999px;
+  border-radius: 2px;
   border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover {

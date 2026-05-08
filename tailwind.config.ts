@@ -49,7 +49,10 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-        serif: ["var(--font-serif)", "Cormorant Garamond", "serif"],
+        // "serif" slot repurposed for display headings (industrial sans)
+        serif: ["var(--font-display)", "Space Grotesk", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "Space Grotesk", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "JetBrains Mono", "monospace"],
       },
       borderRadius: {
         DEFAULT: "var(--radius)",
