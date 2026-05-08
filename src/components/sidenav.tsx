@@ -14,6 +14,8 @@ import {
   Menu,
   X,
   Warehouse,
+  ShoppingCart,
+  PackageOpen,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { cn } from "@/lib/utils";
@@ -29,6 +31,13 @@ const navGroups: {
       { href: "dashboard", label: "Overview", icon: LayoutDashboard },
       { href: "products", label: "Products", icon: Package },
       { href: "stock", label: "Inventory", icon: Warehouse },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { href: "sales", label: "Sales", icon: ShoppingCart },
+      { href: "procurement", label: "Procurement", icon: PackageOpen },
     ],
   },
   {

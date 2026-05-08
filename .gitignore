@@ -3,3 +3,5 @@ node_modules
 .env.local
 .next
 /src/generated/prisma
+.DS_Store
+tsconfig.tsbuildinfo

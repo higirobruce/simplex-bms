@@ -130,3 +130,80 @@ export const ListQuerySchema = z.object({
   sortBy: z.string().default("createdAt"),
   sortOrder: z.enum(["asc", "desc"]).default("desc"),
 });
+
+// ===== Locations / Warehouses =====
+export const LocationCreateSchema = z.object({
+  name: z.string().min(1, "Location name is required"),
+  code: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+  parentId: z.string().optional().nullable(),
+});
+
+export const LocationPatchSchema = z.object({
+  name: z.string().min(1).optional(),
+  code: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+  parentId: z.string().optional().nullable(),
+});
+
+// ===== Sales =====
+const OrderLineSchema = z.object({
+  productId: z.string().min(1, "Product is required"),
+  qty: z.number().int().positive("Qty must be positive"),
+  unitPrice: z.number().min(0, "Unit price cannot be negative"),
+});
+
+export const SalesOrderCreateSchema = z.object({
+  customerId: z.string().min(1, "Customer is required"),
+  expectedDate: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  lines: z.array(OrderLineSchema).min(1, "At least one line is required"),
+});
+
+export const SalesOrderPatchSchema = z.object({
+  customerId: z.string().min(1).optional(),
+  expectedDate: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  lines: z.array(OrderLineSchema).min(1).optional(),
+});
+
+const DeliveryNoteLineSchema = z.object({
+  productId: z.string().min(1),
+  orderLineId: z.string().optional().nullable(),
+  qty: z.number().int().positive(),
+});
+
+export const DeliveryNoteCreateSchema = z.object({
+  orderId: z.string().min(1, "Sales order is required"),
+  locationId: z.string().min(1, "Source warehouse is required"),
+  notes: z.string().optional().nullable(),
+  lines: z.array(DeliveryNoteLineSchema).min(1, "At least one line is required"),
+});
+
+// ===== Procurement =====
+export const PurchaseOrderCreateSchema = z.object({
+  vendorId: z.string().min(1, "Vendor is required"),
+  expectedDate: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  lines: z.array(OrderLineSchema).min(1, "At least one line is required"),
+});
+
+export const PurchaseOrderPatchSchema = z.object({
+  vendorId: z.string().min(1).optional(),
+  expectedDate: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+  lines: z.array(OrderLineSchema).min(1).optional(),
+});
+
+const GoodsReceiptLineSchema = z.object({
+  productId: z.string().min(1),
+  orderLineId: z.string().optional().nullable(),
+  qty: z.number().int().positive(),
+});
+
+export const GoodsReceiptCreateSchema = z.object({
+  orderId: z.string().min(1, "Purchase order is required"),
+  locationId: z.string().min(1, "Destination warehouse is required"),
+  notes: z.string().optional().nullable(),
+  lines: z.array(GoodsReceiptLineSchema).min(1, "At least one line is required"),
+});

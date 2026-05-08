@@ -30,14 +30,40 @@ async function main() {
   });
   console.log("Created user:", admin.email);
 
-  // Create location
+  // Create warehouse hierarchy: Main → (Showroom, Storage)
   const warehouse = await prisma.location.create({
     data: {
       name: "Main Warehouse",
+      code: "WH-01",
       address: "123 Kigali Ave",
       orgId: org.id,
     },
   });
+  const showroom = await prisma.location.create({
+    data: {
+      name: "Showroom",
+      code: "WH-01-A",
+      parentId: warehouse.id,
+      orgId: org.id,
+    },
+  });
+  const storage = await prisma.location.create({
+    data: {
+      name: "Back Storage",
+      code: "WH-01-B",
+      parentId: warehouse.id,
+      orgId: org.id,
+    },
+  });
+  const branch = await prisma.location.create({
+    data: {
+      name: "Nyarutarama Branch",
+      code: "WH-02",
+      address: "Nyarutarama, Kigali",
+      orgId: org.id,
+    },
+  });
+  console.log("Created warehouse hierarchy");
 
   // Create products
   const products = await Promise.all([
@@ -99,19 +125,27 @@ async function main() {
   ]);
   console.log(`Created ${products.length} products`);
 
-  // Create stock levels
-  await Promise.all(
-    products.map((p, i) =>
-      prisma.stockLevel.create({
-        data: {
-          productId: p.id,
-          locationId: warehouse.id,
-          qty: [15, 25, 8, 12, 3][i],
-        },
-      })
-    )
-  );
-  console.log("Created stock levels");
+  // Create stock levels — split between sub-locations and the branch
+  const stockPlan = [
+    { qtyShowroom: 5, qtyStorage: 8, qtyBranch: 2 },   // LAP-001
+    { qtyShowroom: 8, qtyStorage: 12, qtyBranch: 5 },  // PHN-001
+    { qtyShowroom: 2, qtyStorage: 4, qtyBranch: 2 },   // DSK-001
+    { qtyShowroom: 4, qtyStorage: 6, qtyBranch: 2 },   // CHR-001
+    { qtyShowroom: 1, qtyStorage: 1, qtyBranch: 1 },   // PRT-001
+  ];
+  for (let i = 0; i < products.length; i++) {
+    const plan = stockPlan[i];
+    await prisma.stockLevel.create({
+      data: { productId: products[i].id, locationId: showroom.id, qty: plan.qtyShowroom },
+    });
+    await prisma.stockLevel.create({
+      data: { productId: products[i].id, locationId: storage.id, qty: plan.qtyStorage },
+    });
+    await prisma.stockLevel.create({
+      data: { productId: products[i].id, locationId: branch.id, qty: plan.qtyBranch },
+    });
+  }
+  console.log("Created stock levels across warehouses");
 
   // Create customers
   const customers = await Promise.all([
@@ -149,7 +183,7 @@ async function main() {
   console.log(`Created ${customers.length} customers`);
 
   // Create vendors
-  await Promise.all([
+  const vendors = await Promise.all([
     prisma.vendor.create({
       data: {
         name: "HP Rwanda Distributors",
@@ -261,6 +295,44 @@ async function main() {
     }),
   ]);
   console.log("Created expenses");
+
+  // Sample sales order (DRAFT) — ready for the user to confirm + deliver
+  await prisma.salesOrder.create({
+    data: {
+      orgId: org.id,
+      orderNo: "SO-0001",
+      customerId: customers[0].id,
+      status: "DRAFT",
+      subtotal: 700000,
+      total: 700000,
+      createdById: admin.id,
+      lines: {
+        create: [
+          { productId: products[0].id, qty: 1, unitPrice: 450000, amount: 450000 },
+          { productId: products[1].id, qty: 1, unitPrice: 250000, amount: 250000 },
+        ],
+      },
+    },
+  });
+
+  // Sample purchase order (DRAFT)
+  await prisma.purchaseOrder.create({
+    data: {
+      orgId: org.id,
+      orderNo: "PO-0001",
+      vendorId: vendors[0].id,
+      status: "DRAFT",
+      subtotal: 760000,
+      total: 760000,
+      createdById: admin.id,
+      lines: {
+        create: [
+          { productId: products[0].id, qty: 2, unitPrice: 380000, amount: 760000 },
+        ],
+      },
+    },
+  });
+  console.log("Created sample sales + purchase orders");
 
   console.log("\nSeed complete!");
   console.log("Login with: admin@acme.test / password123");

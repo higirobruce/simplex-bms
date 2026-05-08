@@ -4,7 +4,14 @@ import { Prisma } from "@prisma/client";
 interface AuditParams {
   orgId: string;
   userId: string;
-  action: "CREATE" | "UPDATE" | "DELETE" | "STATUS_CHANGE";
+  action:
+    | "CREATE"
+    | "UPDATE"
+    | "DELETE"
+    | "STATUS_CHANGE"
+    | "CONFIRM"
+    | "APPROVE"
+    | "CANCEL";
   entityType: string;
   entityId: string;
   before?: object | null;

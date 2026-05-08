@@ -30,7 +30,13 @@ export type Permission =
   | "expenses:write"
   | "expenses:delete"
   | "stock:adjust"
-  | "payments:write";
+  | "payments:write"
+  | "locations:write"
+  | "locations:delete"
+  | "sales:write"
+  | "sales:approve"
+  | "procurement:write"
+  | "procurement:approve";
 
 const ALL_PERMISSIONS: Permission[] = [
   "products:write", "products:delete",
@@ -39,6 +45,9 @@ const ALL_PERMISSIONS: Permission[] = [
   "invoices:write", "invoices:void",
   "expenses:write", "expenses:delete",
   "stock:adjust", "payments:write",
+  "locations:write", "locations:delete",
+  "sales:write", "sales:approve",
+  "procurement:write", "procurement:approve",
 ];
 
 const ROLE_PERMISSIONS: Record<string, Permission[]> = {
@@ -51,12 +60,17 @@ const ROLE_PERMISSIONS: Record<string, Permission[]> = {
     "expenses:write", "expenses:delete",
     "stock:adjust",
     "payments:write",
+    "locations:write", "locations:delete",
+    "sales:write", "sales:approve",
+    "procurement:write", "procurement:approve",
   ],
   ACCOUNTANT: [
     "invoices:write",
     "expenses:write",
     "payments:write",
     "customers:write",
+    "sales:write",
+    "procurement:write",
   ],
   VIEWER: [],
 };
