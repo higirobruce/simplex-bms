@@ -1,0 +1,132 @@
+import { z } from "zod";
+
+// ===== Products =====
+export const ProductCreateSchema = z.object({
+  sku: z.string().min(1, "SKU is required"),
+  name: z.string().min(1, "Product name is required"),
+  description: z.string().optional(),
+  unitPrice: z.number().positive("Unit price must be positive"),
+  costPrice: z.number().positive("Cost price must be positive").optional().nullable(),
+  category: z.string().default("General"),
+  reorderLevel: z.number().int().min(0).default(10),
+});
+
+export const ProductPatchSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().optional().nullable(),
+  unitPrice: z.number().positive().optional(),
+  costPrice: z.number().positive().optional().nullable(),
+  category: z.string().optional(),
+  reorderLevel: z.number().int().min(0).optional(),
+});
+// SKU excluded — immutable after creation
+
+// ===== Customers =====
+export const CustomerCreateSchema = z.object({
+  name: z.string().min(1, "Customer name is required"),
+  email: z.string().email("Invalid email").optional().nullable(),
+  phone: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+  city: z.string().optional().nullable(),
+  country: z.string().optional().nullable(),
+  creditLimit: z.number().min(0).default(0),
+});
+
+export const CustomerPatchSchema = z.object({
+  name: z.string().min(1).optional(),
+  email: z.string().email().optional().nullable(),
+  phone: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+  city: z.string().optional().nullable(),
+  country: z.string().optional().nullable(),
+  creditLimit: z.number().min(0).optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+});
+
+// ===== Vendors =====
+export const VendorCreateSchema = z.object({
+  name: z.string().min(1, "Vendor name is required"),
+  email: z.string().email("Invalid email").optional().nullable(),
+  phone: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+  city: z.string().optional().nullable(),
+  country: z.string().optional().nullable(),
+  paymentTerms: z.string().default("NET30"),
+});
+
+export const VendorPatchSchema = z.object({
+  name: z.string().min(1).optional(),
+  email: z.string().email().optional().nullable(),
+  phone: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+  city: z.string().optional().nullable(),
+  country: z.string().optional().nullable(),
+  paymentTerms: z.string().optional(),
+  status: z.enum(["ACTIVE", "INACTIVE"]).optional(),
+});
+
+// ===== Expenses =====
+export const ExpenseCreateSchema = z.object({
+  category: z.string().min(1, "Category is required"),
+  amount: z.number().positive("Amount must be positive"),
+  date: z.string().optional(),
+  description: z.string().optional().nullable(),
+});
+
+export const ExpensePatchSchema = z.object({
+  category: z.string().min(1).optional(),
+  amount: z.number().positive().optional(),
+  date: z.string().optional(),
+  description: z.string().optional().nullable(),
+});
+
+// ===== Invoices =====
+const InvoiceLineItemSchema = z.object({
+  productId: z.string().optional().nullable(),
+  description: z.string().optional().nullable(),
+  qty: z.number().int().min(1, "Quantity must be at least 1"),
+  unitPrice: z.number().min(0, "Unit price cannot be negative"),
+});
+
+export const InvoiceCreateSchema = z.object({
+  customerId: z.string().min(1, "Customer is required"),
+  lineItems: z.array(InvoiceLineItemSchema).min(1, "At least one line item is required"),
+  dueDate: z.string().min(1, "Due date is required"),
+  notes: z.string().optional().nullable(),
+});
+
+export const InvoicePatchSchema = z.object({
+  notes: z.string().optional().nullable(),
+  dueDate: z.string().optional(),
+});
+
+// ===== Payments =====
+export const PaymentCreateSchema = z.object({
+  amount: z.number().positive("Payment amount must be positive"),
+  method: z.enum(["CASH", "MOBILE_MONEY", "BANK", "CHECK", "OTHER"]),
+  notes: z.string().optional().nullable(),
+});
+
+// ===== Stock =====
+export const StockAdjustSchema = z.object({
+  productId: z.string().min(1, "Product is required"),
+  locationId: z.string().min(1, "Location is required"),
+  qty: z.number().int().refine((v) => v !== 0, "Quantity cannot be zero"),
+  type: z.enum(["RECEIPT", "ISSUE", "TRANSFER", "ADJUSTMENT", "RETURN"]),
+  reason: z.string().optional().nullable(),
+});
+
+// ===== Invoice Status Transitions =====
+export const InvoiceStatusTransitionSchema = z.object({
+  action: z.enum(["send", "mark_overdue", "void", "reopen"]),
+});
+
+// ===== Pagination =====
+export const ListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  search: z.string().optional(),
+  status: z.string().optional(),
+  sortBy: z.string().default("createdAt"),
+  sortOrder: z.enum(["asc", "desc"]).default("desc"),
+});

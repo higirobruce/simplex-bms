@@ -1,0 +1,291 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===== ENUMS =====
+enum Role {
+  ADMIN
+  MANAGER
+  ACCOUNTANT
+  VIEWER
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIAL
+  OVERDUE
+  PAID
+  VOID
+}
+
+enum EntityStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum MovementType {
+  RECEIPT
+  ISSUE
+  TRANSFER
+  ADJUSTMENT
+  RETURN
+}
+
+enum PaymentMethod {
+  CASH
+  MOBILE_MONEY
+  BANK
+  CHECK
+  OTHER
+}
+
+// ===== AUTH =====
+model User {
+  id        String   @id @default(cuid())
+  email     String
+  password  String
+  name      String?
+  image     String?
+  role      Role     @default(VIEWER)
+  orgId     String
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([email, orgId])
+  @@index([orgId])
+}
+
+model Org {
+  id              String           @id @default(cuid())
+  slug            String           @unique
+  name            String
+  logo            String?
+  currency        String           @default("RWF")
+  timezone        String           @default("Africa/Kigali")
+  users           User[]
+  products        Product[]
+  locations       Location[]
+  customers       Customer[]
+  vendors         Vendor[]
+  invoices        Invoice[]
+  expenses        Expense[]
+  invoiceSequence InvoiceSequence?
+  auditLogs       AuditLog[]
+  createdAt       DateTime         @default(now())
+}
+
+// ===== STOCK =====
+model Product {
+  id           String            @id @default(cuid())
+  sku          String
+  name         String
+  description  String?
+  image        String?
+  category     String            @default("General")
+  unitPrice    Decimal           @db.Decimal(12, 2)
+  costPrice    Decimal?          @db.Decimal(12, 2)
+  reorderLevel Int               @default(10)
+  orgId        String
+  org          Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  stockLevels  StockLevel[]
+  movements    StockMovement[]
+  lineItems    InvoiceLineItem[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  deletedAt    DateTime?
+
+  @@unique([sku, orgId])
+  @@index([orgId])
+}
+
+model Location {
+  id            String          @id @default(cuid())
+  name          String
+  address       String?
+  orgId         String
+  org           Org             @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  stockLevels   StockLevel[]
+  movementsFrom StockMovement[] @relation("from")
+  movementsTo   StockMovement[] @relation("to")
+  createdAt     DateTime        @default(now())
+
+  @@index([orgId])
+}
+
+model StockLevel {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  locationId String
+  location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  qty        Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  @@unique([productId, locationId])
+  @@index([productId])
+}
+
+model StockMovement {
+  id             String       @id @default(cuid())
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id])
+  fromLocationId String?
+  fromLocation   Location?    @relation("from", fields: [fromLocationId], references: [id])
+  toLocationId   String?
+  toLocation     Location?    @relation("to", fields: [toLocationId], references: [id])
+  qty            Int
+  type           MovementType
+  reason         String?
+  referenceId    String?
+  orgId          String
+  createdAt      DateTime     @default(now())
+
+  @@index([orgId, productId])
+  @@index([orgId, createdAt])
+}
+
+// ===== CUSTOMERS =====
+model Customer {
+  id            String       @id @default(cuid())
+  name          String
+  email         String?
+  phone         String?
+  address       String?
+  city          String?
+  country       String?
+  creditLimit   Decimal      @db.Decimal(12, 2) @default(0)
+  creditBalance Decimal      @db.Decimal(12, 2) @default(0)
+  status        EntityStatus @default(ACTIVE)
+  orgId         String
+  org           Org          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  invoices      Invoice[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
+
+  @@unique([email, orgId])
+  @@index([orgId])
+  @@index([orgId, status])
+}
+
+// ===== VENDORS =====
+model Vendor {
+  id           String       @id @default(cuid())
+  name         String
+  email        String?
+  phone        String?
+  address      String?
+  city         String?
+  country      String?
+  paymentTerms String       @default("NET30")
+  status       EntityStatus @default(ACTIVE)
+  orgId        String
+  org          Org          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
+
+  @@unique([email, orgId])
+  @@index([orgId])
+  @@index([orgId, status])
+}
+
+// ===== FINANCE =====
+model Invoice {
+  id         String            @id @default(cuid())
+  invoiceNo  String
+  customerId String
+  customer   Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status     InvoiceStatus     @default(DRAFT)
+  subtotal   Decimal           @db.Decimal(12, 2) @default(0)
+  tax        Decimal           @db.Decimal(12, 2) @default(0)
+  total      Decimal           @db.Decimal(12, 2) @default(0)
+  amountPaid Decimal           @db.Decimal(12, 2) @default(0)
+  dueDate    DateTime
+  notes      String?
+  orgId      String
+  org        Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  lineItems  InvoiceLineItem[]
+  payments   Payment[]
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  sentAt     DateTime?
+  deletedAt  DateTime?
+
+  @@unique([invoiceNo, orgId])
+  @@index([orgId, customerId])
+  @@index([orgId, status])
+  @@index([orgId, dueDate])
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  description String?
+  qty         Int      @default(1)
+  unitPrice   Decimal  @db.Decimal(12, 2)
+  amount      Decimal  @db.Decimal(12, 2)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  invoiceId String
+  invoice   Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount    Decimal       @db.Decimal(12, 2)
+  method    PaymentMethod
+  date      DateTime      @default(now())
+  notes     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([invoiceId])
+}
+
+model Expense {
+  id          String   @id @default(cuid())
+  category    String
+  amount      Decimal  @db.Decimal(12, 2)
+  date        DateTime @default(now())
+  description String?
+  receipt     String?
+  orgId       String
+  org         Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orgId, date])
+}
+
+model InvoiceSequence {
+  orgId   String @id
+  lastSeq Int    @default(0)
+  org     Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+}
+
+// ===== AUDIT =====
+model AuditLog {
+  id         String   @id @default(cuid())
+  orgId      String
+  org        Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId     String
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now())
+
+  @@index([orgId, entityType, entityId])
+  @@index([orgId, createdAt])
+}
