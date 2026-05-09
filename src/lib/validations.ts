@@ -1,5 +1,27 @@
 import { z } from "zod";
 
+// ===== Org =====
+export const OrgPatchSchema = z.object({
+  name: z.string().min(1, "Organisation name is required").optional(),
+  logo: z.string().url("Logo must be a valid URL").optional().nullable(),
+  currency: z.string().min(1).max(8).optional(),
+  timezone: z.string().min(1).optional(),
+});
+
+// ===== Users =====
+export const UserCreateSchema = z.object({
+  email: z.string().email("Invalid email"),
+  name: z.string().min(1, "Name is required").optional().nullable(),
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  role: z.enum(["ADMIN", "MANAGER", "ACCOUNTANT", "VIEWER"]).default("VIEWER"),
+});
+
+export const UserPatchSchema = z.object({
+  name: z.string().min(1).optional().nullable(),
+  role: z.enum(["ADMIN", "MANAGER", "ACCOUNTANT", "VIEWER"]).optional(),
+  password: z.string().min(8, "Password must be at least 8 characters").optional(),
+});
+
 // ===== Products =====
 export const ProductCreateSchema = z.object({
   sku: z.string().min(1, "SKU is required"),
