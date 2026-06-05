@@ -21,6 +21,7 @@ import { useToast } from "@/components/ui/toast";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { PageHeader } from "@/components/page-header";
 import { Pagination } from "@/components/ui/pagination";
+import { AsyncCombobox } from "@/components/ui/async-combobox";
 import {
   WarehouseTree,
   buildTree,
@@ -61,6 +62,7 @@ export default function InventoryPage() {
   const [showAdjust, setShowAdjust] = useState(false);
   const [adjustForm, setAdjustForm] = useState({
     productId: "",
+    productName: "",
     locationId: "",
     qty: "",
     type: "ADJUSTMENT",
@@ -72,17 +74,6 @@ export default function InventoryPage() {
     queryFn: () => fetch(`/api/${slug}/locations`).then((r) => r.json()),
     enabled: !!slug,
   });
-
-  // Products list — only used to populate the "Adjust stock" picker dropdown.
-  const { data: productsResp } = useQuery({
-    queryKey: ["products", slug, "all"],
-    queryFn: () =>
-      fetch(`/api/${slug}/products?limit=500`).then((r) => r.json()),
-    enabled: !!slug,
-  });
-  const products = Array.isArray(productsResp)
-    ? productsResp
-    : productsResp?.data ?? [];
 
   // Paginated stock rows (server-side), filtered by location subtree + search.
   const { data: stockResp, isLoading: stockLoading } = useQuery({
@@ -154,6 +145,7 @@ export default function InventoryPage() {
       setShowAdjust(false);
       setAdjustForm({
         productId: "",
+        productName: "",
         locationId: "",
         qty: "",
         type: "ADJUSTMENT",
@@ -481,20 +473,18 @@ export default function InventoryPage() {
         >
           <div className="space-y-2">
             <Label>Product</Label>
-            <Select
+            <AsyncCombobox
               value={adjustForm.productId}
-              onChange={(e) =>
-                setAdjustForm({ ...adjustForm, productId: e.target.value })
+              selectedLabel={adjustForm.productName}
+              endpoint={`/api/${slug}/products`}
+              queryKey={["products-picker", slug]}
+              getLabel={(p: any) => `${p.sku} — ${p.name}`}
+              onSelect={(id, p: any) =>
+                setAdjustForm({ ...adjustForm, productId: id, productName: `${p.sku} — ${p.name}` })
               }
+              placeholder="Select product…"
               required
-            >
-              <option value="">Select product…</option>
-              {products.map((p: any) => (
-                <option key={p.id} value={p.id}>
-                  {p.sku} — {p.name}
-                </option>
-              ))}
-            </Select>
+            />
           </div>
           <div className="space-y-2">
             <Label>Location</Label>

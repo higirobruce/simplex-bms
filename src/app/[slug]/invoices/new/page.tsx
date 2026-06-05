@@ -2,11 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { AsyncCombobox } from "@/components/ui/async-combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTenant } from "@/lib/hooks";
@@ -25,6 +24,7 @@ export default function NewInvoicePage() {
   const router = useRouter();
   const { slug } = useTenant();
   const [customerId, setCustomerId] = useState("");
+  const [customerName, setCustomerName] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lineItems, setLineItems] = useState<LineItem[]>([
@@ -32,27 +32,6 @@ export default function NewInvoicePage() {
   ]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-
-  const { data: customersResp } = useQuery({
-    queryKey: ["customers", slug, "all"],
-    queryFn: () =>
-      fetch(`/api/${slug}/customers?limit=500`).then((r) => r.json()),
-    enabled: !!slug,
-  });
-
-  const { data: productsResp } = useQuery({
-    queryKey: ["products", slug, "all"],
-    queryFn: () =>
-      fetch(`/api/${slug}/products?limit=500`).then((r) => r.json()),
-    enabled: !!slug,
-  });
-
-  const customers = Array.isArray(customersResp)
-    ? customersResp
-    : customersResp?.data ?? [];
-  const products = Array.isArray(productsResp)
-    ? productsResp
-    : productsResp?.data ?? [];
 
   const addLineItem = () => {
     setLineItems([...lineItems, { productId: "", description: "", qty: 1, unitPrice: 0 }]);
@@ -66,19 +45,18 @@ export default function NewInvoicePage() {
 
   const updateLineItem = (index: number, field: keyof LineItem, value: any) => {
     const updated = [...lineItems];
-    if (field === "productId" && value) {
-      const product = products.find((p: any) => p.id === value);
-      if (product) {
-        updated[index] = {
-          ...updated[index],
-          productId: value,
-          description: product.name,
-          unitPrice: Number(product.unitPrice),
-        };
-      }
-    } else {
-      (updated[index] as any)[field] = value;
-    }
+    (updated[index] as any)[field] = value;
+    setLineItems(updated);
+  };
+
+  const selectProduct = (index: number, product: any) => {
+    const updated = [...lineItems];
+    updated[index] = {
+      ...updated[index],
+      productId: product.id,
+      description: product.name,
+      unitPrice: Number(product.unitPrice),
+    };
     setLineItems(updated);
   };
 
@@ -128,18 +106,19 @@ export default function NewInvoicePage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Customer</Label>
-                <Select
+                <AsyncCombobox
                   value={customerId}
-                  onChange={(e) => setCustomerId(e.target.value)}
+                  selectedLabel={customerName}
+                  endpoint={`/api/${slug}/customers`}
+                  queryKey={["customers-picker", slug]}
+                  getLabel={(c: any) => c.name}
+                  onSelect={(id, c: any) => {
+                    setCustomerId(id);
+                    setCustomerName(c.name);
+                  }}
+                  placeholder="Select customer…"
                   required
-                >
-                  <option value="">Select customer...</option>
-                  {customers.map((c: any) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </Select>
+                />
               </div>
               <div className="space-y-2">
                 <Label>Due Date</Label>
@@ -173,17 +152,15 @@ export default function NewInvoicePage() {
                 <div key={idx} className="flex gap-2 items-end">
                   <div className="flex-1 space-y-1">
                     {idx === 0 && <Label className="text-xs">Product</Label>}
-                    <Select
+                    <AsyncCombobox
                       value={item.productId}
-                      onChange={(e) => updateLineItem(idx, "productId", e.target.value)}
-                    >
-                      <option value="">Select product...</option>
-                      {products.map((p: any) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({fmt(p.unitPrice)})
-                        </option>
-                      ))}
-                    </Select>
+                      selectedLabel={item.description}
+                      endpoint={`/api/${slug}/products`}
+                      queryKey={["products-picker", slug]}
+                      getLabel={(p: any) => `${p.name} (${fmt(p.unitPrice)})`}
+                      onSelect={(_id, p: any) => selectProduct(idx, p)}
+                      placeholder="Select product…"
+                    />
                   </div>
                   <div className="w-20 space-y-1">
                     {idx === 0 && <Label className="text-xs">Qty</Label>}
