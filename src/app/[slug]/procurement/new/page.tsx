@@ -2,11 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { AsyncCombobox } from "@/components/ui/async-combobox";
 import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
 import { useTenant } from "@/lib/hooks";
@@ -15,6 +14,7 @@ import { Plus, Trash2 } from "lucide-react";
 
 interface Line {
   productId: string;
+  productName?: string;
   qty: number;
   unitPrice: number;
 }
@@ -24,6 +24,7 @@ export default function NewPurchaseOrderPage() {
   const router = useRouter();
   const { slug } = useTenant();
   const [vendorId, setVendorId] = useState("");
+  const [vendorName, setVendorName] = useState("");
   const [expectedDate, setExpectedDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<Line[]>([
@@ -32,39 +33,20 @@ export default function NewPurchaseOrderPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const { data: vendorsResp } = useQuery({
-    queryKey: ["vendors", slug, "all"],
-    queryFn: () =>
-      fetch(`/api/${slug}/vendors?limit=500`).then((r) => r.json()),
-    enabled: !!slug,
-  });
-  const { data: productsResp } = useQuery({
-    queryKey: ["products", slug, "all"],
-    queryFn: () =>
-      fetch(`/api/${slug}/products?limit=500`).then((r) => r.json()),
-    enabled: !!slug,
-  });
-  const vendors = Array.isArray(vendorsResp)
-    ? vendorsResp
-    : vendorsResp?.data ?? [];
-  const products = Array.isArray(productsResp)
-    ? productsResp
-    : productsResp?.data ?? [];
-
   const updateLine = (i: number, field: keyof Line, value: any) => {
     const next = [...lines];
-    if (field === "productId" && value) {
-      const product = products.find((p: any) => p.id === value);
-      next[i] = {
-        ...next[i],
-        productId: value,
-        unitPrice: product
-          ? Number(product.costPrice ?? product.unitPrice)
-          : 0,
-      };
-    } else {
-      (next[i] as any)[field] = value;
-    }
+    (next[i] as any)[field] = value;
+    setLines(next);
+  };
+
+  const selectProduct = (i: number, product: any) => {
+    const next = [...lines];
+    next[i] = {
+      ...next[i],
+      productId: product.id,
+      productName: product.name,
+      unitPrice: Number(product.costPrice ?? product.unitPrice),
+    };
     setLines(next);
   };
 
@@ -117,18 +99,19 @@ export default function NewPurchaseOrderPage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
             <div className="space-y-2">
               <Label>Vendor</Label>
-              <Select
+              <AsyncCombobox
                 value={vendorId}
-                onChange={(e) => setVendorId(e.target.value)}
+                selectedLabel={vendorName}
+                endpoint={`/api/${slug}/vendors`}
+                queryKey={["vendors-picker", slug]}
+                getLabel={(v: any) => v.name}
+                onSelect={(id, v: any) => {
+                  setVendorId(id);
+                  setVendorName(v.name);
+                }}
+                placeholder="Select vendor…"
                 required
-              >
-                <option value="">Select vendor…</option>
-                {vendors.map((v: any) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </Select>
+              />
             </div>
             <div className="space-y-2">
               <Label>Expected arrival</Label>
@@ -157,20 +140,16 @@ export default function NewPurchaseOrderPage() {
               <div key={i} className="flex gap-2 items-end">
                 <div className="flex-1 space-y-1">
                   {i === 0 && <Label>Product</Label>}
-                  <Select
+                  <AsyncCombobox
                     value={line.productId}
-                    onChange={(e) =>
-                      updateLine(i, "productId", e.target.value)
-                    }
+                    selectedLabel={line.productName}
+                    endpoint={`/api/${slug}/products`}
+                    queryKey={["products-picker", slug]}
+                    getLabel={(p: any) => p.name}
+                    onSelect={(_id, p: any) => selectProduct(i, p)}
+                    placeholder="Select product…"
                     required
-                  >
-                    <option value="">Select product…</option>
-                    {products.map((p: any) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                  </Select>
+                  />
                 </div>
                 <div className="w-24 space-y-1">
                   {i === 0 && <Label>Qty</Label>}
