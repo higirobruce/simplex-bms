@@ -2,14 +2,23 @@ import { prisma } from "@/lib/prisma";
 
 export const PLATFORM_SETTINGS_ID = "platform";
 
-// The platform settings are a single row (id = "platform"). Read-or-create so
-// callers never have to deal with a missing row.
+// The platform settings are a single row (id = "platform"). Read-only on the
+// hot path; the row is created lazily only the first time it's missing so we
+// don't issue a write on every page render.
 export async function getPlatformSettings() {
-  return prisma.platformSettings.upsert({
+  const existing = await prisma.platformSettings.findUnique({
     where: { id: PLATFORM_SETTINGS_ID },
-    update: {},
-    create: { id: PLATFORM_SETTINGS_ID },
   });
+  if (existing) return existing;
+  try {
+    return await prisma.platformSettings.create({ data: { id: PLATFORM_SETTINGS_ID } });
+  } catch (err: any) {
+    // Lost a race to create the singleton — re-read the row the winner inserted.
+    if (err?.code === "P2002") {
+      return prisma.platformSettings.findUniqueOrThrow({ where: { id: PLATFORM_SETTINGS_ID } });
+    }
+    throw err;
+  }
 }
 
 // Fields safe to expose publicly (no secrets) — used for branding, signup
