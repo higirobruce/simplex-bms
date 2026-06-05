@@ -13,7 +13,7 @@ import { useToast } from "@/components/ui/toast";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { PageHeader } from "@/components/page-header";
 import { apiCall } from "@/lib/fetcher";
-import { useDebounce } from "@/lib/hooks";
+import { useDebounce, usePlatform } from "@/lib/hooks";
 import { Plus, Pencil, Trash2, LogIn, Ban, CheckCircle2, Search } from "lucide-react";
 
 function slugify(s: string) {
@@ -37,6 +37,7 @@ const emptyCreate = {
 export default function ShopsPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
+  const platform = usePlatform();
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 300);
 
@@ -102,6 +103,16 @@ export default function ShopsPage() {
     }
   }
 
+  function openCreate() {
+    setCreateForm({
+      ...emptyCreate,
+      currency: platform?.defaultCurrency ?? emptyCreate.currency,
+      timezone: platform?.defaultTimezone ?? emptyCreate.timezone,
+    });
+    setSlugEdited(false);
+    setShowAdd(true);
+  }
+
   function openEdit(shop: any) {
     setEditForm({
       name: shop.name ?? "",
@@ -119,7 +130,7 @@ export default function ShopsPage() {
         title="Shops"
         description="Every workspace on Simplex. Provision new shops, suspend access, or step inside."
         actions={
-          <Button onClick={() => setShowAdd(true)}>
+          <Button onClick={openCreate}>
             <Plus className="h-4 w-4" strokeWidth={2} /> New shop
           </Button>
         }

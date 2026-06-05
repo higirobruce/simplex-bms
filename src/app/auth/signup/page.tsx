@@ -7,9 +7,13 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { usePlatform } from "@/lib/hooks";
 
 export default function SignupPage() {
   const router = useRouter();
+  const platform = usePlatform();
+  const platformName = platform?.platformName ?? "Simplex";
+  const signupsDisabled = platform?.allowSignups === false;
   const [formData, setFormData] = useState({
     name: "",
     email: "",
@@ -96,7 +100,7 @@ export default function SignupPage() {
             </div>
             <div className="leading-tight">
               <p className="font-display font-bold text-xl text-surface uppercase tracking-tight">
-                Simplex
+                {platformName}
               </p>
               <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-gold mt-1">
                 / Workbench
@@ -143,7 +147,7 @@ export default function SignupPage() {
           <div className="lg:hidden flex items-center gap-3 mb-8">
             <div className="stencil-block h-10 w-10 text-base">◼</div>
             <p className="font-display font-bold text-xl text-ink uppercase tracking-tight">
-              Simplex
+              {platformName}
             </p>
           </div>
 
@@ -158,6 +162,30 @@ export default function SignupPage() {
             A few details and you&apos;re open for business.
           </p>
 
+          {signupsDisabled ? (
+            <div className="mt-8 space-y-4">
+              <div className="rounded-[var(--radius)] border-l-4 border-gold bg-gold-soft px-4 py-3 text-sm text-ink">
+                Public sign-ups are currently closed
+                {platform?.supportEmail ? (
+                  <>
+                    {" "}— contact{" "}
+                    <a href={`mailto:${platform.supportEmail}`} className="font-semibold underline underline-offset-4">
+                      {platform.supportEmail}
+                    </a>{" "}
+                    to get set up.
+                  </>
+                ) : (
+                  " — contact platform support to get set up."
+                )}
+              </div>
+              <p className="text-center text-sm text-ink-soft pt-2 font-mono uppercase tracking-wider text-[0.7rem]">
+                Already set up?{" "}
+                <Link href="/auth/login" className="text-gold font-semibold hover:underline underline-offset-4">
+                  Sign in
+                </Link>
+              </p>
+            </div>
+          ) : (
           <form onSubmit={handleSubmit} className="mt-8 space-y-5">
             {error && (
               <div className="rounded-[var(--radius)] border-l-4 border-danger bg-danger-soft px-4 py-3 text-sm text-danger font-mono">
@@ -248,6 +276,7 @@ export default function SignupPage() {
               </Link>
             </p>
           </form>
+          )}
         </div>
       </div>
     </div>

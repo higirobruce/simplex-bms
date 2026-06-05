@@ -56,7 +56,7 @@ const navGroups: {
   },
 ];
 
-export function SideNav({ slug }: { slug: string }) {
+export function SideNav({ slug, platformName = "Simplex" }: { slug: string; platformName?: string }) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -95,7 +95,7 @@ export function SideNav({ slug }: { slug: string }) {
             </div>
             <div className="flex flex-col leading-tight">
               <span className="font-display font-bold text-[1.05rem] text-ink leading-none tracking-tight uppercase">
-                Simplex
+                {platformName}
               </span>
               <span className="font-mono text-[0.62rem] tracking-[0.16em] uppercase text-ink-mute mt-1.5">
                 Workbench / {slug}

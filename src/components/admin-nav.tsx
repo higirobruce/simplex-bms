@@ -13,7 +13,7 @@ const items: { href: string; label: string; icon: any }[] = [
   { href: "/admin/settings", label: "Platform", icon: SlidersHorizontal },
 ];
 
-export function AdminNav() {
+export function AdminNav({ platformName = "Simplex" }: { platformName?: string }) {
   const pathname = usePathname();
 
   return (
@@ -24,7 +24,7 @@ export function AdminNav() {
           <div className="stencil-block h-10 w-10 text-lg">◼</div>
           <div className="flex flex-col leading-tight">
             <span className="font-display font-bold text-[1.05rem] text-ink leading-none tracking-tight uppercase">
-              Simplex
+              {platformName}
             </span>
             <span className="font-mono text-[0.62rem] tracking-[0.16em] uppercase text-gold mt-1.5">
               Platform Console
