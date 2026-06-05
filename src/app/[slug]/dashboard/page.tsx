@@ -12,7 +12,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useTenant } from "@/lib/hooks";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import {
   ArrowUpRight,
   ArrowDownRight,
@@ -100,6 +100,7 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
 
 export default function DashboardPage() {
   const { slug } = useTenant();
+  const fmt = useMoney();
 
   const { data: stats, isLoading } = useQuery({
     queryKey: ["dashboard-stats", slug],
@@ -205,20 +206,20 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard
           label="Revenue · MTD"
-          value={formatCurrency(stats?.revenueMTD || 0)}
+          value={fmt(stats?.revenueMTD || 0)}
           delta={{ value: "+12.4%", positive: true }}
           caption="vs last month"
           emphasis
         />
         <StatCard
           label="Expenses · MTD"
-          value={formatCurrency(stats?.expensesMTD || 0)}
+          value={fmt(stats?.expensesMTD || 0)}
           delta={{ value: "−4.1%", positive: true }}
           caption="vs last month"
         />
         <StatCard
           label="Outstanding"
-          value={formatCurrency(stats?.outstanding || 0)}
+          value={fmt(stats?.outstanding || 0)}
           delta={{ value: "+2.8%", positive: false }}
           caption="receivable"
         />
@@ -304,7 +305,7 @@ export default function DashboardPage() {
                   fontFamily: "var(--font-mono)",
                 }}
                 formatter={(value) => [
-                  formatCurrency(Number(value)),
+                  fmt(Number(value)),
                   "Revenue",
                 ]}
               />
@@ -350,7 +351,7 @@ export default function DashboardPage() {
                 </div>
                 <div className="text-right ml-3 flex-shrink-0">
                   <p className="font-mono font-semibold text-sm text-ink tabular">
-                    {formatCurrency(inv.total)}
+                    {fmt(inv.total)}
                   </p>
                   <div className="mt-1 flex justify-end">
                     <Badge variant={statusVariant[inv.status] || "secondary"}>

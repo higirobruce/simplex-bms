@@ -13,7 +13,8 @@ import { Select } from "@/components/ui/select";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { Pagination } from "@/components/ui/pagination";
 import { PageHeader } from "@/components/page-header";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { Plus, Search, FileText } from "lucide-react";
 
 const statusVariant: Record<string, "success" | "warning" | "destructive" | "secondary" | "outline" | "info"> = {
@@ -26,6 +27,7 @@ const statusVariant: Record<string, "success" | "warning" | "destructive" | "sec
 };
 
 export default function InvoicesPage() {
+  const fmt = useMoney();
   const { slug } = useTenant();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -112,10 +114,10 @@ export default function InvoicesPage() {
                   <TableCell className="text-ink-soft tabular">{formatDate(invoice.createdAt)}</TableCell>
                   <TableCell className="text-ink-soft tabular">{formatDate(invoice.dueDate)}</TableCell>
                   <TableCell className="text-right font-medium tabular">
-                    {formatCurrency(invoice.total)}
+                    {fmt(invoice.total)}
                   </TableCell>
                   <TableCell className="text-right tabular text-ink-soft">
-                    {formatCurrency(invoice.amountPaid)}
+                    {fmt(invoice.amountPaid)}
                   </TableCell>
                   <TableCell>
                     <Badge variant={statusVariant[invoice.status] || "secondary"}>

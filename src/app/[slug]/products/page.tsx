@@ -14,10 +14,11 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { Pagination } from "@/components/ui/pagination";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { Plus, Search, Package, Pencil, Trash2 } from "lucide-react";
 
 export default function ProductsPage() {
+  const fmt = useMoney();
   const { slug } = useTenant();
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -206,7 +207,7 @@ export default function ProductsPage() {
                       {product.category}
                     </TableCell>
                     <TableCell className="text-right tabular">
-                      {formatCurrency(product.unitPrice)}
+                      {fmt(product.unitPrice)}
                     </TableCell>
                     <TableCell className="text-right tabular text-ink-soft">
                       {totalQty}

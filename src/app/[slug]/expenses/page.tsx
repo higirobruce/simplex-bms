@@ -14,7 +14,8 @@ import { useToast } from "@/components/ui/toast";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { Pagination } from "@/components/ui/pagination";
 import { PageHeader } from "@/components/page-header";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { Plus, Search, DollarSign, Pencil, Trash2 } from "lucide-react";
 
 const categories = ["rent", "utilities", "salary", "supplies", "transport", "marketing", "other"];
@@ -27,6 +28,7 @@ function apiCall(url: string, opts?: RequestInit) {
 }
 
 export default function ExpensesPage() {
+  const fmt = useMoney();
   const { slug } = useTenant();
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -108,7 +110,7 @@ export default function ExpensesPage() {
                     <TableCell className="text-ink-soft tabular">{formatDate(expense.date)}</TableCell>
                     <TableCell><Badge variant="outline" className="capitalize">{expense.category}</Badge></TableCell>
                     <TableCell className="text-ink">{expense.description || "—"}</TableCell>
-                    <TableCell className="text-right font-medium tabular">{formatCurrency(expense.amount)}</TableCell>
+                    <TableCell className="text-right font-medium tabular">{fmt(expense.amount)}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-0.5">
                         <Button variant="ghost" size="icon" onClick={() => setEditing({ ...expense, amount: String(expense.amount), date: new Date(expense.date).toISOString().split("T")[0] })} className="h-8 w-8"><Pencil className="h-3.5 w-3.5" strokeWidth={1.75} /></Button>
@@ -120,7 +122,7 @@ export default function ExpensesPage() {
               </TableBody>
             </Table>
           </div>
-          <div className="text-right text-sm text-ink-soft">Total: <span className="font-display text-xl font-semibold uppercase tracking-tight text-ink ml-1 tabular">{formatCurrency(totalExpenses)}</span></div>
+          <div className="text-right text-sm text-ink-soft">Total: <span className="font-display text-xl font-semibold uppercase tracking-tight text-ink ml-1 tabular">{fmt(totalExpenses)}</span></div>
           <Pagination page={page} totalPages={expenses?.meta?.pages || 1} onPageChange={setPage} />
         </>
       )}

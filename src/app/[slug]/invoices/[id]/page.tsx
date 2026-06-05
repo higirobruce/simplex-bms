@@ -16,7 +16,8 @@ import { Dialog, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { useTenant } from "@/lib/hooks";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 
 function apiCall(url: string, opts?: RequestInit) {
   return fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...opts?.headers } }).then(async (r) => {
@@ -35,6 +36,7 @@ const statusVariant: Record<string, "success" | "warning" | "destructive" | "sec
 };
 
 export default function InvoiceDetailPage() {
+  const fmt = useMoney();
   const { slug } = useTenant();
   const params = useParams();
   const invoiceId = params?.id as string;
@@ -132,14 +134,14 @@ export default function InvoiceDetailPage() {
         <Card>
           <CardContent className="pt-4 pb-4">
             <p className="text-xs text-gray-500">Total</p>
-            <p className="text-lg font-bold">{formatCurrency(invoice.total)}</p>
+            <p className="text-lg font-bold">{fmt(invoice.total)}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-4 pb-4">
             <p className="text-xs text-gray-500">Paid</p>
             <p className="text-lg font-bold text-green-600">
-              {formatCurrency(invoice.amountPaid)}
+              {fmt(invoice.amountPaid)}
             </p>
           </CardContent>
         </Card>
@@ -147,7 +149,7 @@ export default function InvoiceDetailPage() {
           <CardContent className="pt-4 pb-4">
             <p className="text-xs text-gray-500">Balance</p>
             <p className="text-lg font-bold text-red-600">
-              {formatCurrency(balance)}
+              {fmt(balance)}
             </p>
           </CardContent>
         </Card>
@@ -186,10 +188,10 @@ export default function InvoiceDetailPage() {
                   </TableCell>
                   <TableCell className="text-right">{item.qty}</TableCell>
                   <TableCell className="text-right">
-                    {formatCurrency(item.unitPrice)}
+                    {fmt(item.unitPrice)}
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {formatCurrency(item.amount)}
+                    {fmt(item.amount)}
                   </TableCell>
                 </TableRow>
               ))}
@@ -221,7 +223,7 @@ export default function InvoiceDetailPage() {
                       <Badge variant="outline">{payment.method}</Badge>
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      {formatCurrency(payment.amount)}
+                      {fmt(payment.amount)}
                     </TableCell>
                     <TableCell>{payment.notes || "—"}</TableCell>
                   </TableRow>
@@ -249,7 +251,7 @@ export default function InvoiceDetailPage() {
         </DialogHeader>
         <form onSubmit={handlePayment} className="space-y-4">
           <div className="space-y-2">
-            <Label>Amount (Balance: {formatCurrency(balance)})</Label>
+            <Label>Amount (Balance: {fmt(balance)})</Label>
             <Input
               type="number"
               min="0"

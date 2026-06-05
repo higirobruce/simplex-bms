@@ -15,7 +15,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { useTenant } from "@/lib/hooks";
 import { PageHeader } from "@/components/page-header";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { ArrowLeft, Plus, Check, Truck, X } from "lucide-react";
 
 const statusVariant: Record<string, any> = {
@@ -40,6 +41,7 @@ function apiCall(url: string, opts?: RequestInit) {
 }
 
 export default function SalesOrderDetailPage() {
+  const fmt = useMoney();
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { slug } = useTenant();
@@ -232,10 +234,10 @@ export default function SalesOrderDetailPage() {
                   </span>
                 </td>
                 <td className="px-6 py-4 text-right tabular">
-                  {formatCurrency(l.unitPrice)}
+                  {fmt(l.unitPrice)}
                 </td>
                 <td className="px-6 py-4 text-right tabular font-medium">
-                  {formatCurrency(l.amount)}
+                  {fmt(l.amount)}
                 </td>
               </tr>
             ))}
@@ -246,7 +248,7 @@ export default function SalesOrderDetailPage() {
                 Total
               </td>
               <td className="px-6 py-4 text-right font-display text-2xl font-bold uppercase tracking-tight tabular">
-                {formatCurrency(order.total)}
+                {fmt(order.total)}
               </td>
             </tr>
           </tfoot>

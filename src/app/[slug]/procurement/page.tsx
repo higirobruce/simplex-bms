@@ -18,7 +18,8 @@ import { Badge } from "@/components/ui/badge";
 import { Pagination } from "@/components/ui/pagination";
 import { PageHeader } from "@/components/page-header";
 import { useTenant, useDebounce } from "@/lib/hooks";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { Plus, Search, PackageOpen } from "lucide-react";
 
 const statusVariant: Record<string, any> = {
@@ -29,6 +30,7 @@ const statusVariant: Record<string, any> = {
 };
 
 export default function ProcurementPage() {
+  const fmt = useMoney();
   const { slug } = useTenant();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -138,7 +140,7 @@ export default function ProcurementPage() {
                     {o._count?.lines ?? 0}
                   </TableCell>
                   <TableCell className="text-right font-medium tabular">
-                    {formatCurrency(o.total)}
+                    {fmt(o.total)}
                   </TableCell>
                   <TableCell className="text-ink-soft tabular">
                     {o._count?.receipts ?? 0}
