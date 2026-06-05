@@ -11,7 +11,9 @@ interface AuditParams {
     | "STATUS_CHANGE"
     | "CONFIRM"
     | "APPROVE"
-    | "CANCEL";
+    | "CANCEL"
+    | "IMPERSONATE_START"
+    | "IMPERSONATE_STOP";
   entityType: string;
   entityId: string;
   before?: object | null;

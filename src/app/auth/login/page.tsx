@@ -7,9 +7,12 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { usePlatform } from "@/lib/hooks";
 
 export default function LoginPage() {
   const router = useRouter();
+  const platform = usePlatform();
+  const platformName = platform?.platformName ?? "Simplex";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -66,7 +69,7 @@ export default function LoginPage() {
             </div>
             <div className="leading-tight">
               <p className="font-display font-bold text-xl text-surface uppercase tracking-tight">
-                Simplex
+                {platformName}
               </p>
               <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-gold mt-1">
                 / Workbench
@@ -116,7 +119,7 @@ export default function LoginPage() {
           <div className="lg:hidden flex items-center gap-3 mb-8">
             <div className="stencil-block h-10 w-10 text-base">◼</div>
             <p className="font-display font-bold text-xl text-ink uppercase tracking-tight">
-              Simplex
+              {platformName}
             </p>
           </div>
 
@@ -169,15 +172,29 @@ export default function LoginPage() {
               {loading ? "Authenticating…" : "Clock in"}
             </Button>
 
-            <p className="text-center text-sm text-ink-soft pt-2 font-mono uppercase tracking-wider text-[0.7rem]">
-              Don&apos;t have an account?{" "}
-              <Link
-                href="/auth/signup"
-                className="text-gold font-semibold hover:underline underline-offset-4"
-              >
-                Set up shop
-              </Link>
-            </p>
+            {platform?.allowSignups !== false && (
+              <p className="text-center text-sm text-ink-soft pt-2 font-mono uppercase tracking-wider text-[0.7rem]">
+                Don&apos;t have an account?{" "}
+                <Link
+                  href="/auth/signup"
+                  className="text-gold font-semibold hover:underline underline-offset-4"
+                >
+                  Set up shop
+                </Link>
+              </p>
+            )}
+
+            {platform?.supportEmail && (
+              <p className="text-center text-[0.7rem] text-ink-mute pt-1 font-mono uppercase tracking-wider">
+                Need help?{" "}
+                <a
+                  href={`mailto:${platform.supportEmail}`}
+                  className="text-ink-soft hover:text-ink underline-offset-4 hover:underline"
+                >
+                  {platform.supportEmail}
+                </a>
+              </p>
+            )}
           </form>
         </div>
       </div>

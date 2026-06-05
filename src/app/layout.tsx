@@ -3,6 +3,7 @@ import localFont from "next/font/local";
 import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/lib/providers";
+import { getPlatformSettings } from "@/lib/platform";
 
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
@@ -24,10 +25,13 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
-export const metadata: Metadata = {
-  title: "Simplex — Workbench",
-  description: "Hardware operations management",
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const { platformName } = await getPlatformSettings();
+  return {
+    title: `${platformName} — Workbench`,
+    description: "Hardware operations management",
+  };
+}
 
 export default function RootLayout({
   children,

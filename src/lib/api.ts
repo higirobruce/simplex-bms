@@ -1,6 +1,10 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+
+// Cookie a super admin carries while "acting inside" a specific shop.
+export const ACTING_ORG_COOKIE = "simplex_acting_org";
 
 // Typed error classes for distinguishing auth vs server errors
 export class AuthError extends Error {
@@ -86,14 +90,34 @@ interface TenantContext {
 
 export async function getTenantContext(): Promise<TenantContext> {
   const session = await getServerSession(authOptions);
-  if (!session?.user || !(session.user as any).orgId) {
-    throw new AuthError();
+  if (!session?.user) throw new AuthError();
+  const user = session.user as any;
+
+  // Super admins have no org of their own. They operate on a shop only while
+  // "acting inside" it (impersonation), identified by the acting-org cookie.
+  // Inside that shop they hold full ADMIN permissions.
+  if (user.isSuperAdmin) {
+    const actingOrgId = cookies().get(ACTING_ORG_COOKIE)?.value;
+    if (!actingOrgId) {
+      throw new ForbiddenError("Enter a shop from the platform console first");
+    }
+    return { orgId: actingOrgId, userId: user.id as string, role: "ADMIN" };
   }
+
+  if (!user.orgId) throw new AuthError();
   return {
-    orgId: (session.user as any).orgId as string,
-    userId: (session.user as any).id as string,
-    role: (session.user as any).role as string,
+    orgId: user.orgId as string,
+    userId: user.id as string,
+    role: user.role as string,
   };
+}
+
+// Guard for platform-level (/api/admin/*) routes — super admins only.
+export async function requireSuperAdmin(): Promise<{ userId: string }> {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) throw new AuthError();
+  if (!(session.user as any).isSuperAdmin) throw new ForbiddenError();
+  return { userId: (session.user as any).id as string };
 }
 
 // Backward-compatible alias

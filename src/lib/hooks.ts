@@ -3,6 +3,25 @@
 import { useState, useEffect } from "react";
 import { useSession } from "next-auth/react";
 import { useParams } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+
+export interface PublicPlatform {
+  platformName: string;
+  supportEmail: string | null;
+  defaultCurrency: string;
+  defaultTimezone: string;
+  allowSignups: boolean;
+}
+
+// Public platform settings (branding, signup gating, shop defaults).
+export function usePlatform(): PublicPlatform | undefined {
+  const { data } = useQuery<PublicPlatform>({
+    queryKey: ["platform"],
+    queryFn: () => fetch("/api/platform").then((r) => r.json()),
+    staleTime: 5 * 60 * 1000,
+  });
+  return data;
+}
 
 export function useTenant() {
   const { data: session } = useSession();

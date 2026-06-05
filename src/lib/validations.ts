@@ -8,6 +8,41 @@ export const OrgPatchSchema = z.object({
   timezone: z.string().min(1).optional(),
 });
 
+// ===== Platform admin: Shops (orgs) =====
+const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export const ShopCreateSchema = z.object({
+  name: z.string().min(1, "Shop name is required"),
+  slug: z
+    .string()
+    .min(2, "Slug must be at least 2 characters")
+    .max(40)
+    .regex(slugRegex, "Slug may contain lowercase letters, numbers and hyphens only"),
+  currency: z.string().min(1).max(8).default("RWF"),
+  timezone: z.string().min(1).default("Africa/Kigali"),
+  // First admin user for the new shop
+  adminEmail: z.string().email("Invalid admin email"),
+  adminName: z.string().min(1).optional().nullable(),
+  adminPassword: z.string().min(8, "Password must be at least 8 characters"),
+});
+
+export const ShopPatchSchema = z.object({
+  name: z.string().min(1).optional(),
+  logo: z.string().url("Logo must be a valid URL").optional().nullable(),
+  currency: z.string().min(1).max(8).optional(),
+  timezone: z.string().min(1).optional(),
+  status: z.enum(["ACTIVE", "SUSPENDED"]).optional(),
+});
+
+// ===== Platform settings =====
+export const PlatformSettingsSchema = z.object({
+  platformName: z.string().min(1).optional(),
+  supportEmail: z.string().email("Invalid email").optional().nullable(),
+  defaultCurrency: z.string().min(1).max(8).optional(),
+  defaultTimezone: z.string().min(1).optional(),
+  allowSignups: z.boolean().optional(),
+});
+
 // ===== Users =====
 export const UserCreateSchema = z.object({
   email: z.string().email("Invalid email"),

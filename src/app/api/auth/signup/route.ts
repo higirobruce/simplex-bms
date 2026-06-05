@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getPlatformSettings } from "@/lib/platform";
 import { NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 
@@ -8,6 +9,15 @@ export async function POST(req: Request) {
 
     if (!email || !password || !orgName || !orgSlug) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    // Respect the platform-wide signup toggle, and inherit platform defaults.
+    const settings = await getPlatformSettings();
+    if (!settings.allowSignups) {
+      return NextResponse.json(
+        { error: "Public sign-ups are currently disabled. Contact platform support." },
+        { status: 403 }
+      );
     }
 
     // Check if slug already exists
@@ -22,6 +32,8 @@ export async function POST(req: Request) {
       data: {
         slug: orgSlug,
         name: orgName,
+        currency: settings.defaultCurrency,
+        timezone: settings.defaultTimezone,
         users: {
           create: {
             email,

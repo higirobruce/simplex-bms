@@ -10,7 +10,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
 import { useTenant } from "@/lib/hooks";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { Plus, Trash2 } from "lucide-react";
 
 interface Line {
@@ -20,6 +20,7 @@ interface Line {
 }
 
 export default function NewPurchaseOrderPage() {
+  const fmt = useMoney();
   const router = useRouter();
   const { slug } = useTenant();
   const [vendorId, setVendorId] = useState("");
@@ -197,7 +198,7 @@ export default function NewPurchaseOrderPage() {
                 <div className="w-28 text-right space-y-1">
                   {i === 0 && <Label>Amount</Label>}
                   <p className="h-11 flex items-center justify-end font-medium text-sm tabular">
-                    {formatCurrency(line.qty * line.unitPrice)}
+                    {fmt(line.qty * line.unitPrice)}
                   </p>
                 </div>
                 <Button
@@ -229,7 +230,7 @@ export default function NewPurchaseOrderPage() {
               Subtotal
             </span>
             <span className="font-display text-3xl font-bold uppercase tracking-tight tabular">
-              {formatCurrency(subtotal)}
+              {fmt(subtotal)}
             </span>
           </div>
         </div>

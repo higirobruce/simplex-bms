@@ -28,13 +28,19 @@ export const authOptions: NextAuthOptions = {
         const isValid = await bcrypt.compare(credentials.password, user.password);
         if (!isValid) return null;
 
+        // Block access to suspended shops (super admins have no org and are exempt)
+        if (!user.isSuperAdmin && user.org?.status === "SUSPENDED") {
+          throw new Error("This workspace has been suspended. Contact platform support.");
+        }
+
         return {
           id: user.id,
           email: user.email,
           name: user.name,
-          orgId: user.orgId,
-          orgSlug: user.org.slug,
+          orgId: user.orgId ?? null,
+          orgSlug: user.org?.slug ?? null,
           role: user.role,
+          isSuperAdmin: user.isSuperAdmin,
         };
       },
     }),
@@ -45,6 +51,7 @@ export const authOptions: NextAuthOptions = {
         token.orgId = (user as any).orgId;
         token.orgSlug = (user as any).orgSlug;
         token.role = (user as any).role;
+        token.isSuperAdmin = (user as any).isSuperAdmin;
       }
       return token;
     },
@@ -54,6 +61,7 @@ export const authOptions: NextAuthOptions = {
         (session.user as any).orgId = token.orgId;
         (session.user as any).orgSlug = token.orgSlug;
         (session.user as any).role = token.role;
+        (session.user as any).isSuperAdmin = token.isSuperAdmin;
       }
       return session;
     },

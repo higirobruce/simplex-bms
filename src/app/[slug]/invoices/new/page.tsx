@@ -10,7 +10,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTenant } from "@/lib/hooks";
-import { formatCurrency } from "@/lib/utils";
+import { useMoney } from "@/lib/currency";
 import { Plus, Trash2 } from "lucide-react";
 
 interface LineItem {
@@ -21,6 +21,7 @@ interface LineItem {
 }
 
 export default function NewInvoicePage() {
+  const fmt = useMoney();
   const router = useRouter();
   const { slug } = useTenant();
   const [customerId, setCustomerId] = useState("");
@@ -179,7 +180,7 @@ export default function NewInvoicePage() {
                       <option value="">Select product...</option>
                       {products.map((p: any) => (
                         <option key={p.id} value={p.id}>
-                          {p.name} ({formatCurrency(p.unitPrice)})
+                          {p.name} ({fmt(p.unitPrice)})
                         </option>
                       ))}
                     </Select>
@@ -209,7 +210,7 @@ export default function NewInvoicePage() {
                   <div className="w-28 text-right space-y-1">
                     {idx === 0 && <Label className="text-xs">Amount</Label>}
                     <p className="h-10 flex items-center justify-end font-medium text-sm">
-                      {formatCurrency(item.qty * item.unitPrice)}
+                      {fmt(item.qty * item.unitPrice)}
                     </p>
                   </div>
                   <Button
@@ -239,7 +240,7 @@ export default function NewInvoicePage() {
           <CardContent className="pt-6">
             <div className="flex justify-between text-lg font-bold">
               <span>Total</span>
-              <span>{formatCurrency(subtotal)}</span>
+              <span>{fmt(subtotal)}</span>
             </div>
           </CardContent>
         </Card>
