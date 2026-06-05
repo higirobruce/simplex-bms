@@ -128,7 +128,7 @@ export default function ShopsPage() {
       <PageHeader
         eyebrow="Platform"
         title="Shops"
-        description="Every workspace on Simplex. Provision new shops, suspend access, or step inside."
+        description={`Every workspace on ${platform?.platformName ?? "Simplex"}. Provision new shops, suspend access, or step inside.`}
         actions={
           <Button onClick={openCreate}>
             <Plus className="h-4 w-4" strokeWidth={2} /> New shop

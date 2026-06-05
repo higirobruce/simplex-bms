@@ -99,8 +99,10 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
 }
 
 export default function DashboardPage() {
-  const { slug } = useTenant();
+  const { slug, user } = useTenant();
   const fmt = useMoney();
+  const displayName = user?.name || user?.email?.split("@")[0] || "—";
+  const initial = displayName.charAt(0).toUpperCase();
 
   const { data: stats, isLoading } = useQuery({
     queryKey: ["dashboard-stats", slug],
@@ -161,9 +163,9 @@ export default function DashboardPage() {
             <Bell className="h-4 w-4 text-ink-soft" strokeWidth={2} />
           </button>
           <div className="h-10 px-3 rounded-[var(--radius)] border border-line bg-surface flex items-center gap-2.5">
-            <div className="stencil-block h-6 w-6 text-[0.7rem]">B</div>
+            <div className="stencil-block h-6 w-6 text-[0.7rem]">{initial}</div>
             <span className="text-sm text-ink hidden sm:inline font-medium">
-              Bruce
+              {displayName}
             </span>
           </div>
         </div>

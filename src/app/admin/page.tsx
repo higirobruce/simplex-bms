@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { apiCall } from "@/lib/fetcher";
+import { usePlatform } from "@/lib/hooks";
 import { Store, CheckCircle2, Ban, Users } from "lucide-react";
 
 function Stat({ label, value, icon: Icon }: { label: string; value: number | string; icon: any }) {
@@ -25,6 +26,7 @@ function Stat({ label, value, icon: Icon }: { label: string; value: number | str
 }
 
 export default function AdminOverviewPage() {
+  const platform = usePlatform();
   const { data, isLoading } = useQuery({
     queryKey: ["admin-stats"],
     queryFn: () => apiCall("/api/admin/stats"),
@@ -35,7 +37,7 @@ export default function AdminOverviewPage() {
       <PageHeader
         eyebrow="Platform"
         title="Console"
-        description="Every shop on Simplex at a glance — provision, oversee, and step in when needed."
+        description={`Every shop on ${platform?.platformName ?? "Simplex"} at a glance — provision, oversee, and step in when needed.`}
       />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
