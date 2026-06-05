@@ -18,7 +18,7 @@ import {
   ArrowDownRight,
   Bell,
   Search,
-  Sparkles,
+  Activity,
 } from "lucide-react";
 
 interface StatCardProps {
@@ -34,34 +34,29 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
     <div
       className={
         emphasis
-          ? "rounded-[var(--radius-lg)] bg-accent text-surface p-6 relative overflow-hidden"
-          : "rounded-[var(--radius-lg)] border border-line bg-surface p-6"
+          ? "brushed p-5 relative"
+          : "rounded-[var(--radius-lg)] border border-line bg-surface p-5"
       }
     >
       {emphasis && (
         <div
-          className="absolute -top-10 -right-10 w-44 h-44 rounded-full opacity-20"
-          style={{
-            background:
-              "radial-gradient(circle, var(--gold) 0%, transparent 70%)",
-          }}
+          className="absolute top-0 right-0 h-1 w-full"
+          style={{ background: "var(--gold)" }}
         />
       )}
       <div className="relative">
         <p
           className={
-            emphasis
-              ? "text-[0.65rem] tracking-[0.2em] uppercase text-surface/70 font-medium"
-              : "text-[0.65rem] tracking-[0.2em] uppercase text-ink-mute font-medium"
+            "font-mono text-[0.62rem] tracking-[0.22em] uppercase font-semibold " +
+            (emphasis ? "text-gold" : "text-ink-mute")
           }
         >
           {label}
         </p>
         <p
           className={
-            emphasis
-              ? "font-serif text-4xl mt-3 leading-none text-surface tabular"
-              : "font-serif text-4xl mt-3 leading-none text-ink tabular"
+            "font-display font-bold text-4xl mt-3 leading-none tabular tracking-tight " +
+            (emphasis ? "text-surface" : "text-ink")
           }
         >
           {value}
@@ -73,15 +68,15 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
                 className={
                   delta.positive
                     ? emphasis
-                      ? "inline-flex items-center gap-1 text-xs font-medium text-gold-soft"
-                      : "inline-flex items-center gap-1 text-xs font-medium text-success"
-                    : "inline-flex items-center gap-1 text-xs font-medium text-danger"
+                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-gold"
+                      : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-success"
+                    : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-danger"
                 }
               >
                 {delta.positive ? (
-                  <ArrowUpRight className="h-3 w-3" strokeWidth={2} />
+                  <ArrowUpRight className="h-3 w-3" strokeWidth={2.5} />
                 ) : (
-                  <ArrowDownRight className="h-3 w-3" strokeWidth={2} />
+                  <ArrowDownRight className="h-3 w-3" strokeWidth={2.5} />
                 )}
                 {delta.value}
               </span>
@@ -89,9 +84,8 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
             {caption && (
               <span
                 className={
-                  emphasis
-                    ? "text-xs text-surface/60"
-                    : "text-xs text-ink-mute"
+                  "font-mono text-[0.65rem] uppercase tracking-wider " +
+                  (emphasis ? "text-surface/60" : "text-ink-mute")
                 }
               >
                 {caption}
@@ -117,8 +111,8 @@ export default function DashboardPage() {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-96">
-        <p className="text-ink-mute font-serif italic text-lg">
-          Composing your overview…
+        <p className="font-mono text-xs uppercase tracking-[0.2em] text-ink-mute">
+          Loading inventory…
         </p>
       </div>
     );
@@ -136,65 +130,79 @@ export default function DashboardPage() {
     VOID: "secondary",
   };
 
-  const today = new Date().toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
+  const today = new Date()
+    .toLocaleDateString("en-US", {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    })
+    .toUpperCase();
 
   return (
     <div className="animate-fade-in">
       {/* Top utility bar */}
-      <div className="flex items-center justify-between mb-10 gap-4">
+      <div className="flex items-center justify-between mb-8 gap-4">
         <div className="relative flex-1 max-w-md">
           <Search
-            className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-mute"
-            strokeWidth={1.75}
+            className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-mute"
+            strokeWidth={2}
           />
           <input
-            placeholder="Search invoices, products, customers…"
-            className="h-11 w-full rounded-full border border-line bg-surface-2/60 pl-11 pr-4 text-sm placeholder:text-ink-mute focus:outline-none focus:bg-surface focus:border-accent/30 focus:ring-4 focus:ring-accent/10 transition-all"
+            placeholder="Lookup SKU, customer, vendor…"
+            className="h-10 w-full rounded-[var(--radius)] border border-line bg-surface pl-10 pr-4 text-sm placeholder:text-ink-mute focus:outline-none focus:border-gold focus:ring-2 focus:ring-gold/30 transition-all"
           />
         </div>
         <div className="flex items-center gap-3">
           <button
-            className="h-11 w-11 rounded-full border border-line bg-surface flex items-center justify-center hover:bg-surface-2 transition-colors"
+            className="h-10 w-10 rounded-[var(--radius)] border border-line bg-surface flex items-center justify-center hover:bg-surface-2 transition-colors"
             aria-label="Notifications"
           >
-            <Bell className="h-4 w-4 text-ink-soft" strokeWidth={1.75} />
+            <Bell className="h-4 w-4 text-ink-soft" strokeWidth={2} />
           </button>
-          <div className="h-11 px-4 rounded-full border border-line bg-surface flex items-center gap-2.5">
-            <div className="h-7 w-7 rounded-full bg-accent text-surface flex items-center justify-center">
-              <span className="font-serif italic text-sm leading-none -mt-0.5">
-                B
-              </span>
-            </div>
-            <span className="text-sm text-ink hidden sm:inline">Bruce</span>
+          <div className="h-10 px-3 rounded-[var(--radius)] border border-line bg-surface flex items-center gap-2.5">
+            <div className="stencil-block h-6 w-6 text-[0.7rem]">B</div>
+            <span className="text-sm text-ink hidden sm:inline font-medium">
+              Bruce
+            </span>
           </div>
         </div>
       </div>
 
-      {/* Greeting */}
-      <div className="mb-10 flex items-end justify-between flex-wrap gap-4">
-        <div>
-          <p className="text-[0.7rem] tracking-[0.22em] uppercase text-gold font-medium mb-3 flex items-center gap-2">
-            <Sparkles className="h-3.5 w-3.5" strokeWidth={1.75} />
-            {today}
-          </p>
-          <h1 className="font-serif text-5xl sm:text-6xl leading-[1.05] text-ink">
-            Good morning,
-            <br />
-            <span className="italic">welcome back.</span>
-          </h1>
-          <p className="mt-4 text-ink-soft max-w-xl leading-relaxed">
-            A considered glance at your atelier — revenue, receivables and the
-            quiet pulse of inventory.
-          </p>
+      {/* Status strip */}
+      <div className="mb-6 flex items-center justify-between flex-wrap gap-3 px-4 py-3 rounded-[var(--radius)] border border-line bg-surface-2">
+        <div className="flex items-center gap-3">
+          <span className="flex h-2 w-2 rounded-full bg-success animate-pulse" />
+          <span className="font-mono text-[0.7rem] tracking-[0.18em] uppercase font-semibold text-ink">
+            Online
+          </span>
+          <span className="text-line-strong">/</span>
+          <span className="font-mono text-[0.7rem] tracking-[0.18em] uppercase text-ink-soft">
+            Shift {today}
+          </span>
         </div>
+        <span className="font-mono text-[0.7rem] tracking-[0.18em] uppercase text-ink-mute flex items-center gap-2">
+          <Activity className="h-3 w-3" strokeWidth={2} />
+          Live
+        </span>
+      </div>
+
+      {/* Title block */}
+      <div className="mb-8">
+        <p className="font-mono text-[0.65rem] tracking-[0.22em] uppercase text-gold font-semibold mb-3 flex items-center gap-2">
+          <span className="inline-block h-[2px] w-6 bg-gold" />
+          Operations Overview
+        </p>
+        <h1 className="font-display text-5xl sm:text-6xl font-bold tracking-tight uppercase leading-[1.0] text-ink">
+          The Workbench.
+        </h1>
+        <p className="mt-3 text-ink-soft max-w-xl leading-relaxed">
+          Stock on hand, money in motion, and what needs your attention this
+          shift.
+        </p>
       </div>
 
       {/* Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard
           label="Revenue · MTD"
           value={formatCurrency(stats?.revenueMTD || 0)}
@@ -212,35 +220,36 @@ export default function DashboardPage() {
           label="Outstanding"
           value={formatCurrency(stats?.outstanding || 0)}
           delta={{ value: "+2.8%", positive: false }}
-          caption="receivables"
+          caption="receivable"
         />
         <StatCard
           label="Low Stock"
           value={String(stats?.lowStockCount || 0)}
-          caption="items need restock"
+          caption="reorder needed"
         />
       </div>
 
       {/* Lower grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <div className="lg:col-span-2 rounded-[var(--radius-lg)] border border-line bg-surface p-7">
-          <div className="flex items-start justify-between mb-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-[var(--radius-lg)] border border-line bg-surface p-6">
+          <div className="flex items-start justify-between mb-5">
             <div>
-              <h2 className="font-serif text-2xl text-ink leading-tight">
-                Revenue movement
-              </h2>
-              <p className="text-sm text-ink-soft mt-1">
-                Daily inflow over the past period
+              <p className="font-mono text-[0.62rem] tracking-[0.22em] uppercase text-ink-mute font-semibold mb-1">
+                Revenue
               </p>
+              <h2 className="font-display text-xl font-semibold uppercase tracking-tight text-ink">
+                Daily inflow
+              </h2>
             </div>
-            <div className="flex gap-1 p-1 rounded-full bg-surface-2 border border-line">
-              {["7d", "30d", "90d"].map((r, i) => (
+            <div className="flex border border-line rounded-[var(--radius)] overflow-hidden">
+              {["7D", "30D", "90D"].map((r, i) => (
                 <button
                   key={r}
                   className={
-                    i === 1
-                      ? "px-3 py-1 rounded-full text-xs bg-surface text-ink shadow-sm border border-line"
-                      : "px-3 py-1 rounded-full text-xs text-ink-soft hover:text-ink"
+                    "font-mono text-[0.7rem] tracking-wider px-3 py-1.5 border-r border-line last:border-0 " +
+                    (i === 1
+                      ? "bg-ink text-surface"
+                      : "bg-surface text-ink-soft hover:bg-surface-2")
                   }
                 >
                   {r}
@@ -248,7 +257,7 @@ export default function DashboardPage() {
               ))}
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={280}>
+          <ResponsiveContainer width="100%" height={260}>
             <AreaChart
               data={stats?.trendData || []}
               margin={{ top: 8, right: 0, left: -12, bottom: 0 }}
@@ -257,12 +266,12 @@ export default function DashboardPage() {
                 <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
                   <stop
                     offset="0%"
-                    stopColor="var(--accent)"
-                    stopOpacity={0.18}
+                    stopColor="var(--gold)"
+                    stopOpacity={0.25}
                   />
                   <stop
                     offset="100%"
-                    stopColor="var(--accent)"
+                    stopColor="var(--gold)"
                     stopOpacity={0}
                   />
                 </linearGradient>
@@ -290,10 +299,9 @@ export default function DashboardPage() {
                 contentStyle={{
                   background: "var(--surface)",
                   border: "1px solid var(--line)",
-                  borderRadius: "12px",
+                  borderRadius: "4px",
                   fontSize: "12px",
-                  boxShadow:
-                    "0 8px 24px -12px rgba(21,17,13,0.16)",
+                  fontFamily: "var(--font-mono)",
                 }}
                 formatter={(value) => [
                   formatCurrency(Number(value)),
@@ -303,7 +311,7 @@ export default function DashboardPage() {
               <Area
                 type="monotone"
                 dataKey="revenue"
-                stroke="var(--accent)"
+                stroke="var(--gold)"
                 strokeWidth={2}
                 fill="url(#revFill)"
                 dot={false}
@@ -312,26 +320,28 @@ export default function DashboardPage() {
           </ResponsiveContainer>
         </div>
 
-        <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-7">
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="font-serif text-2xl text-ink leading-tight">
-              Recent invoices
-            </h2>
-            <span className="text-[0.65rem] tracking-[0.18em] uppercase text-ink-mute">
-              Latest
-            </span>
+        <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-6">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="font-mono text-[0.62rem] tracking-[0.22em] uppercase text-ink-mute font-semibold mb-1">
+                Last issued
+              </p>
+              <h2 className="font-display text-xl font-semibold uppercase tracking-tight text-ink">
+                Invoices
+              </h2>
+            </div>
           </div>
           <div className="-mx-2">
             {stats?.recentInvoices?.map((inv: any, idx: number) => (
               <div
                 key={inv.id}
                 className={
-                  "flex items-center justify-between px-2 py-3.5 " +
-                  (idx > 0 ? "border-t border-line/70" : "")
+                  "flex items-center justify-between px-2 py-3 " +
+                  (idx > 0 ? "border-t border-line" : "")
                 }
               >
                 <div className="min-w-0">
-                  <p className="font-medium text-sm text-ink truncate">
+                  <p className="font-mono text-sm text-ink truncate font-medium">
                     {inv.invoiceNo}
                   </p>
                   <p className="text-xs text-ink-mute truncate mt-0.5">
@@ -339,7 +349,7 @@ export default function DashboardPage() {
                   </p>
                 </div>
                 <div className="text-right ml-3 flex-shrink-0">
-                  <p className="font-medium text-sm text-ink tabular">
+                  <p className="font-mono font-semibold text-sm text-ink tabular">
                     {formatCurrency(inv.total)}
                   </p>
                   <div className="mt-1 flex justify-end">
@@ -352,8 +362,8 @@ export default function DashboardPage() {
             ))}
             {(!stats?.recentInvoices ||
               stats.recentInvoices.length === 0) && (
-              <p className="text-sm text-ink-mute italic font-serif text-center py-12">
-                No invoices yet — your ledger awaits.
+              <p className="font-mono text-xs uppercase tracking-wider text-ink-mute text-center py-12">
+                No invoices yet
               </p>
             )}
           </div>

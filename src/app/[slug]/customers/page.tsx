@@ -77,8 +77,8 @@ export default function CustomersPage() {
         <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-mute" strokeWidth={1.75} />
         <Input placeholder="Search by name, email, or phone…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-11 rounded-full" />
       </div>
-      {isLoading ? <div className="text-center py-16 text-ink-mute font-serif italic">Loading…</div> : customers?.data?.length === 0 ? (
-        <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line"><Users className="mx-auto h-10 w-10 text-ink-mute mb-4" strokeWidth={1.5} /><p className="font-serif italic text-lg text-ink">No customers yet</p></div>
+      {isLoading ? <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">Loading…</div> : customers?.data?.length === 0 ? (
+        <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line"><Users className="mx-auto h-10 w-10 text-ink-mute mb-4" strokeWidth={1.5} /><p className="font-display font-bold text-xl uppercase tracking-tight text-ink">No customers yet</p></div>
       ) : (
         <div className="rounded-[var(--radius-lg)] border border-line bg-surface overflow-hidden">
           <Table>

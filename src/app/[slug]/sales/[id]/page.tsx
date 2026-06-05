@@ -131,7 +131,7 @@ export default function SalesOrderDetailPage() {
 
   if (isLoading || !order) {
     return (
-      <div className="text-center py-16 text-ink-mute font-serif italic">
+      <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">
         Loading…
       </div>
     );
@@ -186,7 +186,7 @@ export default function SalesOrderDetailPage() {
       {/* Lines */}
       <div className="rounded-[var(--radius-lg)] border border-line bg-surface overflow-hidden mb-6">
         <div className="px-6 py-4 border-b border-line">
-          <h3 className="font-serif text-xl">Lines</h3>
+          <h3 className="font-display text-xl font-semibold uppercase tracking-tight">Lines</h3>
         </div>
         <table className="w-full text-sm">
           <thead className="border-b border-line">
@@ -245,7 +245,7 @@ export default function SalesOrderDetailPage() {
               <td colSpan={4} className="px-6 py-4 text-right text-ink-soft">
                 Total
               </td>
-              <td className="px-6 py-4 text-right font-serif text-2xl tabular">
+              <td className="px-6 py-4 text-right font-display text-2xl font-bold uppercase tracking-tight tabular">
                 {formatCurrency(order.total)}
               </td>
             </tr>
@@ -255,9 +255,9 @@ export default function SalesOrderDetailPage() {
 
       {/* Delivery notes */}
       <div className="rounded-[var(--radius-lg)] border border-line bg-surface p-6 mb-6">
-        <h3 className="font-serif text-xl mb-4">Delivery notes</h3>
+        <h3 className="font-display text-xl font-semibold uppercase tracking-tight mb-4">Delivery notes</h3>
         {order.deliveryNotes.length === 0 ? (
-          <p className="text-sm text-ink-mute italic font-serif">
+          <p className="font-mono text-xs uppercase tracking-wider text-ink-mute">
             No deliveries yet.
           </p>
         ) : (

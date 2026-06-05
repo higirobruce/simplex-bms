@@ -90,7 +90,7 @@ export default function ProcurementPage() {
       </div>
 
       {isLoading ? (
-        <div className="text-center py-16 text-ink-mute font-serif italic">
+        <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">
           Loading purchase orders…
         </div>
       ) : orders?.data?.length === 0 ? (
@@ -99,7 +99,7 @@ export default function ProcurementPage() {
             className="mx-auto h-10 w-10 text-ink-mute mb-4"
             strokeWidth={1.5}
           />
-          <p className="font-serif italic text-lg text-ink">
+          <p className="font-display font-bold text-xl uppercase tracking-tight text-ink">
             No purchase orders yet
           </p>
         </div>
