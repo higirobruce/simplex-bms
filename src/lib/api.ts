@@ -36,7 +36,9 @@ export type Permission =
   | "sales:write"
   | "sales:approve"
   | "procurement:write"
-  | "procurement:approve";
+  | "procurement:approve"
+  | "org:write"
+  | "users:write";
 
 const ALL_PERMISSIONS: Permission[] = [
   "products:write", "products:delete",
@@ -48,6 +50,7 @@ const ALL_PERMISSIONS: Permission[] = [
   "locations:write", "locations:delete",
   "sales:write", "sales:approve",
   "procurement:write", "procurement:approve",
+  "org:write", "users:write",
 ];
 
 const ROLE_PERMISSIONS: Record<string, Permission[]> = {
