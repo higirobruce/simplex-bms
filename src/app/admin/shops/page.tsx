@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { PageHeader } from "@/components/page-header";
+import { Pagination } from "@/components/ui/pagination";
 import { apiCall } from "@/lib/fetcher";
 import { useDebounce, usePlatform } from "@/lib/hooks";
 import { Plus, Pencil, Trash2, LogIn, Ban, CheckCircle2, Search } from "lucide-react";
@@ -39,7 +40,9 @@ export default function ShopsPage() {
   const toast = useToast();
   const platform = usePlatform();
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 300);
+  useEffect(() => { setPage(1); }, [debouncedSearch]);
 
   const [showAdd, setShowAdd] = useState(false);
   const [createForm, setCreateForm] = useState(emptyCreate);
@@ -50,8 +53,9 @@ export default function ShopsPage() {
   const [entering, setEntering] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin-shops", debouncedSearch],
-    queryFn: () => apiCall(`/api/admin/orgs?limit=100&search=${encodeURIComponent(debouncedSearch)}`),
+    queryKey: ["admin-shops", page, debouncedSearch],
+    queryFn: () =>
+      apiCall(`/api/admin/orgs?page=${page}&limit=25&search=${encodeURIComponent(debouncedSearch)}`),
   });
 
   const create = useMutation({
@@ -235,6 +239,8 @@ export default function ShopsPage() {
           )}
         </CardContent>
       </Card>
+
+      <Pagination page={page} totalPages={data?.meta?.pages || 1} onPageChange={setPage} />
 
       {/* Create shop */}
       <Dialog open={showAdd} onClose={() => setShowAdd(false)}>

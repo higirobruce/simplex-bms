@@ -1,23 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { PageHeader } from "@/components/page-header";
+import { Pagination } from "@/components/ui/pagination";
 import { apiCall } from "@/lib/fetcher";
 import { useDebounce } from "@/lib/hooks";
 import { Search } from "lucide-react";
 
 export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 300);
+  useEffect(() => { setPage(1); }, [debouncedSearch]);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin-users", debouncedSearch],
-    queryFn: () => apiCall(`/api/admin/users?limit=100&search=${encodeURIComponent(debouncedSearch)}`),
+    queryKey: ["admin-users", page, debouncedSearch],
+    queryFn: () =>
+      apiCall(`/api/admin/users?page=${page}&limit=25&search=${encodeURIComponent(debouncedSearch)}`),
   });
 
   return (
@@ -85,6 +89,8 @@ export default function AdminUsersPage() {
           )}
         </CardContent>
       </Card>
+
+      <Pagination page={page} totalPages={data?.meta?.pages || 1} onPageChange={setPage} />
     </div>
   );
 }

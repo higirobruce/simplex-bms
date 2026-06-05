@@ -12,6 +12,7 @@ import { Dialog, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Pagination } from "@/components/ui/pagination";
 import { useTenant } from "@/lib/hooks";
 import { PageHeader } from "@/components/page-header";
 import { Building2, User, Shield, Pencil, Plus, Trash2, KeyRound, Users as UsersIcon } from "lucide-react";
@@ -184,10 +185,11 @@ function UsersCard({ slug, currentUserId }: { slug: string; currentUserId?: stri
   const [addForm, setAddForm] = useState(emptyAdd);
   const [editForm, setEditForm] = useState<{ name: string; role: Role }>({ name: "", role: "VIEWER" });
   const [newPassword, setNewPassword] = useState("");
+  const [page, setPage] = useState(1);
 
   const { data: users, isLoading } = useQuery({
-    queryKey: ["users", slug],
-    queryFn: () => apiCall(`/api/${slug}/users?limit=100`),
+    queryKey: ["users", slug, page],
+    queryFn: () => apiCall(`/api/${slug}/users?page=${page}&limit=25`),
     enabled: !!slug,
   });
 
@@ -301,6 +303,7 @@ function UsersCard({ slug, currentUserId }: { slug: string; currentUserId?: stri
             </Table>
           </div>
         )}
+        <Pagination page={page} totalPages={users?.meta?.pages || 1} onPageChange={setPage} />
       </CardContent>
 
       {/* Add user */}
