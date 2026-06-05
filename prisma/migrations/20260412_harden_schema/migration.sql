@@ -31,14 +31,18 @@ UPDATE "Payment" SET "method" = 'BANK' WHERE "method" = 'bank';
 UPDATE "Payment" SET "method" = 'CHECK' WHERE "method" = 'check';
 
 -- 3. Convert status/type/method columns to enums
-ALTER TABLE "Invoice" ALTER COLUMN "status" SET DEFAULT 'DRAFT';
+-- (drop text default first; an existing text default cannot be auto-cast to the enum type)
+ALTER TABLE "Invoice" ALTER COLUMN "status" DROP DEFAULT;
 ALTER TABLE "Invoice" ALTER COLUMN "status" TYPE "InvoiceStatus" USING "status"::"InvoiceStatus";
+ALTER TABLE "Invoice" ALTER COLUMN "status" SET DEFAULT 'DRAFT';
 
-ALTER TABLE "Customer" ALTER COLUMN "status" SET DEFAULT 'ACTIVE';
+ALTER TABLE "Customer" ALTER COLUMN "status" DROP DEFAULT;
 ALTER TABLE "Customer" ALTER COLUMN "status" TYPE "EntityStatus" USING "status"::"EntityStatus";
+ALTER TABLE "Customer" ALTER COLUMN "status" SET DEFAULT 'ACTIVE';
 
-ALTER TABLE "Vendor" ALTER COLUMN "status" SET DEFAULT 'ACTIVE';
+ALTER TABLE "Vendor" ALTER COLUMN "status" DROP DEFAULT;
 ALTER TABLE "Vendor" ALTER COLUMN "status" TYPE "EntityStatus" USING "status"::"EntityStatus";
+ALTER TABLE "Vendor" ALTER COLUMN "status" SET DEFAULT 'ACTIVE';
 
 ALTER TABLE "StockMovement" ALTER COLUMN "type" TYPE "MovementType" USING "type"::"MovementType";
 

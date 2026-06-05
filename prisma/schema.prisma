@@ -29,6 +29,11 @@ enum EntityStatus {
   INACTIVE
 }
 
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+}
+
 enum MovementType {
   RECEIPT
   ISSUE
@@ -75,18 +80,20 @@ enum GoodsReceiptStatus {
 
 // ===== AUTH =====
 model User {
-  id        String   @id @default(cuid())
-  email     String
-  password  String
-  name      String?
-  image     String?
-  role      Role     @default(VIEWER)
-  orgId     String
-  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
+  id           String   @id @default(cuid())
+  email        String
+  password     String
+  name         String?
+  image        String?
+  role         Role     @default(VIEWER)
+  isSuperAdmin Boolean  @default(false)
+  orgId        String?
+  org          Org?     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
 
   @@unique([email, orgId])
   @@index([orgId])
+  @@index([isSuperAdmin])
 }
 
 model Org {
@@ -94,6 +101,7 @@ model Org {
   slug            String             @unique
   name            String
   logo            String?
+  status          OrgStatus          @default(ACTIVE)
   currency        String             @default("RWF")
   timezone        String             @default("Africa/Kigali")
   users           User[]
@@ -111,6 +119,17 @@ model Org {
   goodsReceipts   GoodsReceiptNote[]
   auditLogs       AuditLog[]
   createdAt       DateTime           @default(now())
+}
+
+// Platform-wide settings (singleton row, id = "platform")
+model PlatformSettings {
+  id              String   @id @default("platform")
+  platformName    String   @default("Simplex")
+  supportEmail    String?
+  defaultCurrency String   @default("RWF")
+  defaultTimezone String   @default("Africa/Kigali")
+  allowSignups    Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
 }
 
 // ===== STOCK =====

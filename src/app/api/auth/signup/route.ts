@@ -10,6 +10,15 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
     }
 
+    // Respect the platform-wide signup toggle (defaults to allowed).
+    const settings = await prisma.platformSettings.findUnique({ where: { id: "platform" } });
+    if (settings && !settings.allowSignups) {
+      return NextResponse.json(
+        { error: "Public sign-ups are currently disabled. Contact platform support." },
+        { status: 403 }
+      );
+    }
+
     // Check if slug already exists
     const existingOrg = await prisma.org.findUnique({ where: { slug: orgSlug } });
     if (existingOrg) {

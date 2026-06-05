@@ -6,6 +6,26 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("Seeding database...");
 
+  // Platform super admin (belongs to no shop)
+  const superHashed = await bcrypt.hash("password123", 10);
+  const superAdmin = await prisma.user.create({
+    data: {
+      email: "super@simplex.test",
+      password: superHashed,
+      name: "Platform Admin",
+      role: "ADMIN",
+      isSuperAdmin: true,
+    },
+  });
+  console.log("Created super admin:", superAdmin.email);
+
+  // Platform settings singleton
+  await prisma.platformSettings.upsert({
+    where: { id: "platform" },
+    update: {},
+    create: { id: "platform", platformName: "Simplex" },
+  });
+
   // Create test org
   const org = await prisma.org.create({
     data: {
@@ -335,8 +355,8 @@ async function main() {
   console.log("Created sample sales + purchase orders");
 
   console.log("\nSeed complete!");
-  console.log("Login with: admin@acme.test / password123");
-  console.log("Org slug: acme");
+  console.log("Super admin: super@simplex.test / password123  →  /admin");
+  console.log("Shop admin:  admin@acme.test / password123     →  /acme/dashboard");
 }
 
 main()

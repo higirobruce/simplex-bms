@@ -1,18 +1,10 @@
-import { SideNav } from "@/components/sidenav";
-import { ImpersonationBanner } from "@/components/impersonation-banner";
+import { AdminNav } from "@/components/admin-nav";
 
-export default function TenantLayout({
-  children,
-  params,
-}: {
-  children: React.ReactNode;
-  params: { slug: string };
-}) {
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-bg">
-      <ImpersonationBanner />
       <div className="flex min-h-screen lg:gap-5 lg:p-5">
-        <SideNav slug={params.slug} />
+        <AdminNav />
         <main className="flex-1 overflow-auto">
           <div className="panel min-h-[calc(100vh-2.5rem)] px-5 py-6 sm:px-8 sm:py-8 lg:px-10 lg:py-10">
             {children}
