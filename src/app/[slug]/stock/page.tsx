@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -18,8 +18,9 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
-import { useTenant } from "@/lib/hooks";
+import { useTenant, useDebounce } from "@/lib/hooks";
 import { PageHeader } from "@/components/page-header";
+import { Pagination } from "@/components/ui/pagination";
 import {
   WarehouseTree,
   buildTree,
@@ -41,24 +42,15 @@ function apiCall(url: string, opts?: RequestInit) {
   });
 }
 
-function collectDescendantIds(tree: TreeNode[], rootId: string): Set<string> {
-  const out = new Set<string>();
-  const walk = (node: TreeNode, include: boolean) => {
-    if (include) out.add(node.id);
-    node.children.forEach((c) => walk(c, include || node.id === rootId));
-  };
-  tree.forEach((n) => walk(n, n.id === rootId));
-  // Also include the root itself
-  out.add(rootId);
-  return out;
-}
-
 export default function InventoryPage() {
   const { slug } = useTenant();
   const queryClient = useQueryClient();
   const toast = useToast();
   const [selectedLocId, setSelectedLocId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const debouncedSearch = useDebounce(search, 300);
+  useEffect(() => { setPage(1); }, [debouncedSearch, selectedLocId]);
 
   const [showLocForm, setShowLocForm] = useState(false);
   const [editingLoc, setEditingLoc] = useState<TreeNode | null>(null);
@@ -81,6 +73,7 @@ export default function InventoryPage() {
     enabled: !!slug,
   });
 
+  // Products list — only used to populate the "Adjust stock" picker dropdown.
   const { data: productsResp } = useQuery({
     queryKey: ["products", slug, "all"],
     queryFn: () =>
@@ -91,39 +84,20 @@ export default function InventoryPage() {
     ? productsResp
     : productsResp?.data ?? [];
 
-  const tree = useMemo(() => buildTree(locations), [locations]);
-
-  const stockRows = useMemo(() => {
-    if (!Array.isArray(products)) return [];
-    return products.flatMap((p: any) =>
-      (p.stockLevels || []).map((sl: any) => ({
-        productId: p.id,
-        sku: p.sku,
-        name: p.name,
-        locationId: sl.locationId,
-        locationName:
-          locations.find((l) => l.id === sl.locationId)?.name || "Unknown",
-        qty: sl.qty,
-        reorderLevel: p.reorderLevel,
-      }))
-    );
-  }, [products, locations]);
-
-  const visibleIds = useMemo(() => {
-    if (!selectedLocId) return null;
-    return collectDescendantIds(tree, selectedLocId);
-  }, [tree, selectedLocId]);
-
-  const filtered = stockRows.filter((r) => {
-    if (visibleIds && !visibleIds.has(r.locationId)) return false;
-    if (
-      search &&
-      !r.name.toLowerCase().includes(search.toLowerCase()) &&
-      !r.sku.toLowerCase().includes(search.toLowerCase())
-    )
-      return false;
-    return true;
+  // Paginated stock rows (server-side), filtered by location subtree + search.
+  const { data: stockResp, isLoading: stockLoading } = useQuery({
+    queryKey: ["stock", slug, page, debouncedSearch, selectedLocId],
+    queryFn: () =>
+      fetch(
+        `/api/${slug}/stock?page=${page}&limit=25&search=${encodeURIComponent(
+          debouncedSearch
+        )}${selectedLocId ? `&locationId=${selectedLocId}` : ""}`
+      ).then((r) => r.json()),
+    enabled: !!slug,
   });
+  const rows = stockResp?.data ?? [];
+
+  const tree = useMemo(() => buildTree(locations), [locations]);
 
   // Mutations
   const createLoc = useMutation({
@@ -176,6 +150,7 @@ export default function InventoryPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products", slug] });
       queryClient.invalidateQueries({ queryKey: ["locations", slug] });
+      queryClient.invalidateQueries({ queryKey: ["stock", slug] });
       setShowAdjust(false);
       setAdjustForm({
         productId: "",
@@ -189,10 +164,8 @@ export default function InventoryPage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const totalUnits = stockRows.reduce((s, r) => s + r.qty, 0);
-  const lowStockCount = stockRows.filter(
-    (r) => r.qty <= r.reorderLevel
-  ).length;
+  const totalUnits = stockResp?.summary?.totalUnits ?? 0;
+  const lowStockCount = stockResp?.summary?.lowStockCount ?? 0;
 
   return (
     <div className="animate-fade-in">
@@ -306,7 +279,11 @@ export default function InventoryPage() {
             />
           </div>
 
-          {filtered.length === 0 ? (
+          {stockLoading ? (
+            <div className="py-20 text-center font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">
+              Loading…
+            </div>
+          ) : rows.length === 0 ? (
             <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line">
               <Warehouse
                 className="mx-auto h-10 w-10 text-ink-mute mb-4"
@@ -316,8 +293,8 @@ export default function InventoryPage() {
                 No stock here
               </p>
               <p className="text-sm text-ink-soft mt-1">
-                {selectedLocId
-                  ? "This warehouse holds nothing yet."
+                {selectedLocId || search
+                  ? "Nothing matches this filter yet."
                   : "Receive goods or adjust stock to begin."}
               </p>
             </div>
@@ -335,7 +312,7 @@ export default function InventoryPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {filtered.map((row, i) => (
+                  {rows.map((row: any, i: number) => (
                     <TableRow
                       key={`${row.productId}-${row.locationId}-${i}`}
                     >
@@ -367,6 +344,12 @@ export default function InventoryPage() {
               </Table>
             </div>
           )}
+
+          <Pagination
+            page={page}
+            totalPages={stockResp?.meta?.pages || 1}
+            onPageChange={setPage}
+          />
         </div>
       </div>
 
