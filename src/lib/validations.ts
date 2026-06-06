@@ -105,6 +105,12 @@ export const CustomerImportRowSchema = z.object({
   creditLimit: z.preprocess(blankToUndef, z.coerce.number().min(0).default(0)),
 });
 
+export const StockImportRowSchema = z.object({
+  sku: z.string().trim().min(1, "SKU is required"),
+  location: z.string().trim().min(1, "Location is required"),
+  qty: z.coerce.number().int().positive("Qty must be a positive whole number"),
+});
+
 export const VendorImportRowSchema = z.object({
   name: z.string().trim().min(1, "Name is required"),
   email: z.preprocess(blankToUndef, z.string().email("Invalid email").optional()),
