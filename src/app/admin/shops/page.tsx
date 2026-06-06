@@ -15,7 +15,7 @@ import { PageHeader } from "@/components/page-header";
 import { Pagination } from "@/components/ui/pagination";
 import { apiCall } from "@/lib/fetcher";
 import { useDebounce, usePlatform } from "@/lib/hooks";
-import { Plus, Pencil, Trash2, LogIn, Ban, CheckCircle2, Search } from "lucide-react";
+import { Plus, Pencil, Trash2, LogIn, Ban, CheckCircle2, Search, RotateCcw } from "lucide-react";
 
 function slugify(s: string) {
   return s
@@ -41,8 +41,9 @@ export default function ShopsPage() {
   const platform = usePlatform();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [view, setView] = useState<"active" | "removed">("active");
   const debouncedSearch = useDebounce(search, 300);
-  useEffect(() => { setPage(1); }, [debouncedSearch]);
+  useEffect(() => { setPage(1); }, [debouncedSearch, view]);
 
   const [showAdd, setShowAdd] = useState(false);
   const [createForm, setCreateForm] = useState(emptyCreate);
@@ -53,9 +54,22 @@ export default function ShopsPage() {
   const [entering, setEntering] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin-shops", page, debouncedSearch],
+    queryKey: ["admin-shops", view, page, debouncedSearch],
     queryFn: () =>
-      apiCall(`/api/admin/orgs?page=${page}&limit=25&search=${encodeURIComponent(debouncedSearch)}`),
+      apiCall(
+        `/api/admin/orgs?page=${page}&limit=25&search=${encodeURIComponent(debouncedSearch)}${
+          view === "removed" ? "&view=removed" : ""
+        }`
+      ),
+  });
+
+  const restore = useMutation({
+    mutationFn: (id: string) => apiCall(`/api/admin/orgs/${id}/restore`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-shops"] });
+      toast.success("Shop restored");
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   const create = useMutation({
@@ -140,14 +154,30 @@ export default function ShopsPage() {
         }
       />
 
-      <div className="relative mb-4 max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-mute" strokeWidth={1.75} />
-        <Input
-          className="pl-9"
-          placeholder="Search shops…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative max-w-sm flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-mute" strokeWidth={1.75} />
+          <Input
+            className="pl-9"
+            placeholder="Search shops…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex rounded-[var(--radius)] border border-line overflow-hidden">
+          {(["active", "removed"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={
+                "px-4 py-2 text-[0.78rem] font-semibold uppercase tracking-wide transition-colors " +
+                (view === v ? "bg-ink text-surface" : "bg-surface text-ink-soft hover:bg-surface-2")
+              }
+            >
+              {v}
+            </button>
+          ))}
+        </div>
       </div>
 
       <Card>
@@ -189,46 +219,60 @@ export default function ShopsPage() {
                       <TableCell className="text-ink-soft">{shop.currency}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-0.5">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => enterShop(shop)}
-                            disabled={suspended || entering === shop.id}
-                            title={suspended ? "Suspended shops cannot be entered" : "Enter shop"}
-                          >
-                            <LogIn className="h-3.5 w-3.5" strokeWidth={1.75} />
-                            {entering === shop.id ? "Entering…" : "Enter"}
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            title={suspended ? "Activate" : "Suspend"}
-                            onClick={() =>
-                              update.mutate({
-                                id: shop.id,
-                                body: { status: suspended ? "ACTIVE" : "SUSPENDED" },
-                              })
-                            }
-                          >
-                            {suspended ? (
-                              <CheckCircle2 className="h-3.5 w-3.5 text-success" strokeWidth={1.75} />
-                            ) : (
-                              <Ban className="h-3.5 w-3.5" strokeWidth={1.75} />
-                            )}
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit" onClick={() => openEdit(shop)}>
-                            <Pencil className="h-3.5 w-3.5" strokeWidth={1.75} />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 hover:text-danger"
-                            title="Delete"
-                            onClick={() => setDeleting(shop)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-                          </Button>
+                          {view === "removed" ? (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => restore.mutate(shop.id)}
+                              disabled={restore.isPending}
+                              title="Restore shop"
+                            >
+                              <RotateCcw className="h-3.5 w-3.5" strokeWidth={1.75} /> Restore
+                            </Button>
+                          ) : (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => enterShop(shop)}
+                                disabled={suspended || entering === shop.id}
+                                title={suspended ? "Suspended shops cannot be entered" : "Enter shop"}
+                              >
+                                <LogIn className="h-3.5 w-3.5" strokeWidth={1.75} />
+                                {entering === shop.id ? "Entering…" : "Enter"}
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                title={suspended ? "Activate" : "Suspend"}
+                                onClick={() =>
+                                  update.mutate({
+                                    id: shop.id,
+                                    body: { status: suspended ? "ACTIVE" : "SUSPENDED" },
+                                  })
+                                }
+                              >
+                                {suspended ? (
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-success" strokeWidth={1.75} />
+                                ) : (
+                                  <Ban className="h-3.5 w-3.5" strokeWidth={1.75} />
+                                )}
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-8 w-8" title="Edit" onClick={() => openEdit(shop)}>
+                                <Pencil className="h-3.5 w-3.5" strokeWidth={1.75} />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 hover:text-danger"
+                                title="Remove"
+                                onClick={() => setDeleting(shop)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </TableCell>
                     </TableRow>

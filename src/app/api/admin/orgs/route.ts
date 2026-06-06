@@ -13,8 +13,10 @@ export async function GET(req: Request) {
     const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50")));
     const search = url.searchParams.get("search") || "";
     const status = url.searchParams.get("status") || "";
+    const view = url.searchParams.get("view") || "";
 
-    const where: any = { deletedAt: null };
+    // `view=removed` lists soft-deleted shops (for restore); otherwise active.
+    const where: any = view === "removed" ? { deletedAt: { not: null } } : { deletedAt: null };
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },
@@ -35,6 +37,7 @@ export async function GET(req: Request) {
           currency: true,
           timezone: true,
           createdAt: true,
+          deletedAt: true,
           _count: { select: { users: true, products: true, invoices: true } },
         },
         orderBy: { createdAt: "desc" },
