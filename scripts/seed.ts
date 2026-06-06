@@ -354,6 +354,159 @@ async function main() {
   });
   console.log("Created sample sales + purchase orders");
 
+  // ===== Bulk demo data so every list spans multiple pages =====
+  const cats = ["Electronics", "Furniture", "Tools", "Hardware", "Office"];
+  const itemNames = [
+    "Cordless Drill", "Steel Hammer", "Paint Roller", "LED Bulb Pack",
+    "Extension Cable", "Wall Bracket", "Tool Box", "Safety Gloves",
+    "Measuring Tape", "Pipe Wrench", "Screwdriver Set", "Work Bench",
+    "Angle Grinder", "Ladder 3m", "Hose Reel", "Padlock", "Door Hinge",
+    "Caulk Gun", "Sandpaper Pack", "Utility Knife", "Welding Mask",
+    "Air Compressor", "Nail Gun", "Socket Set", "Spirit Level",
+    "Hex Key Set", "Bolt Cutter", "Stud Finder", "Heat Gun", "Putty Knife",
+  ];
+  const extraProducts = [];
+  for (let i = 0; i < itemNames.length; i++) {
+    const unitPrice = 5000 + ((i * 3137) % 90) * 1000;
+    const p = await prisma.product.create({
+      data: {
+        sku: `HW-${String(i + 1).padStart(3, "0")}`,
+        name: itemNames[i],
+        category: cats[i % cats.length],
+        unitPrice,
+        costPrice: Math.round(unitPrice * 0.7),
+        reorderLevel: 5 + (i % 6),
+        orgId: org.id,
+      },
+    });
+    extraProducts.push(p);
+    await prisma.stockLevel.create({ data: { productId: p.id, locationId: storage.id, qty: (i * 7) % 40 } });
+    await prisma.stockLevel.create({ data: { productId: p.id, locationId: showroom.id, qty: (i * 3) % 15 } });
+  }
+  const allProducts = [...products, ...extraProducts];
+
+  const extraCustomers = [];
+  for (let i = 1; i <= 30; i++) {
+    extraCustomers.push(
+      await prisma.customer.create({
+        data: {
+          name: `Demo Customer ${String(i).padStart(2, "0")}`,
+          email: `customer${i}@demo.rw`,
+          phone: `+250 788 ${100000 + i}`,
+          city: "Kigali",
+          country: "Rwanda",
+          creditLimit: (i % 5) * 100000,
+          orgId: org.id,
+        },
+      })
+    );
+  }
+  const allCustomers = [...customers, ...extraCustomers];
+
+  const terms = ["NET30", "NET60", "NET15", "COD"];
+  const extraVendors = [];
+  for (let i = 1; i <= 25; i++) {
+    extraVendors.push(
+      await prisma.vendor.create({
+        data: {
+          name: `Demo Vendor ${String(i).padStart(2, "0")}`,
+          email: `vendor${i}@supply.rw`,
+          phone: `+250 789 ${100000 + i}`,
+          paymentTerms: terms[i % terms.length],
+          orgId: org.id,
+        },
+      })
+    );
+  }
+  const allVendors = [...vendors, ...extraVendors];
+
+  const expCats = ["rent", "utilities", "salary", "supplies", "transport", "marketing", "other"];
+  for (let i = 1; i <= 30; i++) {
+    await prisma.expense.create({
+      data: {
+        category: expCats[i % expCats.length],
+        amount: 10000 + ((i * 7919) % 500000),
+        date: new Date(2026, 4, (i % 28) + 1),
+        description: `Expense entry ${i}`,
+        orgId: org.id,
+      },
+    });
+  }
+
+  const invStatuses = ["DRAFT", "SENT", "PARTIAL", "PAID", "OVERDUE"] as const;
+  for (let i = 4; i <= 33; i++) {
+    const cust = allCustomers[i % allCustomers.length];
+    const pa = allProducts[i % allProducts.length];
+    const pb = allProducts[(i + 3) % allProducts.length];
+    const qa = 1 + (i % 3);
+    const qb = 1 + ((i + 1) % 2);
+    const amtA = Number(pa.unitPrice) * qa;
+    const amtB = Number(pb.unitPrice) * qb;
+    const subtotal = amtA + amtB;
+    const status = invStatuses[i % invStatuses.length];
+    const amountPaid = status === "PAID" ? subtotal : status === "PARTIAL" ? Math.round(subtotal / 2) : 0;
+    await prisma.invoice.create({
+      data: {
+        invoiceNo: `INV-${String(i).padStart(4, "0")}`,
+        customerId: cust.id,
+        status,
+        subtotal,
+        total: subtotal,
+        amountPaid,
+        dueDate: new Date(2026, 4, (i % 28) + 1),
+        orgId: org.id,
+        lineItems: {
+          create: [
+            { productId: pa.id, qty: qa, unitPrice: pa.unitPrice, amount: amtA },
+            { productId: pb.id, qty: qb, unitPrice: pb.unitPrice, amount: amtB },
+          ],
+        },
+      },
+    });
+  }
+
+  const soStatuses = ["DRAFT", "CONFIRMED", "FULFILLED", "CANCELLED"] as const;
+  for (let i = 2; i <= 31; i++) {
+    const cust = allCustomers[i % allCustomers.length];
+    const prod = allProducts[i % allProducts.length];
+    const qty = 1 + (i % 4);
+    const amt = Number(prod.unitPrice) * qty;
+    await prisma.salesOrder.create({
+      data: {
+        orgId: org.id,
+        orderNo: `SO-${String(i).padStart(4, "0")}`,
+        customerId: cust.id,
+        status: soStatuses[i % soStatuses.length],
+        subtotal: amt,
+        total: amt,
+        createdById: admin.id,
+        lines: { create: [{ productId: prod.id, qty, unitPrice: prod.unitPrice, amount: amt }] },
+      },
+    });
+  }
+
+  const poStatuses = ["DRAFT", "CONFIRMED", "RECEIVED", "CANCELLED"] as const;
+  for (let i = 2; i <= 31; i++) {
+    const vend = allVendors[i % allVendors.length];
+    const prod = allProducts[i % allProducts.length];
+    const qty = 2 + (i % 5);
+    const price = Number(prod.costPrice ?? prod.unitPrice);
+    const amt = price * qty;
+    await prisma.purchaseOrder.create({
+      data: {
+        orgId: org.id,
+        orderNo: `PO-${String(i).padStart(4, "0")}`,
+        vendorId: vend.id,
+        status: poStatuses[i % poStatuses.length],
+        subtotal: amt,
+        total: amt,
+        createdById: admin.id,
+        lines: { create: [{ productId: prod.id, qty, unitPrice: price, amount: amt }] },
+      },
+    });
+  }
+  console.log("Created bulk demo data (35 products, 33 customers, 27 vendors, 33 invoices, 31 SOs, 31 POs, 33 expenses)");
+
   console.log("\nSeed complete!");
   console.log("Super admin: super@simplex.test / password123  →  /admin");
   console.log("Shop admin:  admin@acme.test / password123     →  /acme/dashboard");
