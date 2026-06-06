@@ -13,7 +13,10 @@ import { useToast } from "@/components/ui/toast";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { Pagination } from "@/components/ui/pagination";
 import { PageHeader } from "@/components/page-header";
-import { Plus, Search, Users, Pencil, Trash2 } from "lucide-react";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
+import { Plus, Search, Users, Pencil, Trash2, Upload } from "lucide-react";
+
+const CUSTOMER_TEMPLATE = "name,email,phone,address,city,country,creditLimit\nAcme Co,buyer@acme.test,+250 788 000 000,KN 5 Rd,Kigali,Rwanda,0\n";
 
 function apiCall(url: string, opts?: RequestInit) {
   return fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...opts?.headers } }).then(async (r) => {
@@ -30,6 +33,7 @@ export default function CustomersPage() {
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 300);
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [deleting, setDeleting] = useState<any>(null);
   const emptyForm = { name: "", email: "", phone: "", address: "", city: "", country: "" };
@@ -68,9 +72,14 @@ export default function CustomersPage() {
         title="Customers"
         description="The patrons of your house — their details, history, and standing."
         actions={
-          <Button onClick={() => setShowAdd(true)} size="lg">
-            <Plus className="h-4 w-4" strokeWidth={2} /> Add Customer
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="lg" onClick={() => setShowImport(true)}>
+              <Upload className="h-4 w-4" strokeWidth={2} /> Import CSV
+            </Button>
+            <Button onClick={() => setShowAdd(true)} size="lg">
+              <Plus className="h-4 w-4" strokeWidth={2} /> Add Customer
+            </Button>
+          </div>
         }
       />
       <div className="relative mb-6 max-w-md">
@@ -150,6 +159,20 @@ export default function CustomersPage() {
         </form>
       </Dialog>
       <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)} onConfirm={() => deleting && remove.mutate(deleting.id)} title="Delete Customer" description={`Delete "${deleting?.name}"? This cannot be undone.`} confirmLabel="Delete" variant="destructive" loading={remove.isPending} />
+
+      <CsvImportDialog
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        title="Import customers from CSV"
+        endpoint={`/api/${slug}/customers/import`}
+        columns="name, email, phone, address, city, country, creditLimit"
+        template={CUSTOMER_TEMPLATE}
+        templateName="customers-template.csv"
+        onImported={(s) => {
+          queryClient.invalidateQueries({ queryKey: ["customers", slug] });
+          toast.success(`Imported ${s.created} customer${s.created === 1 ? "" : "s"}`);
+        }}
+      />
     </div>
   );
 }
