@@ -104,6 +104,7 @@ model Org {
   status          OrgStatus          @default(ACTIVE)
   currency        String             @default("RWF")
   timezone        String             @default("Africa/Kigali")
+  deletedAt       DateTime?
   users           User[]
   products        Product[]
   locations       Location[]

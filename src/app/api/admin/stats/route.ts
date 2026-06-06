@@ -8,11 +8,12 @@ export async function GET() {
 
     const [totalShops, activeShops, suspendedShops, totalUsers, recentShops] =
       await Promise.all([
-        prisma.org.count(),
-        prisma.org.count({ where: { status: "ACTIVE" } }),
-        prisma.org.count({ where: { status: "SUSPENDED" } }),
-        prisma.user.count({ where: { isSuperAdmin: false } }),
+        prisma.org.count({ where: { deletedAt: null } }),
+        prisma.org.count({ where: { deletedAt: null, status: "ACTIVE" } }),
+        prisma.org.count({ where: { deletedAt: null, status: "SUSPENDED" } }),
+        prisma.user.count({ where: { isSuperAdmin: false, org: { deletedAt: null } } }),
         prisma.org.findMany({
+          where: { deletedAt: null },
           orderBy: { createdAt: "desc" },
           take: 5,
           select: {

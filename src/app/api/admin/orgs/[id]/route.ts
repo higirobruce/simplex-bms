@@ -64,12 +64,28 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
 export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
   try {
-    await requireSuperAdmin();
-    const org = await prisma.org.findUnique({ where: { id: params.id }, select: { id: true } });
-    if (!org) return errorResponse("Shop not found", 404);
+    const { userId } = await requireSuperAdmin();
+    const before = await prisma.org.findUnique({
+      where: { id: params.id },
+      select: { id: true, slug: true, name: true, status: true, deletedAt: true },
+    });
+    if (!before || before.deletedAt) return errorResponse("Shop not found", 404);
 
-    // Cascades remove all shop-owned data (users, products, invoices, …).
-    await prisma.org.delete({ where: { id: params.id } });
+    // Soft delete — preserves all shop data (and this audit trail, which would
+    // otherwise cascade away with a hard delete) and keeps it recoverable.
+    await prisma.org.update({
+      where: { id: params.id },
+      data: { deletedAt: new Date() },
+    });
+
+    await logAudit({
+      orgId: params.id,
+      userId,
+      action: "DELETE",
+      entityType: "Org",
+      entityId: params.id,
+      before,
+    });
     return NextResponse.json({ ok: true });
   } catch (error) {
     return handleRouteError(error);

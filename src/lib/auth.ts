@@ -28,9 +28,9 @@ export const authOptions: NextAuthOptions = {
         const isValid = await bcrypt.compare(credentials.password, user.password);
         if (!isValid) return null;
 
-        // Block access to suspended shops (super admins have no org and are exempt)
-        if (!user.isSuperAdmin && user.org?.status === "SUSPENDED") {
-          throw new Error("This workspace has been suspended. Contact platform support.");
+        // Block access to suspended or removed shops (super admins are exempt).
+        if (!user.isSuperAdmin && user.org && (user.org.status === "SUSPENDED" || user.org.deletedAt)) {
+          throw new Error("This workspace is no longer active. Contact platform support.");
         }
 
         return {

@@ -14,7 +14,7 @@ export async function GET(req: Request) {
     const search = url.searchParams.get("search") || "";
     const status = url.searchParams.get("status") || "";
 
-    const where: any = {};
+    const where: any = { deletedAt: null };
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },

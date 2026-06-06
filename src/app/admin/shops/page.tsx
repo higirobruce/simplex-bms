@@ -429,9 +429,9 @@ export default function ShopsPage() {
         open={!!deleting}
         onClose={() => setDeleting(null)}
         onConfirm={() => deleting && remove.mutate(deleting.id)}
-        title="Delete shop"
-        description={`Permanently delete "${deleting?.name}" and ALL of its data (users, products, invoices, stock…)? This cannot be undone.`}
-        confirmLabel="Delete shop"
+        title="Remove shop"
+        description={`Remove "${deleting?.name}"? Its users lose access immediately. The shop and its data are retained (soft-deleted) and can be restored by an administrator.`}
+        confirmLabel="Remove shop"
         variant="destructive"
         loading={remove.isPending}
       />
