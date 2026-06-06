@@ -78,6 +78,22 @@ export const ProductPatchSchema = z.object({
 });
 // SKU excluded — immutable after creation
 
+// ===== Bulk import =====
+// CSV cells arrive as strings, so coerce numbers and treat blanks as omitted.
+const blankToUndef = (v: unknown) => (v === "" || v === null ? undefined : v);
+export const ProductImportRowSchema = z.object({
+  sku: z.string().trim().min(1, "SKU is required"),
+  name: z.string().trim().min(1, "Name is required"),
+  category: z.preprocess(blankToUndef, z.string().trim().default("General")),
+  unitPrice: z.coerce.number().positive("Unit price must be positive"),
+  costPrice: z.preprocess(blankToUndef, z.coerce.number().positive().optional()),
+  reorderLevel: z.preprocess(blankToUndef, z.coerce.number().int().min(0).default(10)),
+});
+
+export const ProductImportSchema = z.object({
+  rows: z.array(z.record(z.string(), z.any())).min(1, "No rows to import").max(1000, "Too many rows (max 1000)"),
+});
+
 // ===== Customers =====
 export const CustomerCreateSchema = z.object({
   name: z.string().min(1, "Customer name is required"),

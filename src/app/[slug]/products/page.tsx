@@ -15,7 +15,10 @@ import { useToast } from "@/components/ui/toast";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { Pagination } from "@/components/ui/pagination";
 import { useMoney } from "@/lib/currency";
-import { Plus, Search, Package, Pencil, Trash2 } from "lucide-react";
+import { parseCsv } from "@/lib/csv";
+import { Plus, Search, Package, Pencil, Trash2, Upload } from "lucide-react";
+
+const IMPORT_TEMPLATE = "sku,name,category,unitPrice,costPrice,reorderLevel\nWGT-001,Widget,Hardware,12000,9000,10\n";
 
 export default function ProductsPage() {
   const fmt = useMoney();
@@ -31,6 +34,10 @@ export default function ProductsPage() {
   const [form, setForm] = useState({
     sku: "", name: "", unitPrice: "", costPrice: "", category: "General", reorderLevel: "10", description: "",
   });
+  const [showImport, setShowImport] = useState(false);
+  const [importRows, setImportRows] = useState<Record<string, string>[]>([]);
+  const [importFileName, setImportFileName] = useState("");
+  const [importResult, setImportResult] = useState<any>(null);
 
   useEffect(() => { setPage(1); }, [debouncedSearch]);
 
@@ -58,6 +65,50 @@ export default function ProductsPage() {
     },
     onError: (err: Error) => toast.error(err.message),
   });
+
+  const importProducts = useMutation({
+    mutationFn: (rows: Record<string, string>[]) =>
+      fetch(`/api/${slug}/products/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows }),
+      }).then(async (r) => {
+        if (!r.ok) { const d = await r.json(); throw new Error(d.error || "Import failed"); }
+        return r.json();
+      }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ["products", slug] });
+      setImportResult(res);
+      setImportRows([]);
+      setImportFileName("");
+      toast.success(`Imported ${res.created} product${res.created === 1 ? "" : "s"}`);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportResult(null);
+    setImportFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        setImportRows(parseCsv(String(reader.result)));
+      } catch {
+        toast.error("Could not read that CSV file");
+        setImportRows([]);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  function closeImport() {
+    setShowImport(false);
+    setImportRows([]);
+    setImportFileName("");
+    setImportResult(null);
+  }
 
   const updateProduct = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) =>
@@ -144,9 +195,14 @@ export default function ProductsPage() {
             availability across the house.
           </p>
         </div>
-        <Button onClick={() => setShowAdd(true)} size="lg">
-          <Plus className="h-4 w-4" strokeWidth={2} /> Add Product
-        </Button>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="lg" onClick={() => setShowImport(true)}>
+            <Upload className="h-4 w-4" strokeWidth={2} /> Import CSV
+          </Button>
+          <Button onClick={() => setShowAdd(true)} size="lg">
+            <Plus className="h-4 w-4" strokeWidth={2} /> Add Product
+          </Button>
+        </div>
       </div>
 
       <div className="relative mb-6 max-w-md">
@@ -327,6 +383,76 @@ export default function ProductsPage() {
       </Dialog>
 
       {/* Delete Confirm */}
+      <Dialog open={showImport} onClose={closeImport}>
+        <DialogHeader>
+          <DialogTitle>Import products from CSV</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4">
+          <p className="text-sm text-ink-soft">
+            Upload a CSV with columns{" "}
+            <span className="font-mono text-xs text-ink">sku, name, category, unitPrice, costPrice, reorderLevel</span>.
+            Rows with a SKU that already exists are skipped.
+          </p>
+          <a
+            href={`data:text/csv;charset=utf-8,${encodeURIComponent(IMPORT_TEMPLATE)}`}
+            download="products-template.csv"
+            className="inline-block text-sm text-gold underline-offset-4 hover:underline"
+          >
+            Download template
+          </a>
+
+          {!importResult && (
+            <>
+              <label className="flex h-24 cursor-pointer flex-col items-center justify-center gap-2 rounded-[var(--radius)] border border-dashed border-line-strong bg-surface-2 text-ink-soft hover:border-gold">
+                <Upload className="h-5 w-5" strokeWidth={1.75} />
+                <span className="text-sm">{importFileName || "Choose a .csv file"}</span>
+                <input type="file" accept=".csv,text/csv" className="hidden" onChange={onPickFile} />
+              </label>
+              {importRows.length > 0 && (
+                <p className="text-sm text-ink">
+                  <span className="font-medium">{importRows.length}</span> row{importRows.length === 1 ? "" : "s"} ready to import.
+                </p>
+              )}
+            </>
+          )}
+
+          {importResult && (
+            <div className="rounded-[var(--radius)] border border-line bg-surface-2 p-4 text-sm space-y-2">
+              <div className="flex gap-4">
+                <span className="text-success font-medium">{importResult.created} created</span>
+                <span className="text-ink-soft">{importResult.skipped} skipped</span>
+                {importResult.errors > 0 && <span className="text-danger">{importResult.errors} errors</span>}
+              </div>
+              {importResult.errors > 0 && (
+                <ul className="max-h-32 overflow-y-auto font-mono text-xs text-danger space-y-0.5">
+                  {importResult.results
+                    .filter((r: any) => r.status === "error")
+                    .slice(0, 20)
+                    .map((r: any) => (
+                      <li key={r.row}>Row {r.row}: {r.message}</li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <Button type="button" variant="outline" onClick={closeImport}>
+              {importResult ? "Done" : "Cancel"}
+            </Button>
+            {!importResult && (
+              <Button
+                type="button"
+                onClick={() => importProducts.mutate(importRows)}
+                disabled={importRows.length === 0 || importProducts.isPending}
+              >
+                {importProducts.isPending ? "Importing…" : `Import ${importRows.length || ""}`.trim()}
+              </Button>
+            )}
+          </div>
+        </div>
+      </Dialog>
+
       <ConfirmDialog
         open={!!deleting}
         onClose={() => setDeleting(null)}
