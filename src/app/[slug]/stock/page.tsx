@@ -22,13 +22,16 @@ import { useTenant, useDebounce } from "@/lib/hooks";
 import { PageHeader } from "@/components/page-header";
 import { Pagination } from "@/components/ui/pagination";
 import { AsyncCombobox } from "@/components/ui/async-combobox";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
 import {
   WarehouseTree,
   buildTree,
   type WarehouseNode,
   type TreeNode,
 } from "@/components/warehouse-tree";
-import { Warehouse, Plus, Search, Pencil, Trash2 } from "lucide-react";
+import { Warehouse, Plus, Search, Pencil, Trash2, Upload } from "lucide-react";
+
+const STOCK_TEMPLATE = "sku,location,qty\nLAP-001,Main Warehouse,10\n";
 
 function apiCall(url: string, opts?: RequestInit) {
   return fetch(url, {
@@ -60,6 +63,7 @@ export default function InventoryPage() {
   const [locForm, setLocForm] = useState({ name: "", code: "", address: "" });
 
   const [showAdjust, setShowAdjust] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [adjustForm, setAdjustForm] = useState({
     productId: "",
     productName: "",
@@ -176,6 +180,9 @@ export default function InventoryPage() {
               }}
             >
               <Plus className="h-4 w-4" strokeWidth={2} /> New warehouse
+            </Button>
+            <Button variant="outline" onClick={() => setShowImport(true)}>
+              <Upload className="h-4 w-4" strokeWidth={2} /> Import stock
             </Button>
             <Button onClick={() => setShowAdjust(true)} size="lg">
               <Plus className="h-4 w-4" strokeWidth={2} /> Adjust stock
@@ -557,6 +564,21 @@ export default function InventoryPage() {
           </div>
         </form>
       </Dialog>
+
+      <CsvImportDialog
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        title="Import opening stock from CSV"
+        endpoint={`/api/${slug}/stock/import`}
+        columns="sku, location, qty"
+        template={STOCK_TEMPLATE}
+        templateName="opening-stock-template.csv"
+        onImported={(s) => {
+          queryClient.invalidateQueries({ queryKey: ["stock", slug] });
+          queryClient.invalidateQueries({ queryKey: ["products", slug] });
+          toast.success(`Imported stock for ${s.created} row${s.created === 1 ? "" : "s"}`);
+        }}
+      />
     </div>
   );
 }
