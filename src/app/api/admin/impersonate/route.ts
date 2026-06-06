@@ -14,9 +14,13 @@ export async function POST(req: Request) {
 
     const org = await prisma.org.findUnique({
       where: { id: orgId },
-      select: { id: true, slug: true, name: true },
+      select: { id: true, slug: true, name: true, status: true, deletedAt: true },
     });
-    if (!org) return errorResponse("Shop not found", 404);
+    if (!org || org.deletedAt) return errorResponse("Shop not found", 404);
+    // Matches the console UI, which disables "Enter" for suspended shops.
+    if (org.status === "SUSPENDED") {
+      return errorResponse("Reactivate this shop before entering it", 409);
+    }
 
     // Record who stepped into which shop — impersonation is the most privileged
     // action in the console, so it belongs in the shop's audit trail.
