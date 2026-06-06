@@ -14,7 +14,10 @@ import { useToast } from "@/components/ui/toast";
 import { useTenant, useDebounce } from "@/lib/hooks";
 import { Pagination } from "@/components/ui/pagination";
 import { PageHeader } from "@/components/page-header";
-import { Plus, Search, Truck, Pencil, Trash2 } from "lucide-react";
+import { CsvImportDialog } from "@/components/csv-import-dialog";
+import { Plus, Search, Truck, Pencil, Trash2, Upload } from "lucide-react";
+
+const VENDOR_TEMPLATE = "name,email,phone,address,city,country,paymentTerms\nSupplier Co,sales@supplier.test,+250 789 000 000,KN 5 Rd,Kigali,Rwanda,NET30\n";
 
 function apiCall(url: string, opts?: RequestInit) {
   return fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...opts?.headers } }).then(async (r) => {
@@ -31,6 +34,7 @@ export default function VendorsPage() {
   const [page, setPage] = useState(1);
   const debouncedSearch = useDebounce(search, 300);
   const [showAdd, setShowAdd] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editing, setEditing] = useState<any>(null);
   const [deleting, setDeleting] = useState<any>(null);
   const emptyForm = { name: "", email: "", phone: "", address: "", city: "", country: "", paymentTerms: "NET30" };
@@ -69,9 +73,14 @@ export default function VendorsPage() {
         title="Vendors"
         description="The houses you source from — payment terms, contacts, and standing."
         actions={
-          <Button onClick={() => setShowAdd(true)} size="lg">
-            <Plus className="h-4 w-4" strokeWidth={2} /> Add Vendor
-          </Button>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="lg" onClick={() => setShowImport(true)}>
+              <Upload className="h-4 w-4" strokeWidth={2} /> Import CSV
+            </Button>
+            <Button onClick={() => setShowAdd(true)} size="lg">
+              <Plus className="h-4 w-4" strokeWidth={2} /> Add Vendor
+            </Button>
+          </div>
         }
       />
       <div className="relative mb-6 max-w-md">
@@ -148,6 +157,20 @@ export default function VendorsPage() {
         </form>
       </Dialog>
       <ConfirmDialog open={!!deleting} onClose={() => setDeleting(null)} onConfirm={() => deleting && remove.mutate(deleting.id)} title="Delete Vendor" description={`Delete "${deleting?.name}"? This cannot be undone.`} confirmLabel="Delete" variant="destructive" loading={remove.isPending} />
+
+      <CsvImportDialog
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        title="Import vendors from CSV"
+        endpoint={`/api/${slug}/vendors/import`}
+        columns="name, email, phone, address, city, country, paymentTerms"
+        template={VENDOR_TEMPLATE}
+        templateName="vendors-template.csv"
+        onImported={(s) => {
+          queryClient.invalidateQueries({ queryKey: ["vendors", slug] });
+          toast.success(`Imported ${s.created} vendor${s.created === 1 ? "" : "s"}`);
+        }}
+      />
     </div>
   );
 }

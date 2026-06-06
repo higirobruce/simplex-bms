@@ -90,8 +90,29 @@ export const ProductImportRowSchema = z.object({
   reorderLevel: z.preprocess(blankToUndef, z.coerce.number().int().min(0).default(10)),
 });
 
-export const ProductImportSchema = z.object({
+// Generic envelope for any CSV import — an array of raw row objects.
+export const BulkImportSchema = z.object({
   rows: z.array(z.record(z.string(), z.any())).min(1, "No rows to import").max(1000, "Too many rows (max 1000)"),
+});
+
+export const CustomerImportRowSchema = z.object({
+  name: z.string().trim().min(1, "Name is required"),
+  email: z.preprocess(blankToUndef, z.string().email("Invalid email").optional()),
+  phone: z.preprocess(blankToUndef, z.string().trim().optional()),
+  address: z.preprocess(blankToUndef, z.string().trim().optional()),
+  city: z.preprocess(blankToUndef, z.string().trim().optional()),
+  country: z.preprocess(blankToUndef, z.string().trim().optional()),
+  creditLimit: z.preprocess(blankToUndef, z.coerce.number().min(0).default(0)),
+});
+
+export const VendorImportRowSchema = z.object({
+  name: z.string().trim().min(1, "Name is required"),
+  email: z.preprocess(blankToUndef, z.string().email("Invalid email").optional()),
+  phone: z.preprocess(blankToUndef, z.string().trim().optional()),
+  address: z.preprocess(blankToUndef, z.string().trim().optional()),
+  city: z.preprocess(blankToUndef, z.string().trim().optional()),
+  country: z.preprocess(blankToUndef, z.string().trim().optional()),
+  paymentTerms: z.preprocess(blankToUndef, z.string().trim().default("NET30")),
 });
 
 // ===== Customers =====
