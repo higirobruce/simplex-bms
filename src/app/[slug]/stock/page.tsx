@@ -1,5 +1,7 @@
 "use client";
 
+import { apiCall } from "@/lib/fetcher";
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -32,20 +34,6 @@ import {
 import { Warehouse, Plus, Search, Pencil, Trash2, Upload } from "lucide-react";
 
 const STOCK_TEMPLATE = "sku,location,qty\nLAP-001,Main Warehouse,10\n";
-
-function apiCall(url: string, opts?: RequestInit) {
-  return fetch(url, {
-    ...opts,
-    headers: { "Content-Type": "application/json", ...opts?.headers },
-  }).then(async (r) => {
-    if (!r.ok) {
-      const d = await r.json();
-      throw new Error(d.error || "Request failed");
-    }
-    return r.json();
-  });
-}
-
 export default function InventoryPage() {
   const { slug } = useTenant();
   const queryClient = useQueryClient();

@@ -1,5 +1,7 @@
 "use client";
 
+import { apiCall } from "@/lib/fetcher";
+
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,17 +21,6 @@ import { Building2, User, Shield, Pencil, Plus, Trash2, KeyRound, Users as Users
 
 const ROLES = ["ADMIN", "MANAGER", "ACCOUNTANT", "VIEWER"] as const;
 type Role = (typeof ROLES)[number];
-
-function apiCall(url: string, opts?: RequestInit) {
-  return fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...opts?.headers } }).then(async (r) => {
-    if (!r.ok) {
-      const d = await r.json().catch(() => ({}));
-      throw new Error(d.error || "Request failed");
-    }
-    return r.json();
-  });
-}
-
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between py-3 border-b border-line/70 last:border-0">

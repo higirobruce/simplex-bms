@@ -1,5 +1,7 @@
 "use client";
 
+import { apiCall } from "@/lib/fetcher";
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
@@ -19,14 +21,6 @@ import { useMoney } from "@/lib/currency";
 import { Plus, Search, DollarSign, Pencil, Trash2 } from "lucide-react";
 
 const categories = ["rent", "utilities", "salary", "supplies", "transport", "marketing", "other"];
-
-function apiCall(url: string, opts?: RequestInit) {
-  return fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...opts?.headers } }).then(async (r) => {
-    if (!r.ok) { const d = await r.json(); throw new Error(d.error || "Request failed"); }
-    return r.json();
-  });
-}
-
 export default function ExpensesPage() {
   const fmt = useMoney();
   const { slug } = useTenant();
