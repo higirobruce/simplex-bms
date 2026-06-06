@@ -1,5 +1,7 @@
 "use client";
 
+import { apiCall } from "@/lib/fetcher";
+
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useParams } from "next/navigation";
@@ -18,14 +20,6 @@ import { useToast } from "@/components/ui/toast";
 import { useTenant } from "@/lib/hooks";
 import { formatDate } from "@/lib/utils";
 import { useMoney } from "@/lib/currency";
-
-function apiCall(url: string, opts?: RequestInit) {
-  return fetch(url, { ...opts, headers: { "Content-Type": "application/json", ...opts?.headers } }).then(async (r) => {
-    if (!r.ok) { const d = await r.json(); throw new Error(d.error || "Request failed"); }
-    return r.json();
-  });
-}
-
 const statusVariant: Record<string, "success" | "warning" | "destructive" | "secondary" | "outline"> = {
   PAID: "success",
   SENT: "secondary",
