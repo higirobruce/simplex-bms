@@ -103,7 +103,7 @@ export default function SignupPage() {
                 {platformName}
               </p>
               <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-hi-vis mt-1">
-                / Workbench
+                / The Floor
               </p>
             </div>
           </div>
@@ -112,16 +112,16 @@ export default function SignupPage() {
         <div className="relative max-w-lg">
           <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-hi-vis font-semibold mb-4 flex items-center gap-2">
             <span className="inline-block h-[2px] w-8 bg-gold" />
-            New shop setup
+            New store setup
           </p>
           <h2 className="font-display text-5xl sm:text-6xl font-bold uppercase leading-[1.0] tracking-tight text-surface">
             Open the
             <br />
-            shop.
+            store.
           </h2>
           <p className="mt-6 text-surface/70 leading-relaxed max-w-md">
-            Set up your workspace in a few minutes — products, warehouses,
-            and the counter all wired up for you.
+            Set up your store in a few minutes — departments, shelf stock,
+            and the tills all wired up for you.
           </p>
         </div>
 
@@ -132,7 +132,7 @@ export default function SignupPage() {
           </div>
           <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Module</p>
-            <p className="text-surface mt-0.5">HW-OPS</p>
+            <p className="text-surface mt-0.5">RETAIL</p>
           </div>
           <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Status</p>
@@ -209,7 +209,7 @@ export default function SignupPage() {
                 id="email"
                 name="email"
                 type="email"
-                placeholder="you@hardware.shop"
+                placeholder="you@supermarket.rw"
                 value={formData.email}
                 onChange={handleChange}
                 required
@@ -233,7 +233,7 @@ export default function SignupPage() {
               <Input
                 id="orgName"
                 name="orgName"
-                placeholder="Higiro Hardware Co."
+                placeholder="Kigali Fresh Market"
                 value={formData.orgName}
                 onChange={handleChange}
                 required
@@ -248,7 +248,7 @@ export default function SignupPage() {
                 <input
                   id="orgSlug"
                   name="orgSlug"
-                  placeholder="higiro-hardware"
+                  placeholder="kigali-fresh"
                   value={formData.orgSlug}
                   onChange={handleChange}
                   required

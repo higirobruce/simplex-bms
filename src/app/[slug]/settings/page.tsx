@@ -39,7 +39,7 @@ export default function SettingsPage() {
       <PageHeader
         eyebrow="Workspace"
         title="Settings"
-        description="The particulars of your workshop — organisation, people, and access."
+        description="The particulars of your store — organisation, people, and access."
       />
 
       <div className="grid gap-5 max-w-3xl">

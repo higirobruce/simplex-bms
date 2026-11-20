@@ -98,7 +98,7 @@ export function SideNav({ slug, platformName = "Simplex" }: { slug: string; plat
                 {platformName}
               </span>
               <span className="font-mono text-[0.62rem] tracking-[0.16em] uppercase text-ink-mute mt-1.5">
-                Workbench / {slug}
+                The Floor / {slug}
               </span>
             </div>
           </div>

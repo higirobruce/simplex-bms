@@ -18,7 +18,7 @@ import { useMoney } from "@/lib/currency";
 import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Plus, Search, Package, Pencil, Trash2, Upload } from "lucide-react";
 
-const IMPORT_TEMPLATE = "sku,name,category,unitPrice,costPrice,reorderLevel\nWGT-001,Widget,Hardware,12000,9000,10\n";
+const IMPORT_TEMPLATE = "sku,name,category,unitPrice,costPrice,reorderLevel\nMLK-001,Inyange Milk 1L,Dairy,1200,950,24\n";
 
 export default function ProductsPage() {
   const fmt = useMoney();

@@ -72,7 +72,7 @@ export default function LoginPage() {
                 {platformName}
               </p>
               <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-hi-vis mt-1">
-                / Workbench
+                / The Floor
               </p>
             </div>
           </div>
@@ -81,19 +81,18 @@ export default function LoginPage() {
         <div className="relative max-w-lg">
           <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-hi-vis font-semibold mb-4 flex items-center gap-2">
             <span className="inline-block h-[2px] w-8 bg-gold" />
-            Hardware Operations
+            Supermarket Retail
           </p>
           <h2 className="font-display text-5xl sm:text-6xl font-bold uppercase leading-[1.0] tracking-tight text-surface">
-            Stock.
+            Scan.
             <br />
             Sell.
             <br />
             Restock.
           </h2>
           <p className="mt-6 text-surface/70 leading-relaxed max-w-md">
-            A no-nonsense system for hardware shops — inventory across
-            warehouses, sales orders, goods receipts, and the daily counter
-            work.
+            Everything a supermarket runs on — shelf stock, the tills,
+            suppliers, and what today actually took.
           </p>
         </div>
 
@@ -104,7 +103,7 @@ export default function LoginPage() {
           </div>
           <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Module</p>
-            <p className="text-surface mt-0.5">HW-OPS</p>
+            <p className="text-surface mt-0.5">RETAIL</p>
           </div>
           <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Status</p>
@@ -128,10 +127,10 @@ export default function LoginPage() {
             Sign in
           </p>
           <h1 className="font-display text-4xl font-bold uppercase tracking-tight text-ink leading-[1.05]">
-            Workbench access.
+            Open the floor.
           </h1>
           <p className="mt-3 text-sm text-ink-soft">
-            Enter your credentials to clock in.
+            Enter your credentials to start a shift.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-8 space-y-5">
@@ -145,7 +144,7 @@ export default function LoginPage() {
               <Input
                 id="email"
                 type="email"
-                placeholder="you@hardware.shop"
+                placeholder="you@supermarket.rw"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required

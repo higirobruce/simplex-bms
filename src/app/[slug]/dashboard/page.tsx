@@ -193,14 +193,14 @@ export default function DashboardPage() {
       <div className="mb-8">
         <p className="font-mono text-[0.65rem] tracking-[0.22em] uppercase text-gold font-semibold mb-3 flex items-center gap-2">
           <span className="inline-block h-[2px] w-6 bg-gold" />
-          Operations Overview
+          Trading Today
         </p>
         <h1 className="font-display text-5xl sm:text-6xl font-bold tracking-tight uppercase leading-[1.0] text-ink">
-          The Workbench.
+          The Floor.
         </h1>
         <p className="mt-3 text-ink-soft max-w-xl leading-relaxed">
-          Stock on hand, money in motion, and what needs your attention this
-          shift.
+          What is on the shelf, what the tills took, and what needs you
+          before close.
         </p>
       </div>
 
