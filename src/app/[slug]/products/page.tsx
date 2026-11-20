@@ -203,7 +203,7 @@ export default function ProductsPage() {
             <TableBody>
               {products?.data?.map((product: any) => {
                 const totalQty = product.stockLevels?.reduce((sum: number, sl: any) => sum + Number(sl.qty), 0) || 0;
-                const isLow = totalQty <= product.reorderLevel;
+                const isLow = totalQty <= Number(product.reorderLevel);
                 return (
                   <TableRow key={product.id}>
                     <TableCell className="font-mono text-xs text-ink-soft tabular">

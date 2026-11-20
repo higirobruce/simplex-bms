@@ -65,9 +65,7 @@ export async function POST(
         if (grnLine.orderLineId) {
           await tx.purchaseOrderLine.update({
             where: { id: grnLine.orderLineId },
-            // qtyReceived is still an Int column (out of Task 7 scope); a fractional
-            // quantity makes Prisma reject the write loudly rather than truncating.
-            data: { qtyReceived: { increment: grnLine.qty.toNumber() } },
+            data: { qtyReceived: { increment: grnLine.qty } },
           });
         }
       }

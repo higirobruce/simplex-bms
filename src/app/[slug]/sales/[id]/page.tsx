@@ -211,14 +211,14 @@ export default function SalesOrderDetailPage() {
                 <td className="px-6 py-4 text-right tabular">
                   <span
                     className={
-                      l.qtyDelivered >= l.qty
+                      Number(l.qtyDelivered) >= Number(l.qty)
                         ? "text-success font-medium"
-                        : l.qtyDelivered > 0
+                        : Number(l.qtyDelivered) > 0
                         ? "text-warning"
                         : "text-ink-mute"
                     }
                   >
-                    {l.qtyDelivered}
+                    {Number(l.qtyDelivered)}
                   </span>
                 </td>
                 <td className="px-6 py-4 text-right tabular">

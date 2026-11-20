@@ -383,7 +383,7 @@ model SalesOrderLine {
   productId    String
   product      Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
   qty          Decimal @db.Decimal(12, 3)
-  qtyDelivered Int                @default(0)
+  qtyDelivered Decimal            @db.Decimal(12, 3) @default(0)
   unitPrice    Decimal            @db.Decimal(12, 2)
   amount       Decimal            @db.Decimal(12, 2)
   dnLines      DeliveryNoteLine[]
@@ -462,7 +462,7 @@ model PurchaseOrderLine {
   productId   String
   product     Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
   qty         Decimal @db.Decimal(12, 3)
-  qtyReceived Int                @default(0)
+  qtyReceived Decimal            @db.Decimal(12, 3) @default(0)
   unitPrice   Decimal            @db.Decimal(12, 2)
   amount      Decimal            @db.Decimal(12, 2)
   grnLines    GoodsReceiptLine[]
