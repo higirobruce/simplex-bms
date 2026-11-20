@@ -309,7 +309,7 @@ till reads and writes.
 
 Phased so each phase is independently shippable and the compliance risk sits early.
 
-### Phase 0 — Shelf Edge skin *(independent; no downstream dependency)*
+### Phase 0 — Shelf Edge skin — **COMPLETE (2026-11-20)**
 
 Token block in `src/app/globals.css`, font pair in `src/app/layout.tsx`, and the
 trade vocabulary across the nine files that carry it. Replaces Workshop Steel on
