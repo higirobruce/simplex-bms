@@ -24,7 +24,10 @@ export function readRootTokens(cssPath: string): Record<string, string> {
 }
 
 function luminance(hex: string): number {
-  const h = hex.replace("#", "");
+  if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(hex)) {
+    throw new Error(`Expected a #rgb or #rrggbb hex colour, got "${hex}"`);
+  }
+  const h = hex.slice(1);
   const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
   const [r, g, b] = [0, 2, 4].map((i) => {
     const c = parseInt(full.slice(i, i + 2), 16) / 255;

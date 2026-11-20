@@ -30,7 +30,7 @@ test("every token tailwind.config.ts references is defined", () => {
 test("layout.tsx declares the font variables tailwind.config.ts relies on", () => {
   const layout = readFileSync("src/app/layout.tsx", "utf8");
   for (const name of ["--font-geist-sans", "--font-display", "--font-mono"]) {
-    expect(layout).toContain(name);
+    expect(layout).toMatch(new RegExp(`variable:\\s*["']${name}["']`));
   }
 });
 
@@ -47,6 +47,7 @@ test("body text on canvas and on surface meets WCAG AA", () => {
 });
 
 test("hi-vis yellow is only legible against ink, never against surface", () => {
+  expect(tokens["hi-vis"]).toBeDefined();
   expect(contrastRatio(tokens["hi-vis"], tokens.ink)).toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(tokens["hi-vis"], tokens.surface)).toBeLessThan(3);
 });
