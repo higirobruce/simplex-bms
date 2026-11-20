@@ -208,7 +208,7 @@ export default function PurchaseOrderDetailPage() {
                     {l.product.sku}
                   </p>
                 </td>
-                <td className="px-6 py-4 text-right tabular">{l.qty}</td>
+                <td className="px-6 py-4 text-right tabular">{Number(l.qty)}</td>
                 <td className="px-6 py-4 text-right tabular">
                   <span
                     className={

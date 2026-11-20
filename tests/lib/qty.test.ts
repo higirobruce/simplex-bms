@@ -26,6 +26,14 @@ test("isNegative catches what a string comparison misses", () => {
   expect(isNegative(D("0"))).toBe(false);
 });
 
+test("isNegative treats negative zero as not negative", () => {
+  expect(isNegative(new Prisma.Decimal("-0"))).toBe(false);
+});
+
+test("addQty with no arguments returns 0", () => {
+  expect(addQty().toString()).toBe("0");
+});
+
 test("formatQty distinguishes weighed from each", () => {
   expect(formatQty(D("0.734"), true)).toBe("0.734");
   expect(formatQty(D("3"), false)).toBe("3");

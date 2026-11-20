@@ -41,13 +41,10 @@ export async function POST(req: Request) {
         );
       }
 
-      // StockLevel.qty is still Int until Task 7 migrates it to Decimal(12,3);
-      // newQty is a whole number here, so toNumber() is lossless. Task 7 should
-      // pass newQty directly.
       await tx.stockLevel.upsert({
         where: { productId_locationId: { productId, locationId } },
-        update: { qty: newQty.toNumber() },
-        create: { productId, locationId, qty: newQty.toNumber() },
+        update: { qty: newQty },
+        create: { productId, locationId, qty: newQty },
       });
 
       const movement = await tx.stockMovement.create({

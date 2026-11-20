@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { addQty, toQty } from "@/lib/qty";
 import {
   getTenantContext,
   requirePermission,
@@ -29,7 +30,7 @@ export async function GET() {
       parentId: l.parentId,
       orgId: l.orgId,
       createdAt: l.createdAt,
-      directQty: l.stockLevels.reduce((sum, s) => sum + s.qty, 0),
+      directQty: l.stockLevels.reduce((sum, s) => addQty(sum, s.qty), toQty(0)).toNumber(),
     }));
 
     return NextResponse.json(enriched);

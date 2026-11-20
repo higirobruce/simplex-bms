@@ -180,7 +180,7 @@ export default function InvoiceDetailPage() {
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="text-right">{item.qty}</TableCell>
+                  <TableCell className="text-right">{Number(item.qty)}</TableCell>
                   <TableCell className="text-right">
                     {fmt(item.unitPrice)}
                   </TableCell>

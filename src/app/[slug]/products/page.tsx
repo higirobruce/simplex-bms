@@ -128,7 +128,7 @@ export default function ProductsPage() {
       unitPrice: String(product.unitPrice),
       costPrice: product.costPrice ? String(product.costPrice) : "",
       category: product.category,
-      reorderLevel: String(product.reorderLevel),
+      reorderLevel: String(Number(product.reorderLevel)),
       description: product.description || "",
     });
   };
@@ -202,7 +202,7 @@ export default function ProductsPage() {
             </TableHeader>
             <TableBody>
               {products?.data?.map((product: any) => {
-                const totalQty = product.stockLevels?.reduce((sum: number, sl: any) => sum + sl.qty, 0) || 0;
+                const totalQty = product.stockLevels?.reduce((sum: number, sl: any) => sum + Number(sl.qty), 0) || 0;
                 const isLow = totalQty <= product.reorderLevel;
                 return (
                   <TableRow key={product.id}>

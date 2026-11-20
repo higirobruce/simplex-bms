@@ -82,15 +82,16 @@ export async function GET(req: Request) {
       name: l.product.name,
       locationId: l.locationId,
       locationName: l.location?.name ?? "Unknown",
-      qty: l.qty,
-      reorderLevel: l.product.reorderLevel,
+      // Decimal would serialise as a string and break the client's numeric compare.
+      qty: l.qty.toNumber(),
+      reorderLevel: l.product.reorderLevel.toNumber(),
     }));
 
     return NextResponse.json({
       data,
       meta: { total, page, limit, pages: Math.ceil(total / limit) },
       summary: {
-        totalUnits: agg._sum.qty ?? 0,
+        totalUnits: agg._sum.qty?.toNumber() ?? 0,
         lowStockCount: lowRows[0]?.count ?? 0,
       },
     });

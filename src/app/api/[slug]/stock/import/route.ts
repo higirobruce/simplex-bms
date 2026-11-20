@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { addQty } from "@/lib/qty";
 import { requirePermission, handleRouteError, errorResponse } from "@/lib/api";
 import { BulkImportSchema, StockImportRowSchema } from "@/lib/validations";
 import { logAudit } from "@/lib/audit";
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
           });
           await tx.stockLevel.upsert({
             where: { productId_locationId: { productId, locationId } },
-            update: { qty: (current?.qty ?? 0) + row.data.qty },
+            update: { qty: addQty(current?.qty ?? 0, row.data.qty) },
             create: { productId, locationId, qty: row.data.qty },
           });
           await tx.stockMovement.create({
