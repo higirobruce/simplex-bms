@@ -287,7 +287,7 @@ Expected: FAIL on the missing price-label classes and on the surviving `#2D3035`
 
 - [ ] **Step 3: Rewrite the component layer in `src/app/globals.css`**
 
-`.panel` and `.panel-flat` become flat white cards with a `--line` hairline and no shadow — a price label has no depth. `.price-card` is the motif: white, 2px radius, a heavy `--ink` bottom rule, prices set in `--font-mono` with `font-variant-numeric: tabular-nums`. `.dept-chip` is a small square-cornered chip taking its background from a `--dept` custom property the markup sets, for department colour coding. `.pill` loses the `::before` dot and becomes a solid uppercase label. `.shelf-mark` replaces the stencil brand mark: flat `--ink` block, `--surface` text, no gradient. `.stencil-block` and `.brushed` are retained as aliases of `.shelf-mark` and `.panel` respectively so existing markup keeps working. `.font-serif` and `.font-mono` keep their current structure with the new family names. Update `::selection` to use `--signal`.
+`.panel` and `.panel-flat` become flat white cards with a `--line` hairline and no shadow — a price label has no depth. `.price-card` is the motif: white, 2px radius, a heavy `--ink` bottom rule, prices set in `--font-mono` with `font-variant-numeric: tabular-nums`. `.dept-chip` is a small square-cornered chip taking its background from a `--dept` custom property the markup sets, for department colour coding. `.pill` loses the `::before` dot and becomes a solid uppercase label. `.shelf-mark` replaces the stencil brand mark: flat `--ink` block, `--surface` text, no gradient. `.stencil-block` and `.brushed` are retained so existing markup keeps working, and **each gets its own rule block** — do not comma-join them with `.shelf-mark` or `.panel`. Step 1's `panelish` regex matches single-selector blocks only; a comma-joined selector makes it match nothing and the test then fails on its own `length > 0` guard rather than on the thing it is checking. `.font-serif` and `.font-mono` keep their current structure with the new family names. Update `::selection` to use `--signal`.
 
 - [ ] **Step 4: Run the component and token tests**
 
@@ -398,7 +398,7 @@ git commit -m "docs: mark Phase 0 Shelf Edge skin complete"
 
 ## PHASE 1 — Grocery and retail data model
 
-Schema and server work. No UI changes beyond what the quantity type forces. Task 6 ships before Task 7 on purpose: the arithmetic hazard is fixed while quantities are still integers, so the migration lands on code that is already safe.
+Schema and server work. No UI changes beyond what the quantity type forces. Task 6 ships before Task 7 on purpose: the arithmetic hazard is fixed while quantities are still integers, so the migration lands on code that is already safe. Task 6b was added during execution — see its own note.
 
 ### Task 6: Decimal quantity arithmetic
 
@@ -477,6 +477,92 @@ Expected: PASS, exit 0.
 ```bash
 git add src/lib/qty.ts tests/lib/qty.test.ts "src/app/api/[slug]/stock/adjust/route.ts"
 git commit -m "feat: add decimal quantity arithmetic and remove the + coercion hazard"
+```
+
+### Task 6b: Database test harness
+
+**Added during execution, not in the original plan.** Tasks 7 and 9–13 all create rows,
+and the plan never said against which database. Run as written they would write test
+fixtures into the local `bms` database where the two live orgs sit. This task provisions
+a separate one. It goes after Task 6 because Task 6 is pure `Prisma.Decimal` arithmetic
+and needs no database, and before Task 7 because Task 7 is the first task that does.
+
+**Files:**
+- Create: `.env.test` (gitignored, alongside the existing `.env`)
+- Create: `tests/helpers/db.ts`
+- Create: `tests/helpers/setup-db.ts`
+- Modify: `vitest.config.ts` (`globalSetup`, and `setupFiles` for per-test cleanup)
+- Modify: `package.json` (`test` script loads `.env.test`)
+- Modify: `.gitignore` (add `.env.test`)
+
+**Interfaces:**
+- Consumes: the Vitest config from Task 1.
+- Produces:
+  - `prisma` — a `PrismaClient` bound to the test database, exported from `tests/helpers/db.ts`. Tasks 7 and 9–13 import this, **not** `@/lib/prisma`.
+  - `resetDb(): Promise<void>` — truncates every application table, cascading, leaving the schema intact.
+  - `seedOrg(): Promise<{ orgId: string; otherOrgId: string; userId: string; productId: string; locationId: string }>` — the minimal fixture Tasks 7 and 9–13 build on. Task 9's cross-org barcode test needs `otherOrgId`; Task 11's price-change test needs `userId`.
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// tests/helpers/db.test.ts
+test("the test client is not pointed at the dev database", () => {
+  expect(process.env.DATABASE_URL).toContain("bms_test");
+  expect(process.env.DATABASE_URL).not.toMatch(/\/bms(\?|$)/);
+});
+
+test("resetDb leaves no rows behind", async () => {
+  const { orgId } = await seedOrg();
+  expect(await prisma.org.count()).toBeGreaterThan(0);
+  await resetDb();
+  expect(await prisma.org.count()).toBe(0);
+  expect(await prisma.product.count()).toBe(0);
+});
+
+test("seedOrg produces two distinct orgs", async () => {
+  const f = await seedOrg();
+  expect(f.orgId).not.toBe(f.otherOrgId);
+  const p = await prisma.product.findUnique({ where: { id: f.productId } });
+  expect(p!.orgId).toBe(f.orgId);
+});
+```
+
+The first test is the one that matters: it fails loudly if the harness is ever pointed
+at the development database, which is the accident this whole task exists to prevent.
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `npm test -- tests/helpers/db.test.ts`
+Expected: FAIL — `resetDb` is not defined.
+
+- [ ] **Step 3: Create `.env.test` and gitignore it**
+
+`DATABASE_URL="postgresql://<same credentials as .env>@localhost:5432/bms_test"`, plus the
+same `NEXTAUTH_SECRET` and `NEXTAUTH_URL` the existing `.env` carries. Add `.env.test` to
+`.gitignore`. **Never commit it.**
+
+- [ ] **Step 4: Implement `tests/helpers/setup-db.ts` as Vitest `globalSetup`**
+
+Creates the `bms_test` database if absent, then applies the schema with
+`prisma migrate deploy` against `DATABASE_URL` from `.env.test`. Runs once per suite.
+
+- [ ] **Step 5: Implement `tests/helpers/db.ts`**
+
+Exports `prisma`, `resetDb` and `seedOrg` with the signatures in Interfaces. `resetDb`
+discovers table names from `information_schema` rather than hardcoding a list, so Tasks
+9–12 adding models does not require editing it. Register it as a `beforeEach` through
+`setupFiles` so every test starts from an empty database.
+
+- [ ] **Step 6: Run and verify isolation**
+
+Run: `npm test` then, separately, confirm the dev database is untouched:
+`psql bms -c 'select count(*) from "Org";'` — the count must match what it was before.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add tests/helpers/db.ts tests/helpers/setup-db.ts tests/helpers/db.test.ts vitest.config.ts package.json .gitignore
+git commit -m "test: provision an isolated test database harness"
 ```
 
 ### Task 7: Widen quantity columns to Decimal
@@ -810,10 +896,18 @@ test("a price change records both sides and who did it", async () => {
 
 Both rejections need database-level enforcement — a `CHECK (endsAt > startsAt)` constraint and an exclusion constraint on `(productId, tstzrange(startsAt, endsAt))` — added to the generated migration by hand, since Prisma's schema language expresses neither. Overlap rejection is the thing that stops two promotions silently fighting over one price at a till.
 
-- [ ] **Step 2: Run to verify failure, implement, migrate, then edit the SQL**
+- [ ] **Step 2: Run to verify failure, then migrate in two stages**
 
 Run: `npm test -- tests/schema/promotion.test.ts` → FAIL
-Then: `npx prisma migrate dev --name promotions`, add the `CHECK` and `EXCLUDE USING gist` statements to the generated `migration.sql`, and re-run `npx prisma migrate dev` to apply. The exclusion constraint needs `CREATE EXTENSION IF NOT EXISTS btree_gist;`.
+
+The two constraints cannot be expressed in Prisma's schema language, so the migration is written in two stages. Editing an already-applied migration does not work — `migrate dev` will not re-run it and will report drift.
+
+1. `npx prisma migrate dev --create-only --name promotions` — generates the SQL without applying it.
+2. Hand-edit the generated `migration.sql`, appending:
+   - `CREATE EXTENSION IF NOT EXISTS btree_gist;`
+   - `ALTER TABLE "Promotion" ADD CONSTRAINT "promotion_dates_ordered" CHECK ("endsAt" > "startsAt");`
+   - `ALTER TABLE "Promotion" ADD CONSTRAINT "promotion_no_overlap" EXCLUDE USING gist ("productId" WITH =, tstzrange("startsAt", "endsAt") WITH &&);`
+3. `npx prisma migrate dev` — applies it.
 
 - [ ] **Step 3: Run and commit**
 
