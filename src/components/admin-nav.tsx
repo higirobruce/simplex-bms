@@ -21,7 +21,7 @@ export function AdminNav({ platformName = "Simplex" }: { platformName?: string }
       <div className="flex h-full flex-col">
         {/* Brand */}
         <div className="flex items-center gap-3 px-6 pt-7 pb-5">
-          <div className="stencil-block h-10 w-10 text-lg">◼</div>
+          <div className="shelf-mark h-10 w-10 text-lg">◼</div>
           <div className="flex flex-col leading-tight">
             <span className="font-display font-bold text-[1.05rem] text-ink leading-none tracking-tight uppercase">
               {platformName}

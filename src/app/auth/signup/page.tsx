@@ -95,14 +95,14 @@ export default function SignupPage() {
 
         <div className="relative">
           <div className="flex items-center gap-3">
-            <div className="stencil-block h-11 w-11 text-lg bg-surface/10 border border-surface/20">
+            <div className="shelf-mark h-11 w-11 text-lg bg-surface/10 border border-surface/20">
               ◼
             </div>
             <div className="leading-tight">
               <p className="font-display font-bold text-xl text-surface uppercase tracking-tight">
                 {platformName}
               </p>
-              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-gold mt-1">
+              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-hi-vis mt-1">
                 / Workbench
               </p>
             </div>
@@ -110,7 +110,7 @@ export default function SignupPage() {
         </div>
 
         <div className="relative max-w-lg">
-          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-gold font-semibold mb-4 flex items-center gap-2">
+          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-hi-vis font-semibold mb-4 flex items-center gap-2">
             <span className="inline-block h-[2px] w-8 bg-gold" />
             New shop setup
           </p>
@@ -126,15 +126,15 @@ export default function SignupPage() {
         </div>
 
         <div className="relative grid grid-cols-3 gap-px bg-surface/10 font-mono text-[0.62rem] tracking-[0.18em] uppercase">
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
+          <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Build</p>
             <p className="text-surface mt-0.5">v1.0</p>
           </div>
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
+          <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Module</p>
             <p className="text-surface mt-0.5">HW-OPS</p>
           </div>
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
+          <div className="bg-surface/5 px-3 py-2.5">
             <p className="text-surface/40">Status</p>
             <p className="text-success mt-0.5">● Online</p>
           </div>
@@ -145,7 +145,7 @@ export default function SignupPage() {
       <div className="flex items-center justify-center p-6 lg:p-12">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="stencil-block h-10 w-10 text-base">◼</div>
+            <div className="shelf-mark h-10 w-10 text-base">◼</div>
             <p className="font-display font-bold text-xl text-ink uppercase tracking-tight">
               {platformName}
             </p>

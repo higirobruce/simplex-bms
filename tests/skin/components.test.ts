@@ -10,9 +10,10 @@ test("the price-label classes exist", () => {
 });
 
 test("classes referenced by existing markup still exist", () => {
-  for (const cls of [".stencil-block", ".brushed", ".panel", ".panel-flat", ".hairline", ".pill", ".eyebrow", ".eyebrow-accent", ".tabular"]) {
+  for (const cls of [".shelf-mark", ".brushed", ".panel-flat", ".hairline", ".pill", ".eyebrow", ".eyebrow-accent", ".tabular"]) {
     expect(css).toContain(cls);
   }
+  expect(css).toMatch(/\.panel\b(?!-)/);
 });
 
 test("hi-vis yellow is never a panel or surface background", () => {

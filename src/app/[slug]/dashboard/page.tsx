@@ -163,7 +163,7 @@ export default function DashboardPage() {
             <Bell className="h-4 w-4 text-ink-soft" strokeWidth={2} />
           </button>
           <div className="h-10 px-3 rounded-[var(--radius)] border border-line bg-surface flex items-center gap-2.5">
-            <div className="stencil-block h-6 w-6 text-[0.7rem]">{initial}</div>
+            <div className="shelf-mark h-6 w-6 text-[0.7rem]">{initial}</div>
             <span className="text-sm text-ink hidden sm:inline font-medium">
               {displayName}
             </span>

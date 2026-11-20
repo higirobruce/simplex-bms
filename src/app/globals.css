@@ -157,19 +157,6 @@ code,
     border-radius: var(--radius);
   }
 
-  /* Alias of .shelf-mark kept for existing markup; declared on its own */
-  .stencil-block {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--ink);
-    color: var(--surface);
-    font-family: var(--font-display), system-ui, sans-serif;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    border-radius: var(--radius);
-  }
-
   /* Dark hero panel on auth pages: flat ink, no texture */
   .brushed {
     background: var(--ink);

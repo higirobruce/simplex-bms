@@ -25,3 +25,16 @@ test("no Workshop Steel vocabulary survives in src/", () => {
   }
   expect(found).toEqual([]);
 });
+
+const DEAD_HEX = ["#ECEAE3", "#1A1B1E", "#E8651F", "#D2CFC6", "#2D3035", "#15161A", "#1F2125"];
+
+test("no Workshop Steel hex literal survives anywhere under src/", () => {
+  const found: string[] = [];
+  for (const file of walk("src", [".ts", ".tsx", ".css", ".svg", ".js", ".jsx", ".json", ".html"])) {
+    const body = readFileSync(file, "utf8").toLowerCase();
+    for (const hex of DEAD_HEX) {
+      if (body.includes(hex.toLowerCase())) found.push(`${file}: ${hex}`);
+    }
+  }
+  expect(found).toEqual([]);
+});

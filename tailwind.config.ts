@@ -22,6 +22,8 @@ const config: Config = {
           hover: "var(--accent-hover)",
           soft: "var(--accent-soft)",
         },
+        signal: "var(--signal)",
+        "hi-vis": "var(--hi-vis)",
         gold: {
           DEFAULT: "var(--gold)",
           soft: "var(--gold-soft)",
