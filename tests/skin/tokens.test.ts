@@ -51,3 +51,23 @@ test("hi-vis yellow is only legible against ink, never against surface", () => {
   expect(contrastRatio(tokens["hi-vis"], tokens.ink)).toBeGreaterThanOrEqual(4.5);
   expect(contrastRatio(tokens["hi-vis"], tokens.surface)).toBeLessThan(3);
 });
+
+// line-strong is deliberately excluded: it is a border and scrollbar thumb, not text,
+// so WCAG non-text contrast (3:1) applies rather than 4.5:1.
+test("every text-bearing foreground token meets AA on bg, surface and surface-2", () => {
+  const foregrounds = ["ink", "ink-soft", "ink-mute", "gold", "danger", "success", "warning", "info"];
+  const grounds = ["bg", "surface", "surface-2"];
+  for (const fg of foregrounds) {
+    for (const ground of grounds) {
+      const ratio = contrastRatio(tokens[fg], tokens[ground]);
+      expect(ratio, `${fg} on ${ground} = ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
+test("each status token meets AA on its own -soft tint (badge pattern)", () => {
+  for (const name of ["gold", "danger", "success", "warning", "info"]) {
+    const ratio = contrastRatio(tokens[name], tokens[`${name}-soft`]);
+    expect(ratio, `${name} on ${name}-soft = ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+  }
+});

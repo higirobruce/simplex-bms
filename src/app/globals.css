@@ -14,7 +14,7 @@
   /* Ink — near-black */
   --ink: #121212;
   --ink-soft: #4A4A44;
-  --ink-mute: #76766E;
+  --ink-mute: #6A6A62;
 
   /* Accents — ink primary, price-tag red "gold" slot */
   --accent: #121212;        /* ink primary */
@@ -32,7 +32,7 @@
   /* Status */
   --success: #1F6B3A;
   --success-soft: #DDEDDF;
-  --warning: #C77A0F;
+  --warning: #8E560A;
   --warning-soft: #F8E5C5;
   --danger: #C2141A;        /* same text-weight red as gold */
   --danger-soft: #FAE3E4;
