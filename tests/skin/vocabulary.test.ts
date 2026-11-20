@@ -5,6 +5,16 @@ import { expect, test } from "vitest";
 const DEAD = ["Workbench", "Hardware Operations", "hardware.shop",
               "HW-OPS", "workshop", "Higiro Hardware", "Space Grotesk", "JetBrains Mono"];
 
+// Atelier-era vocabulary; regexes so "the house" does not match "warehouse" or "the houses".
+const DEAD_RE: [string, RegExp][] = [
+  ["the house", /\bthe house\b/i],
+  ["Curate/Curating", /\bcurat(e|es|ed|ing)\b/i],
+  ["Atelier", /\batelier\b/i],
+  ["bespoke", /\bbespoke\b/i],
+  ["concierge", /\bconcierge\b/i],
+  ["clientele", /\bclientele\b/i],
+];
+
 function walk(dir: string, exts: string[]): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -21,6 +31,9 @@ test("no Workshop Steel vocabulary survives in src/", () => {
     const body = readFileSync(file, "utf8");
     for (const term of DEAD) {
       if (body.toLowerCase().includes(term.toLowerCase())) found.push(`${file}: ${term}`);
+    }
+    for (const [name, re] of DEAD_RE) {
+      if (re.test(body)) found.push(`${file}: ${name}`);
     }
   }
   expect(found).toEqual([]);

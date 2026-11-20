@@ -41,14 +41,14 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
       {emphasis && (
         <div
           className="absolute top-0 right-0 h-1 w-full"
-          style={{ background: "var(--gold)" }}
+          style={{ background: "var(--hi-vis)" }}
         />
       )}
       <div className="relative">
         <p
           className={
             "font-mono text-[0.62rem] tracking-[0.22em] uppercase font-semibold " +
-            (emphasis ? "text-gold" : "text-ink-mute")
+            (emphasis ? "text-hi-vis" : "text-ink-mute")
           }
         >
           {label}
@@ -68,9 +68,11 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
                 className={
                   delta.positive
                     ? emphasis
-                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-gold"
+                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-hi-vis"
                       : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-success"
-                    : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-danger"
+                    : emphasis
+                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-surface"
+                      : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-danger"
                 }
               >
                 {delta.positive ? (

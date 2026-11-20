@@ -156,7 +156,7 @@ export default function InventoryPage() {
       <PageHeader
         eyebrow="Workspace"
         title="Inventory"
-        description="Stock by warehouse — every piece accounted for."
+        description="Stock by warehouse — every unit accounted for."
         actions={
           <>
             <Button

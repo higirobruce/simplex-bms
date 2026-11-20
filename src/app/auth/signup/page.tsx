@@ -111,7 +111,7 @@ export default function SignupPage() {
 
         <div className="relative max-w-lg">
           <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-hi-vis font-semibold mb-4 flex items-center gap-2">
-            <span className="inline-block h-[2px] w-8 bg-gold" />
+            <span className="inline-block h-[2px] w-8 bg-hi-vis" />
             New store setup
           </p>
           <h2 className="font-display text-5xl sm:text-6xl font-bold uppercase leading-[1.0] tracking-tight text-surface">
@@ -126,16 +126,16 @@ export default function SignupPage() {
         </div>
 
         <div className="relative grid grid-cols-3 gap-px bg-surface/10 font-mono text-[0.62rem] tracking-[0.18em] uppercase">
-          <div className="bg-surface/5 px-3 py-2.5">
-            <p className="text-surface/40">Build</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Build</p>
             <p className="text-surface mt-0.5">v1.0</p>
           </div>
-          <div className="bg-surface/5 px-3 py-2.5">
-            <p className="text-surface/40">Module</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Module</p>
             <p className="text-surface mt-0.5">RETAIL</p>
           </div>
-          <div className="bg-surface/5 px-3 py-2.5">
-            <p className="text-surface/40">Status</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Status</p>
             <p className="text-success mt-0.5">● Online</p>
           </div>
         </div>

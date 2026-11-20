@@ -144,8 +144,8 @@ export default function ProductsPage() {
             Products
           </h1>
           <p className="mt-3 text-ink-soft max-w-xl leading-relaxed">
-            Curate your offering — pricing, inventory thresholds, and
-            availability across the house.
+            Your shelf catalogue — prices, reorder points, and what is
+            stocked where.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -173,7 +173,7 @@ export default function ProductsPage() {
 
       {isLoading ? (
         <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">
-          Curating products…
+          Loading products…
         </div>
       ) : products?.data?.length === 0 ? (
         <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line">
