@@ -22,6 +22,11 @@ function qtySchema(message: string, accept: (d: ReturnType<typeof toQty>) => boo
 
 export const QtySchema = qtySchema(QTY_MESSAGE, (d) => d.greaterThan(0));
 export const SignedQtySchema = qtySchema(SIGNED_QTY_MESSAGE, (d) => !d.isZero());
+// A threshold rather than a line quantity, so zero is allowed.
+export const NonNegativeQtySchema = qtySchema(
+  "Must be zero or more, to at most 3 decimal places",
+  (d) => !d.isNegative()
+);
 
 // ===== Org =====
 export const OrgPatchSchema = z.object({
@@ -88,7 +93,7 @@ export const ProductCreateSchema = z.object({
   unitPrice: z.number().positive("Unit price must be positive"),
   costPrice: z.number().positive("Cost price must be positive").optional().nullable(),
   category: z.string().default("General"),
-  reorderLevel: z.number().int().min(0).default(10),
+  reorderLevel: NonNegativeQtySchema.default(toQty(10)),
 });
 
 export const ProductPatchSchema = z.object({
@@ -97,7 +102,7 @@ export const ProductPatchSchema = z.object({
   unitPrice: z.number().positive().optional(),
   costPrice: z.number().positive().optional().nullable(),
   category: z.string().optional(),
-  reorderLevel: z.number().int().min(0).optional(),
+  reorderLevel: NonNegativeQtySchema.optional(),
 });
 // SKU excluded — immutable after creation
 
@@ -110,7 +115,7 @@ export const ProductImportRowSchema = z.object({
   category: z.preprocess(blankToUndef, z.string().trim().default("General")),
   unitPrice: z.coerce.number().positive("Unit price must be positive"),
   costPrice: z.preprocess(blankToUndef, z.coerce.number().positive().optional()),
-  reorderLevel: z.preprocess(blankToUndef, z.coerce.number().int().min(0).default(10)),
+  reorderLevel: z.preprocess(blankToUndef, NonNegativeQtySchema.default(toQty(10))),
 });
 
 // Generic envelope for any CSV import — an array of raw row objects.

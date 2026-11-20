@@ -39,3 +39,9 @@ test("formatQty distinguishes weighed from each", () => {
   expect(formatQty(D("3"), false)).toBe("3");
   expect(formatQty(D("3.000"), false)).toBe("3");
 });
+
+test("lineAmount multiplies exactly and rounds to the money scale", async () => {
+  const { lineAmount } = await import("@/lib/qty");
+  expect(lineAmount("0.734", "4200").toString()).toBe("3082.8");
+  expect(lineAmount("0.1", "0.3").toString()).toBe("0.03");
+});

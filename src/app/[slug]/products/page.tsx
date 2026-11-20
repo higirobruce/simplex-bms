@@ -17,6 +17,7 @@ import { Pagination } from "@/components/ui/pagination";
 import { useMoney } from "@/lib/currency";
 import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Plus, Search, Package, Pencil, Trash2, Upload } from "lucide-react";
+import { sumQty } from "@/lib/qty-display";
 
 const IMPORT_TEMPLATE = "sku,name,category,unitPrice,costPrice,reorderLevel\nMLK-001,Inyange Milk 1L,Dairy,1200,950,24\n";
 
@@ -101,7 +102,7 @@ export default function ProductsPage() {
       ...form,
       unitPrice: parseFloat(form.unitPrice),
       costPrice: form.costPrice ? parseFloat(form.costPrice) : null,
-      reorderLevel: parseInt(form.reorderLevel),
+      reorderLevel: parseFloat(form.reorderLevel),
     });
   };
 
@@ -115,7 +116,7 @@ export default function ProductsPage() {
         unitPrice: parseFloat(editing.unitPrice),
         costPrice: editing.costPrice ? parseFloat(editing.costPrice) : null,
         category: editing.category,
-        reorderLevel: parseInt(editing.reorderLevel),
+        reorderLevel: parseFloat(editing.reorderLevel),
         description: editing.description || null,
       },
     });
@@ -202,7 +203,7 @@ export default function ProductsPage() {
             </TableHeader>
             <TableBody>
               {products?.data?.map((product: any) => {
-                const totalQty = product.stockLevels?.reduce((sum: number, sl: any) => sum + Number(sl.qty), 0) || 0;
+                const totalQty = sumQty(product.stockLevels?.map((sl: any) => sl.qty) ?? []);
                 const isLow = totalQty <= Number(product.reorderLevel);
                 return (
                   <TableRow key={product.id}>
@@ -287,7 +288,7 @@ export default function ProductsPage() {
           </div>
           <div className="space-y-2">
             <Label>Reorder Level</Label>
-            <Input type="number" value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} />
+            <Input type="number" step="any" min="0" value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} />
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="outline" onClick={() => setShowAdd(false)}>Cancel</Button>
@@ -323,7 +324,7 @@ export default function ProductsPage() {
             </div>
             <div className="space-y-2">
               <Label>Reorder Level</Label>
-              <Input type="number" value={editing?.reorderLevel || ""} onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })} />
+              <Input type="number" step="any" min="0" value={editing?.reorderLevel || ""} onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })} />
             </div>
           </div>
           <div className="flex justify-end gap-3 pt-2">

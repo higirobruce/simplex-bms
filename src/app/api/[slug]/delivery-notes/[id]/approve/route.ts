@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
-import { addQty, toQty } from "@/lib/qty";
+import { addQty, lineAmount, toQty } from "@/lib/qty";
 import {
   requirePermission,
   handleRouteError,
@@ -156,8 +156,8 @@ export async function POST(
         );
         const fallbackProduct = productById.get(dnLine.productId);
         const unitPrice = orderLine
-          ? Number(orderLine.unitPrice)
-          : Number(fallbackProduct?.unitPrice ?? 0);
+          ? orderLine.unitPrice
+          : fallbackProduct?.unitPrice ?? 0;
         const productName =
           orderLine?.product.name ?? fallbackProduct?.name ?? null;
         return {
@@ -165,11 +165,11 @@ export async function POST(
           description: productName,
           qty: dnLine.qty,
           unitPrice,
-          amount: dnLine.qty.toNumber() * unitPrice,
+          amount: lineAmount(dnLine.qty, unitPrice),
         };
       });
 
-      const subtotal = invoiceLines.reduce((s, l) => s + l.amount, 0);
+      const subtotal = addQty(...invoiceLines.map((l) => l.amount));
 
       const dueDate = new Date();
       dueDate.setDate(dueDate.getDate() + 30);

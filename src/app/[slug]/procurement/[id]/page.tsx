@@ -19,6 +19,7 @@ import { PageHeader } from "@/components/page-header";
 import { formatDate } from "@/lib/utils";
 import { useMoney } from "@/lib/currency";
 import { ArrowLeft, Plus, Check, Inbox, X } from "lucide-react";
+import { isFullyDelivered, remainingQty } from "@/lib/qty-display";
 
 const statusVariant: Record<string, any> = {
   DRAFT: "secondary",
@@ -212,7 +213,7 @@ export default function PurchaseOrderDetailPage() {
                 <td className="px-6 py-4 text-right tabular">
                   <span
                     className={
-                      Number(l.qtyReceived) >= Number(l.qty)
+                      isFullyDelivered(l.qtyReceived, l.qty)
                         ? "text-success font-medium"
                         : Number(l.qtyReceived) > 0
                         ? "text-warning"
@@ -314,7 +315,7 @@ export default function PurchaseOrderDetailPage() {
             <Label>Lines received</Label>
             <div className="space-y-2 rounded-[var(--radius)] border border-line p-3">
               {order.lines.map((l: any) => {
-                const remaining = l.qty - l.qtyReceived;
+                const remaining = remainingQty(l.qty, l.qtyReceived);
                 return (
                   <div
                     key={l.id}
@@ -329,13 +330,14 @@ export default function PurchaseOrderDetailPage() {
                     <Input
                       type="number"
                       min="0"
+                      step="any"
                       max={remaining}
                       placeholder="0"
                       value={grnLines[l.id] ?? ""}
                       onChange={(e) =>
                         setGrnLines({
                           ...grnLines,
-                          [l.id]: parseInt(e.target.value) || 0,
+                          [l.id]: parseFloat(e.target.value) || 0,
                         })
                       }
                       disabled={remaining === 0}

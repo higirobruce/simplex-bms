@@ -34,3 +34,10 @@ test("the opening-stock importer accepts decimal quantities", () => {
   expect(StockImportRowSchema.safeParse({ sku: "RICE-5", location: "Main", qty: "12.5" }).success).toBe(true);
   expect(StockImportRowSchema.safeParse({ sku: "RICE-5", location: "Main", qty: "1.2345" }).success).toBe(false);
 });
+
+test("a fractional reorder level is accepted, a negative one is not", async () => {
+  const { ProductCreateSchema } = await import("@/lib/validations");
+  const base = { sku: "A-1", name: "Rice", unitPrice: 10 };
+  expect(ProductCreateSchema.safeParse({ ...base, reorderLevel: 2.5 }).success).toBe(true);
+  expect(ProductCreateSchema.safeParse({ ...base, reorderLevel: -1 }).success).toBe(false);
+});
