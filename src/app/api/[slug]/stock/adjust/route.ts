@@ -37,7 +37,7 @@ export async function POST(req: Request) {
 
       if (isNegative(newQty)) {
         throw new Error(
-          `Insufficient stock. Available: ${formatQty(currentQty, true)}, requested: ${formatQty(qty.abs(), true)}`
+          `Insufficient stock. Available: ${formatQty(currentQty, product.isWeighed)}, requested: ${formatQty(qty.abs(), product.isWeighed)}`
         );
       }
 

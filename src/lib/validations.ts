@@ -86,6 +86,11 @@ export const UserPatchSchema = z.object({
 });
 
 // ===== Products =====
+// RRA EBM 2.1 tax codes: A = A-EX (exempt), B = B-18.00%, C, D.
+export const TaxTypeSchema = z.enum(["A", "B", "C", "D"]);
+// Optional trimmed text; a blank string becomes null so it never collides in a unique index.
+const optionalTrimmed = z.string().trim().transform((v) => (v === "" ? null : v)).nullable().optional();
+
 export const ProductCreateSchema = z.object({
   sku: z.string().min(1, "SKU is required"),
   name: z.string().min(1, "Product name is required"),
@@ -94,6 +99,13 @@ export const ProductCreateSchema = z.object({
   costPrice: z.number().positive("Cost price must be positive").optional().nullable(),
   category: z.string().default("General"),
   reorderLevel: NonNegativeQtySchema.default(toQty(10)),
+  barcode: optionalTrimmed,
+  plu: optionalTrimmed,
+  isWeighed: z.boolean().default(false),
+  taxTyCd: TaxTypeSchema.default("B"),
+  department: z.string().trim().min(1).default("General"),
+  packSize: optionalTrimmed,
+  shelfLifeDays: z.number().int().positive("Shelf life must be a positive number of days").optional().nullable(),
 });
 
 export const ProductPatchSchema = z.object({
@@ -103,6 +115,13 @@ export const ProductPatchSchema = z.object({
   costPrice: z.number().positive().optional().nullable(),
   category: z.string().optional(),
   reorderLevel: NonNegativeQtySchema.optional(),
+  barcode: optionalTrimmed,
+  plu: optionalTrimmed,
+  isWeighed: z.boolean().optional(),
+  taxTyCd: TaxTypeSchema.optional(),
+  department: z.string().trim().min(1).optional(),
+  packSize: optionalTrimmed,
+  shelfLifeDays: z.number().int().positive().optional().nullable(),
 });
 // SKU excluded — immutable after creation
 
