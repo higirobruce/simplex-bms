@@ -35,7 +35,10 @@ export async function POST(req: Request) {
       const rowNo = i + 1;
       const row = StockImportRowSchema.safeParse(parsed.data.rows[i]);
       if (!row.success) {
-        results.push({ row: rowNo, status: "error", message: row.error.issues[0].message });
+        const issue = row.error.issues[0];
+        const raw = (parsed.data.rows[i] as Record<string, unknown> | null)?.qty;
+        const message = issue.path[0] === "qty" ? `${issue.message} (got "${String(raw)}")` : issue.message;
+        results.push({ row: rowNo, status: "error", message });
         continue;
       }
       const productId = bySku.get(row.data.sku.toLowerCase());

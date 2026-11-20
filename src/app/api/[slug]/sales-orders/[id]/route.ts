@@ -1,3 +1,4 @@
+import { addQty, lineAmount } from "@/lib/qty";
 import { prisma } from "@/lib/prisma";
 import {
   getTenantContext,
@@ -58,7 +59,7 @@ export async function PATCH(
 
     const { lines, ...rest } = parsed.data;
     const subtotal = lines
-      ? lines.reduce((s, l) => s + l.qty * l.unitPrice, 0)
+      ? addQty(...lines.map((l) => lineAmount(l.qty, l.unitPrice)))
       : Number(existing.subtotal);
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -70,7 +71,7 @@ export async function PATCH(
             productId: l.productId,
             qty: l.qty,
             unitPrice: l.unitPrice,
-            amount: l.qty * l.unitPrice,
+            amount: lineAmount(l.qty, l.unitPrice),
           })),
         });
       }

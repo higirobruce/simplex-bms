@@ -37,7 +37,7 @@ export async function POST(req: Request) {
 
       if (isNegative(newQty)) {
         throw new Error(
-          `Insufficient stock. Available: ${formatQty(currentQty, true)}, requested: ${formatQty(toQty(qty).abs(), true)}`
+          `Insufficient stock. Available: ${formatQty(currentQty, true)}, requested: ${formatQty(qty.abs(), true)}`
         );
       }
 
@@ -50,9 +50,9 @@ export async function POST(req: Request) {
       const movement = await tx.stockMovement.create({
         data: {
           productId,
-          toLocationId: qty > 0 ? locationId : null,
-          fromLocationId: qty < 0 ? locationId : null,
-          qty: Math.abs(qty),
+          toLocationId: qty.greaterThan(0) ? locationId : null,
+          fromLocationId: qty.isNegative() ? locationId : null,
+          qty: qty.abs(),
           type,
           reason: reason || null,
           orgId,

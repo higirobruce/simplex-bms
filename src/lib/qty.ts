@@ -29,3 +29,8 @@ export function isNegative(v: QtyLike): boolean {
 export function formatQty(v: QtyLike, isWeighed: boolean): string {
   return toQty(v).toFixed(isWeighed ? 3 : 0);
 }
+
+/** qty x unit price as an exact Decimal, rounded to the money scale (2dp). */
+export function lineAmount(qty: QtyLike, unitPrice: QtyLike): Prisma.Decimal {
+  return toQty(qty).times(toQty(unitPrice)).toDecimalPlaces(2);
+}

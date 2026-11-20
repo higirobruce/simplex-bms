@@ -1,4 +1,27 @@
 import { z } from "zod";
+import { toQty } from "@/lib/qty";
+
+// ===== Quantities (Decimal(12,3)) =====
+// Accepts a JSON number or a decimal string; yields a Prisma.Decimal.
+// Excess precision is rejected, not rounded, so the caller finds out.
+const QTY_MESSAGE = "Quantity must be positive, to at most 3 decimal places";
+const SIGNED_QTY_MESSAGE = "Quantity must be non-zero, to at most 3 decimal places";
+
+function qtySchema(message: string, accept: (d: ReturnType<typeof toQty>) => boolean) {
+  return z.union([z.string().trim().min(1), z.number().finite()], { message }).transform((v, ctx) => {
+    try {
+      const d = toQty(v);
+      if (d.isFinite() && d.decimalPlaces() <= 3 && accept(d)) return d;
+    } catch {
+      // fall through to the issue below
+    }
+    ctx.addIssue({ code: "custom", message });
+    return z.NEVER;
+  });
+}
+
+export const QtySchema = qtySchema(QTY_MESSAGE, (d) => d.greaterThan(0));
+export const SignedQtySchema = qtySchema(SIGNED_QTY_MESSAGE, (d) => !d.isZero());
 
 // ===== Org =====
 export const OrgPatchSchema = z.object({
@@ -108,7 +131,7 @@ export const CustomerImportRowSchema = z.object({
 export const StockImportRowSchema = z.object({
   sku: z.string().trim().min(1, "SKU is required"),
   location: z.string().trim().min(1, "Location is required"),
-  qty: z.coerce.number().int().positive("Qty must be a positive whole number"),
+  qty: QtySchema,
 });
 
 export const VendorImportRowSchema = z.object({
@@ -184,7 +207,7 @@ export const ExpensePatchSchema = z.object({
 const InvoiceLineItemSchema = z.object({
   productId: z.string().optional().nullable(),
   description: z.string().optional().nullable(),
-  qty: z.number().int().min(1, "Quantity must be at least 1"),
+  qty: QtySchema,
   unitPrice: z.number().min(0, "Unit price cannot be negative"),
 });
 
@@ -211,7 +234,7 @@ export const PaymentCreateSchema = z.object({
 export const StockAdjustSchema = z.object({
   productId: z.string().min(1, "Product is required"),
   locationId: z.string().min(1, "Location is required"),
-  qty: z.number().int().refine((v) => v !== 0, "Quantity cannot be zero"),
+  qty: SignedQtySchema,
   type: z.enum(["RECEIPT", "ISSUE", "TRANSFER", "ADJUSTMENT", "RETURN"]),
   reason: z.string().optional().nullable(),
 });
@@ -249,7 +272,7 @@ export const LocationPatchSchema = z.object({
 // ===== Sales =====
 const OrderLineSchema = z.object({
   productId: z.string().min(1, "Product is required"),
-  qty: z.number().int().positive("Qty must be positive"),
+  qty: QtySchema,
   unitPrice: z.number().min(0, "Unit price cannot be negative"),
 });
 
@@ -270,7 +293,7 @@ export const SalesOrderPatchSchema = z.object({
 const DeliveryNoteLineSchema = z.object({
   productId: z.string().min(1),
   orderLineId: z.string().optional().nullable(),
-  qty: z.number().int().positive(),
+  qty: QtySchema,
 });
 
 export const DeliveryNoteCreateSchema = z.object({
@@ -298,7 +321,7 @@ export const PurchaseOrderPatchSchema = z.object({
 const GoodsReceiptLineSchema = z.object({
   productId: z.string().min(1),
   orderLineId: z.string().optional().nullable(),
-  qty: z.number().int().positive(),
+  qty: QtySchema,
 });
 
 export const GoodsReceiptCreateSchema = z.object({
