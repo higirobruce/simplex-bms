@@ -2,45 +2,47 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== WORKSHOP STEEL — Hardware Operations ===== */
+/* ===== SHELF EDGE — Supermarket Retail ===== */
 :root {
-  /* Surfaces — concrete + brushed paper */
-  --bg: #ECEAE3;            /* concrete canvas */
-  --bg-tint: #DCD9CF;       /* deeper edge */
+  /* Surfaces — shelf-label paper */
+  --bg: #F3F3EF;            /* canvas */
+  --bg-tint: #E8E8E2;       /* deeper edge */
   --surface: #FFFFFF;       /* primary panel */
-  --surface-2: #F4F2EC;     /* paper / brushed */
-  --surface-3: #E8E5DD;     /* subtle wash */
+  --surface-2: #F8F8F5;     /* paper wash */
+  --surface-3: #E8E8E2;     /* subtle wash */
 
-  /* Ink — graphite */
-  --ink: #1A1B1E;           /* graphite */
-  --ink-soft: #4F535A;      /* steel */
-  --ink-mute: #8E939B;      /* light steel */
+  /* Ink — near-black */
+  --ink: #121212;
+  --ink-soft: #4A4A44;
+  --ink-mute: #76766E;
 
-  /* Accents — graphite primary, workshop orange "gold" slot */
-  --accent: #1A1B1E;        /* graphite primary */
-  --accent-hover: #2D3035;
-  --accent-soft: #E0DFDA;   /* steel wash */
-  --gold: #E8651F;          /* WORKSHOP ORANGE */
-  --gold-soft: #FAE3D2;     /* orange wash */
+  /* Accents — ink primary, price-tag red "gold" slot */
+  --accent: #121212;        /* ink primary */
+  --accent-hover: #2B2B28;
+  --accent-soft: #E8E8E2;
+  --signal: #E01B20;        /* signal red: fills and white-text chips */
+  --hi-vis: #FFD400;        /* hi-vis yellow: pills and one tile, only behind dark text */
+  --gold: #C2141A;          /* legacy name: text-weight signal red, AA at 10px */
+  --gold-soft: #FAE3E4;     /* signal wash */
 
-  /* Lines — cool steel */
-  --line: #D2CFC6;
-  --line-strong: #B6B2A8;
+  /* Lines */
+  --line: #D7D7D2;
+  --line-strong: #8A8A82;
 
-  /* Status — hi-vis */
-  --success: #1F6B3A;       /* OK green */
+  /* Status */
+  --success: #1F6B3A;
   --success-soft: #DDEDDF;
-  --warning: #C77A0F;       /* hi-vis amber */
+  --warning: #C77A0F;
   --warning-soft: #F8E5C5;
-  --danger: #B23F2E;        /* alert red */
-  --danger-soft: #F5DDD7;
+  --danger: #C2141A;        /* same text-weight red as gold */
+  --danger-soft: #FAE3E4;
   --info: #2C547D;
   --info-soft: #DCE5EE;
 
-  /* Sharp corners */
-  --radius: 4px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  /* Near-square corners */
+  --radius: 2px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
 }
 
 html,
