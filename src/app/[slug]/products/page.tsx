@@ -183,7 +183,7 @@ export default function ProductsPage() {
           />
           <p className="font-display font-bold text-xl uppercase tracking-tight text-ink">No products yet</p>
           <p className="text-sm text-ink-soft mt-1">
-            Begin by adding your first piece.
+            Begin by adding your first product.
           </p>
         </div>
       ) : (

@@ -5,9 +5,10 @@ import { expect, test } from "vitest";
 const DEAD = ["Workbench", "Hardware Operations", "hardware.shop",
               "HW-OPS", "workshop", "Higiro Hardware", "Space Grotesk", "JetBrains Mono"];
 
-// Atelier-era vocabulary; regexes so "the house" does not match "warehouse" or "the houses".
+// Atelier-era vocabulary; regexes with boundaries so "the house(s)" does not match "warehouse".
 const DEAD_RE: [string, RegExp][] = [
-  ["the house", /\bthe house\b/i],
+  ["the house", /\bthe houses?\b/i],
+  ["your first piece", /\byour first piece\b/i],
   ["Curate/Curating", /\bcurat(e|es|ed|ing)\b/i],
   ["Atelier", /\batelier\b/i],
   ["bespoke", /\bbespoke\b/i],
