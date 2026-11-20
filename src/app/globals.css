@@ -58,7 +58,7 @@ body {
 
 /* "font-serif" Tailwind class is repurposed as the display heading font */
 .font-serif {
-  font-family: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  font-family: var(--font-display), "Archivo", system-ui, sans-serif;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -67,7 +67,7 @@ body {
 .font-mono,
 code,
 .tabular-mono {
-  font-family: var(--font-mono), ui-monospace, "JetBrains Mono", "Menlo",
+  font-family: var(--font-mono), ui-monospace, "IBM Plex Mono", "Menlo",
     monospace;
 }
 

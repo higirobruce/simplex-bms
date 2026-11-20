@@ -156,7 +156,7 @@ export default function SignupPage() {
             Set up
           </p>
           <h1 className="font-display text-4xl font-bold uppercase tracking-tight text-ink leading-[1.05]">
-            New shop.
+            New store.
           </h1>
           <p className="mt-3 text-sm text-ink-soft">
             A few details and you&apos;re open for business.
@@ -229,7 +229,7 @@ export default function SignupPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="orgName">Shop Name</Label>
+              <Label htmlFor="orgName">Store Name</Label>
               <Input
                 id="orgName"
                 name="orgName"
@@ -263,7 +263,7 @@ export default function SignupPage() {
               className="w-full"
               disabled={loading}
             >
-              {loading ? "Setting up…" : "Open shop"}
+              {loading ? "Setting up…" : "Open store"}
             </Button>
 
             <p className="text-center text-sm text-ink-soft pt-2 font-mono uppercase tracking-wider text-[0.7rem]">

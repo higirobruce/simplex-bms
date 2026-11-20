@@ -3,7 +3,7 @@ import path from "node:path";
 import { expect, test } from "vitest";
 
 const DEAD = ["Workbench", "Hardware Operations", "hardware.shop",
-              "HW-OPS", "workshop", "Higiro Hardware"];
+              "HW-OPS", "workshop", "Higiro Hardware", "Space Grotesk", "JetBrains Mono"];
 
 function walk(dir: string, exts: string[]): string[] {
   const out: string[] = [];
@@ -17,7 +17,7 @@ function walk(dir: string, exts: string[]): string[] {
 
 test("no Workshop Steel vocabulary survives in src/", () => {
   const found: string[] = [];
-  for (const file of walk("src", [".ts", ".tsx", ".css"])) {
+  for (const file of walk("src", [".ts", ".tsx", ".css", ".svg"])) {
     const body = readFileSync(file, "utf8");
     for (const term of DEAD) {
       if (body.toLowerCase().includes(term.toLowerCase())) found.push(`${file}: ${term}`);

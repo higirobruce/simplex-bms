@@ -168,7 +168,7 @@ export default function LoginPage() {
               className="w-full"
               disabled={loading}
             >
-              {loading ? "Authenticating…" : "Clock in"}
+              {loading ? "Authenticating…" : "Start shift"}
             </Button>
 
             {platform?.allowSignups !== false && (
@@ -178,7 +178,7 @@ export default function LoginPage() {
                   href="/auth/signup"
                   className="text-gold font-semibold hover:underline underline-offset-4"
                 >
-                  Set up shop
+                  Set up store
                 </Link>
               </p>
             )}
