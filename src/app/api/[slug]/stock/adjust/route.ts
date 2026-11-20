@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { requirePermission, handleRouteError, errorResponse } from "@/lib/api";
 import { StockAdjustSchema } from "@/lib/validations";
+import { addQty, formatQty, isNegative, toQty } from "@/lib/qty";
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
@@ -31,19 +32,22 @@ export async function POST(req: Request) {
         where: { productId_locationId: { productId, locationId } },
       });
 
-      const currentQty = current?.qty ?? 0;
-      const newQty = currentQty + qty;
+      const currentQty = toQty(current?.qty ?? 0);
+      const newQty = addQty(currentQty, qty);
 
-      if (newQty < 0) {
+      if (isNegative(newQty)) {
         throw new Error(
-          `Insufficient stock. Available: ${currentQty}, requested: ${Math.abs(qty)}`
+          `Insufficient stock. Available: ${formatQty(currentQty, true)}, requested: ${formatQty(toQty(qty).abs(), true)}`
         );
       }
 
+      // StockLevel.qty is still Int until Task 7 migrates it to Decimal(12,3);
+      // newQty is a whole number here, so toNumber() is lossless. Task 7 should
+      // pass newQty directly.
       await tx.stockLevel.upsert({
         where: { productId_locationId: { productId, locationId } },
-        update: { qty: newQty },
-        create: { productId, locationId, qty: newQty },
+        update: { qty: newQty.toNumber() },
+        create: { productId, locationId, qty: newQty.toNumber() },
       });
 
       const movement = await tx.stockMovement.create({
