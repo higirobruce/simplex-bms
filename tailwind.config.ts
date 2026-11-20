@@ -61,9 +61,9 @@ const config: Config = {
       },
       boxShadow: {
         panel:
-          "0 1px 0 rgba(21,17,13,0.02), 0 1px 2px rgba(21,17,13,0.04), 0 8px 24px -12px rgba(21,17,13,0.08)",
+          "0 1px 0 rgba(18,18,18,0.02), 0 1px 2px rgba(18,18,18,0.04), 0 8px 24px -12px rgba(18,18,18,0.08)",
         lift:
-          "0 2px 4px rgba(21,17,13,0.04), 0 16px 40px -16px rgba(21,17,13,0.16)",
+          "0 2px 4px rgba(18,18,18,0.04), 0 16px 40px -16px rgba(18,18,18,0.16)",
       },
     },
   },
