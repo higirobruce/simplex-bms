@@ -5,3 +5,6 @@ node_modules
 /src/generated/prisma
 .DS_Store
 tsconfig.tsbuildinfo
+
+# superpowers SDD scratch (ledger, briefs, reports, review packages)
+.superpowers/
