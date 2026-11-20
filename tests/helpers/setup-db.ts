@@ -43,7 +43,7 @@ export default async function setup() {
     const found = await client.$queryRaw<unknown[]>`select 1 from pg_database where datname = ${dbName}`;
     if (found.length === 0) await client.$executeRawUnsafe(`create database "${dbName}"`);
   } catch (e) {
-    console.warn(`[setup-db] Postgres unreachable (${(e as Error).message.split("\n").pop()}); database tests will fail.`);
+    console.warn(`[setup-db] could not check/create database "${dbName}" via the postgres admin database (${(e as Error).message.split("\n").pop()}); database tests will fail. Causes: server down, no access to "postgres", or no CREATEDB permission.`);
     return;
   } finally {
     await client.$disconnect().catch(() => {});

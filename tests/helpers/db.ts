@@ -1,17 +1,11 @@
 import { PrismaClient } from "@prisma/client";
+import { assertTestDatabaseUrl } from "./guard";
 
 // Test-only client. Never import @/lib/prisma from tests: that one is bound to the dev database.
 // Hard guard: refuse to run against anything but bms_test (e.g. if .env.test is missing and
 // DATABASE_URL fell back to the dev database), because resetDb truncates everything.
 const url = process.env.DATABASE_URL ?? "";
-if (!/\/bms_test(\?|$)/.test(url)) {
-  throw new Error(
-    "Refusing to run database tests: DATABASE_URL does not point at bms_test. Is .env.test present?",
-  );
-}
-
-// Tells the setupFiles hook that this test file uses the database, so it should reset first.
-(globalThis as { __testDbLoaded?: boolean }).__testDbLoaded = true;
+assertTestDatabaseUrl(url);
 
 export const prisma = new PrismaClient({ datasourceUrl: url });
 

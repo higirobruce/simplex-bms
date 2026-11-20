@@ -25,6 +25,9 @@ test("seedOrg produces two distinct orgs", async () => {
   expect(u!.orgId).toBe(f.orgId);
 });
 
+// Order-dependent: only proves the beforeEach reset when it runs after the seeding tests above
+// in the same file. Run alone or with -t it passes vacuously. Keep it: it is the only check
+// on the setup-each.ts wiring.
 test("each test starts from an empty database", async () => {
   expect(await prisma.org.count()).toBe(0);
 });
