@@ -11,11 +11,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTenant } from "@/lib/hooks";
 import { useMoney } from "@/lib/currency";
 import { Plus, Trash2 } from "lucide-react";
+import { parseQtyInput } from "@/lib/qty-display";
 
 interface LineItem {
   productId: string;
   description: string;
-  qty: number;
+  qty: string; // raw input text; sent as-is so 0.734 stays exact
   unitPrice: number;
 }
 
@@ -28,13 +29,13 @@ export default function NewInvoicePage() {
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lineItems, setLineItems] = useState<LineItem[]>([
-    { productId: "", description: "", qty: 1, unitPrice: 0 },
+    { productId: "", description: "", qty: "1", unitPrice: 0 },
   ]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const addLineItem = () => {
-    setLineItems([...lineItems, { productId: "", description: "", qty: 1, unitPrice: 0 }]);
+    setLineItems([...lineItems, { productId: "", description: "", qty: "1", unitPrice: 0 }]);
   };
 
   const removeLineItem = (index: number) => {
@@ -60,7 +61,7 @@ export default function NewInvoicePage() {
     setLineItems(updated);
   };
 
-  const subtotal = lineItems.reduce((sum, item) => sum + item.qty * item.unitPrice, 0);
+  const subtotal = lineItems.reduce((sum, item) => sum + (parseQtyInput(item.qty) ?? 0) * item.unitPrice, 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,10 +167,12 @@ export default function NewInvoicePage() {
                     {idx === 0 && <Label className="text-xs">Qty</Label>}
                     <Input
                       type="number"
-                      min="1"
+                      min="0.001"
+                      step="any"
+                      required
                       value={item.qty}
                       onChange={(e) =>
-                        updateLineItem(idx, "qty", parseInt(e.target.value) || 1)
+                        updateLineItem(idx, "qty", e.target.value)
                       }
                     />
                   </div>
@@ -187,7 +190,7 @@ export default function NewInvoicePage() {
                   <div className="w-28 text-right space-y-1">
                     {idx === 0 && <Label className="text-xs">Amount</Label>}
                     <p className="h-10 flex items-center justify-end font-medium text-sm">
-                      {fmt(item.qty * item.unitPrice)}
+                      {fmt((parseQtyInput(item.qty) ?? 0) * item.unitPrice)}
                     </p>
                   </div>
                   <Button

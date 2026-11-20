@@ -11,11 +11,12 @@ import { PageHeader } from "@/components/page-header";
 import { useTenant } from "@/lib/hooks";
 import { useMoney } from "@/lib/currency";
 import { Plus, Trash2 } from "lucide-react";
+import { parseQtyInput } from "@/lib/qty-display";
 
 interface Line {
   productId: string;
   productName?: string;
-  qty: number;
+  qty: string; // raw input text; sent as-is so 0.734 stays exact
   unitPrice: number;
 }
 
@@ -28,7 +29,7 @@ export default function NewSalesOrderPage() {
   const [expectedDate, setExpectedDate] = useState("");
   const [notes, setNotes] = useState("");
   const [lines, setLines] = useState<Line[]>([
-    { productId: "", qty: 1, unitPrice: 0 },
+    { productId: "", qty: "1", unitPrice: 0 },
   ]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -51,11 +52,11 @@ export default function NewSalesOrderPage() {
   };
 
   const addLine = () =>
-    setLines([...lines, { productId: "", qty: 1, unitPrice: 0 }]);
+    setLines([...lines, { productId: "", qty: "1", unitPrice: 0 }]);
   const removeLine = (i: number) =>
     lines.length > 1 && setLines(lines.filter((_, idx) => idx !== i));
 
-  const subtotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+  const subtotal = lines.reduce((s, l) => s + (parseQtyInput(l.qty) ?? 0) * l.unitPrice, 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,10 +156,12 @@ export default function NewSalesOrderPage() {
                   {i === 0 && <Label>Qty</Label>}
                   <Input
                     type="number"
-                    min="1"
+                    min="0.001"
+                    step="any"
+                    required
                     value={line.qty}
                     onChange={(e) =>
-                      updateLine(i, "qty", parseInt(e.target.value) || 1)
+                      updateLine(i, "qty", e.target.value)
                     }
                   />
                 </div>
@@ -167,7 +170,7 @@ export default function NewSalesOrderPage() {
                   <Input
                     type="number"
                     min="0"
-                    step="0.01"
+                    step="any"
                     value={line.unitPrice}
                     onChange={(e) =>
                       updateLine(i, "unitPrice", parseFloat(e.target.value) || 0)
@@ -177,7 +180,7 @@ export default function NewSalesOrderPage() {
                 <div className="w-28 text-right space-y-1">
                   {i === 0 && <Label>Amount</Label>}
                   <p className="h-11 flex items-center justify-end font-medium text-sm tabular">
-                    {fmt(line.qty * line.unitPrice)}
+                    {fmt((parseQtyInput(line.qty) ?? 0) * line.unitPrice)}
                   </p>
                 </div>
                 <Button

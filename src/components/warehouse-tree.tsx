@@ -3,6 +3,7 @@
 import * as React from "react";
 import { ChevronRight, Plus, Pencil, Trash2, Warehouse } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { sumQty } from "@/lib/qty-display";
 
 export interface WarehouseNode {
   id: string;
@@ -32,8 +33,8 @@ export function buildTree(nodes: WarehouseNode[]): TreeNode[] {
   });
   // Compute totalQty bottom-up
   const computeTotals = (node: TreeNode): number => {
-    const childSum = node.children.reduce((s, c) => s + computeTotals(c), 0);
-    node.totalQty = node.directQty + childSum;
+    const childSum = sumQty(node.children.map(computeTotals));
+    node.totalQty = sumQty([node.directQty, childSum]);
     return node.totalQty;
   };
   roots.forEach(computeTotals);

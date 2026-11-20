@@ -24,3 +24,22 @@ test("sumQty rounds to three places so a threshold comparison is exact", () => {
   expect(sumQty(["0.1", "0.2"]) <= 0.3).toBe(true);
   expect(sumQty([])).toBe(0);
 });
+
+import { parseQtyInput } from "@/lib/qty-display";
+
+test("parseQtyInput keeps fractions instead of truncating them", () => {
+  expect(parseInt("0.734")).toBe(0); // the bug it replaces
+  expect(parseQtyInput("0.734")).toBe(0.734);
+  expect(parseQtyInput("2.5")).toBe(2.5);
+  expect(parseQtyInput("12.75")).toBe(12.75);
+  expect(parseQtyInput("-2.5")).toBe(-2.5);
+  expect(parseQtyInput(".5")).toBe(0.5);
+});
+
+test("parseQtyInput returns null for empty or non-numeric text, never a fallback", () => {
+  expect(parseQtyInput("")).toBeNull();
+  expect(parseQtyInput("  ")).toBeNull();
+  expect(parseQtyInput("abc")).toBeNull();
+  expect(parseQtyInput("1e3")).toBeNull();
+  expect(parseQtyInput("1.2.3")).toBeNull();
+});
