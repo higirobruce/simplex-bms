@@ -91,6 +91,9 @@ export const TaxTypeSchema = z.enum(["A", "B", "C", "D"]);
 // Optional trimmed text; a blank string becomes null so it never collides in a unique index.
 const optionalTrimmed = z.string().trim().transform((v) => (v === "" ? null : v)).nullable().optional();
 
+// 1..3650 days (ten years) keeps the value far inside Postgres INTEGER.
+const ShelfLifeSchema = z.number().int().min(1, "Shelf life must be a positive number of days").max(3650, "Shelf life cannot exceed 3650 days");
+
 export const ProductCreateSchema = z.object({
   sku: z.string().min(1, "SKU is required"),
   name: z.string().min(1, "Product name is required"),
@@ -105,7 +108,7 @@ export const ProductCreateSchema = z.object({
   taxTyCd: TaxTypeSchema.default("B"),
   department: z.string().trim().min(1).default("General"),
   packSize: optionalTrimmed,
-  shelfLifeDays: z.number().int().positive("Shelf life must be a positive number of days").optional().nullable(),
+  shelfLifeDays: ShelfLifeSchema.optional().nullable(),
 });
 
 export const ProductPatchSchema = z.object({
@@ -121,7 +124,7 @@ export const ProductPatchSchema = z.object({
   taxTyCd: TaxTypeSchema.optional(),
   department: z.string().trim().min(1).optional(),
   packSize: optionalTrimmed,
-  shelfLifeDays: z.number().int().positive().optional().nullable(),
+  shelfLifeDays: ShelfLifeSchema.optional().nullable(),
 });
 // SKU excluded — immutable after creation
 
@@ -135,6 +138,19 @@ export const ProductImportRowSchema = z.object({
   unitPrice: z.coerce.number().positive("Unit price must be positive"),
   costPrice: z.preprocess(blankToUndef, z.coerce.number().positive().optional()),
   reorderLevel: z.preprocess(blankToUndef, NonNegativeQtySchema.default(toQty(10))),
+  barcode: optionalTrimmed,
+  plu: optionalTrimmed,
+  isWeighed: z.preprocess(
+    (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : ["true", "yes", "y", "1"].includes(v.trim().toLowerCase())) : blankToUndef(v)),
+    z.boolean().default(false)
+  ),
+  taxTyCd: z.preprocess(
+    (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim().toUpperCase()) : blankToUndef(v)),
+    TaxTypeSchema.default("B")
+  ),
+  department: z.preprocess(blankToUndef, z.string().trim().min(1).default("General")),
+  packSize: optionalTrimmed,
+  shelfLifeDays: z.preprocess(blankToUndef, z.coerce.number().pipe(ShelfLifeSchema).optional()),
 });
 
 // Generic envelope for any CSV import — an array of raw row objects.

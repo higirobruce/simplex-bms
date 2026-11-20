@@ -17,7 +17,7 @@ export async function POST(req: Request) {
       parsed.data.rows,
       ProductImportRowSchema,
       (data) => prisma.product.create({ data: { orgId, ...data } }).then(() => undefined),
-      (data) => `SKU "${data.sku}" already exists`
+      (data) => `SKU "${data.sku}" or its barcode already exists`
     );
 
     if (summary.created > 0) {

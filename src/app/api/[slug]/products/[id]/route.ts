@@ -44,7 +44,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
 
     return NextResponse.json(product);
   } catch (error: any) {
-    if (error?.code === "P2002") return errorResponse("Duplicate value conflict", 409);
+    if (error?.code === "P2002") return errorResponse("A product with this barcode already exists", 409);
     return handleRouteError(error);
   }
 }
@@ -59,7 +59,9 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
 
     await prisma.product.update({
       where: { id: params.id },
-      data: { deletedAt: new Date() },
+      // Null the barcode so a deleted product does not reserve it (unique index ignores deletedAt).
+      // A restored product therefore comes back without its barcode.
+      data: { deletedAt: new Date(), barcode: null },
     });
 
     await logAudit({ orgId, userId, action: "DELETE", entityType: "Product", entityId: params.id, before: existing });
