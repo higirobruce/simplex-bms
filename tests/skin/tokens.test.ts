@@ -54,9 +54,10 @@ test("hi-vis yellow is only legible against ink, never against surface", () => {
 
 // line-strong is deliberately excluded: it is a border and scrollbar thumb, not text,
 // so WCAG non-text contrast (3:1) applies rather than 4.5:1.
-test("every text-bearing foreground token meets AA on bg, surface and surface-2", () => {
+test("every text-bearing foreground token meets AA on bg, bg-tint, surface and surface-2", () => {
   const foregrounds = ["ink", "ink-soft", "ink-mute", "gold", "danger", "success", "warning", "info"];
-  const grounds = ["bg", "surface", "surface-2"];
+  // bg-tint, surface-3 and accent-soft all share #E8E8E2, so bg-tint covers all three.
+  const grounds = ["bg", "bg-tint", "surface", "surface-2"];
   for (const fg of foregrounds) {
     for (const ground of grounds) {
       const ratio = contrastRatio(tokens[fg], tokens[ground]);
@@ -70,4 +71,14 @@ test("each status token meets AA on its own -soft tint (badge pattern)", () => {
     const ratio = contrastRatio(tokens[name], tokens[`${name}-soft`]);
     expect(ratio, `${name} on ${name}-soft = ${ratio.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
   }
+});
+
+test("white text on the signal red meets AA (filled pills and chips)", () => {
+  expect(contrastRatio(tokens.surface, tokens.signal)).toBeGreaterThanOrEqual(4.5);
+});
+
+// Non-text contrast (WCAG 1.4.11): a 3:1 floor for borders and scrollbar thumbs,
+// deliberately separate from the 4.5:1 text assertions above.
+test("line-strong border meets the 3:1 non-text floor on bg", () => {
+  expect(contrastRatio(tokens["line-strong"], tokens.bg)).toBeGreaterThanOrEqual(3);
 });
