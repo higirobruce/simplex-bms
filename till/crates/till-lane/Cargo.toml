@@ -9,3 +9,4 @@ eframe.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
 till-core = { path = "../till-core" }
+till-store = { path = "../till-store" }

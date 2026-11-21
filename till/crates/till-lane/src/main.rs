@@ -15,6 +15,10 @@ mod device;
 #[allow(dead_code)]
 mod escpos;
 
+// Task 5: composes the RRA tax receipt. Task 6+ wires it to the printer.
+#[allow(dead_code)]
+mod receipt;
+
 use eframe::egui;
 
 struct LaneApp;
