@@ -1524,12 +1524,17 @@ mod tests {
             .unwrap()
             .unwrap();
         let kept = l.last_receipt().unwrap().to_vec();
+        // The original print succeeded, so the paper holds exactly one copy.
+        assert_eq!(p.written, kept);
         p.fail_next = true;
         l.reprint(&mut p).unwrap();
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert_eq!(l.last_receipt(), Some(kept.as_slice()));
+        // The failed attempt wrote nothing.
+        assert_eq!(p.written, kept);
         l.reprint(&mut p).unwrap();
-        assert!(p.written.ends_with(&kept));
+        // The retry really emitted the bytes a second time.
+        assert_eq!(p.written, [kept.clone(), kept.clone()].concat());
     }
 
     #[tokio::test]
