@@ -51,6 +51,14 @@ pub enum StoreError {
     /// for one invoice number is never acceptable; nothing is overwritten.
     #[error("sale {id} is already confirmed with a different receipt")]
     ReceiptConflict { id: String },
+    /// A catalogue product the cache refuses to hold, so the whole sync is
+    /// rolled back rather than caching something no scan could ever reach.
+    #[error("catalogue product {id} rejected: {reason}")]
+    CatalogueRejected { id: String, reason: String },
+    /// Several cached products share one PLU. A PLU is not unique in the
+    /// schema, and guessing between them would price the wrong goods.
+    #[error("PLU {plu} belongs to more than one cached product")]
+    AmbiguousPlu { plu: String },
     #[error("cloud payload could not be serialised: {0}")]
     Payload(#[from] serde_json::Error),
 }
