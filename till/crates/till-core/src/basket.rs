@@ -7,6 +7,13 @@ use crate::codes::TaxType;
 use crate::line::{BasketLine, LineDiscount, LineError};
 use crate::money::Money;
 
+/// Highest `item_seq` a sale can carry. In the VSDC `TrnsSalesSaveWrItem`,
+/// `itemSeq` is a required NUMBER of data length 3, so a 1000th line has no
+/// representable sequence number. Not arbitrary: do not raise it without an RRA
+/// spec change. The cap counts numbers *issued*, not lines surviving, because
+/// a voided number is already spent and is never reissued.
+pub const MAX_ITEM_SEQ: u16 = 999;
+
 /// Why a basket could not be changed or totalled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BasketError {
@@ -15,10 +22,11 @@ pub enum BasketError {
     Empty,
     #[error("no line with that item sequence")]
     NoSuchLine,
-    /// `item_seq` is a `u16` on the wire and is never reused, so the counter
-    /// can run out. Refused by name rather than wrapped onto a used number.
-    #[error("too many lines have been added to this basket")]
-    TooManyLines,
+    /// The sequence numbers of a sale are used up (see [`MAX_ITEM_SEQ`]).
+    /// Refused at the till, while the cashier can still split the basket into
+    /// two sales, rather than at the VSDC after the invoice number is spent.
+    #[error("a sale holds at most {max} lines; finish this sale and start another")]
+    TooManyLines { max: u16 },
     /// Summing many lines can exceed the 12-digit bound every `Money` carries.
     /// Refused rather than saturated: a clipped total is a wrong fiscal total.
     #[error("basket total is outside the supported range")]
@@ -96,7 +104,8 @@ impl Basket {
         let seq = self
             .last_seq
             .checked_add(1)
-            .ok_or(BasketError::TooManyLines)?;
+            .filter(|&n| n <= MAX_ITEM_SEQ)
+            .ok_or(BasketError::TooManyLines { max: MAX_ITEM_SEQ })?;
         self.last_seq = seq;
         line.item_seq = seq;
         self.lines.push(line);
@@ -283,6 +292,21 @@ mod tests {
             .unwrap();
         assert_eq!(seq, 2);
         assert_eq!(b.void_line(1), Err(BasketError::NoSuchLine));
+    }
+
+    #[test]
+    fn the_thousandth_line_is_refused_even_after_a_void() {
+        let mut b = Basket::new();
+        let mut last = 0;
+        for _ in 0..999 {
+            last = b.push_line(line("P", "1", "10", TaxType::A, None)).unwrap();
+        }
+        assert_eq!(last, 999);
+        let full = Err(BasketError::TooManyLines { max: 999 });
+        assert_eq!(b.push_line(line("P", "1", "10", TaxType::A, None)), full);
+        // Issued numbers count, not surviving lines: a void frees nothing.
+        b.void_line(1).unwrap();
+        assert_eq!(b.push_line(line("P", "1", "10", TaxType::A, None)), full);
     }
 
     #[test]
