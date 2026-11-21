@@ -21,19 +21,42 @@ CREATE TABLE product (
 -- Offline scan lookup by keyed PLU must not scan the whole catalogue.
 CREATE INDEX product_plu ON product (plu) WHERE plu IS NOT NULL;
 
--- One row per branch: the last invoice number handed out. Allocation (a later
--- task) must bump this inside the same transaction that inserts the sale.
+-- One row per (device, counter): the last invoice number handed out in that
+-- series. Allocation must bump this inside the same transaction that inserts
+-- the sale.
+--
+-- The VSDC keeps invoice counters per DEVICE, not per branch, and keeps seven
+-- of them, one per receipt/transaction type (vsdc.txt 3.3.1.1: the
+-- `selectInitInfo` response nests them under `InitDevice`; `InitBranch`
+-- carries none). RRA requires "an uninterrupted ascending number series per
+-- receipt type" (cis.txt 7.3), so each series is gapless on its own.
+-- `dvc_srl_no` is the `dvcSrlNo` the till initialised with; every lane of a
+-- shop shares a `bhfId`, so bhfId cannot identify a series.
+--
+-- `counter` is the name of the `selectInitInfo` field, minus its `last` prefix
+-- and `No` suffix, so the mapping is one-to-one:
+--   Invc       <-> lastInvcNo        TrainInvc  <-> lastTrainInvcNo
+--   SaleInvc   <-> lastSaleInvcNo    ProfrmInvc <-> lastProfrmInvcNo
+--   SaleRcpt   <-> lastSaleRcptNo    CopyInvc   <-> lastCopyInvcNo
+--   PchsInvc   <-> lastPchsInvcNo
 CREATE TABLE invc_seq (
-    bhf_id        TEXT PRIMARY KEY,
-    last_invc_no  INTEGER NOT NULL CHECK (last_invc_no >= 0)
+    dvc_srl_no    TEXT NOT NULL,
+    counter       TEXT NOT NULL
+                  CHECK (counter IN ('Invc', 'SaleInvc', 'SaleRcpt', 'PchsInvc',
+                                     'TrainInvc', 'ProfrmInvc', 'CopyInvc')),
+    last_invc_no  INTEGER NOT NULL CHECK (last_invc_no >= 0),
+    PRIMARY KEY (dvc_srl_no, counter)
 );
 
--- A sale's branch must have a sequence row: that is what makes the per-branch
--- numbering mean anything. SQLite cannot add a constraint to an existing table
--- without a full rebuild, so it lives here in the initial migration.
+-- A sale's series must have a sequence row: that is what makes the numbering
+-- mean anything. SQLite cannot add a constraint to an existing table without a
+-- full rebuild, so it lives here in the initial migration. `bhf_id` stays
+-- because the saveSales payload needs it, but it is NOT part of the key.
 CREATE TABLE sale (
     id             TEXT PRIMARY KEY,
-    bhf_id         TEXT NOT NULL REFERENCES invc_seq (bhf_id),
+    dvc_srl_no     TEXT NOT NULL,
+    counter        TEXT NOT NULL,
+    bhf_id         TEXT NOT NULL,
     invc_no        INTEGER NOT NULL CHECK (invc_no >= 1),
     state          TEXT NOT NULL
                    CHECK (state IN ('AwaitingVsdc', 'Confirmed', 'Failed', 'Voided')),
@@ -55,7 +78,8 @@ CREATE TABLE sale (
     confirmed_at   TEXT,
     attempts       INTEGER NOT NULL DEFAULT 0,
     last_error     TEXT,
-    UNIQUE (bhf_id, invc_no)
+    FOREIGN KEY (dvc_srl_no, counter) REFERENCES invc_seq (dvc_srl_no, counter),
+    UNIQUE (dvc_srl_no, counter, invc_no)
 );
 -- Finding sales that still need the VSDC's attention (resume after a crash).
 CREATE INDEX sale_open_state ON sale (state) WHERE state IN ('AwaitingVsdc', 'Failed');

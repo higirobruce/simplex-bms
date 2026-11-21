@@ -14,4 +14,4 @@ pub mod sequence;
 pub use catalogue::{CachedProduct, SyncReport};
 pub use sale::{NewSale, SaleHandle, VsdcReceipt};
 pub use schema::{Store, StoreError, decode_money, decode_pmt_ty, decode_qty, decode_tax_ty};
-pub use sequence::PendingSale;
+pub use sequence::{Counter, PendingSale};

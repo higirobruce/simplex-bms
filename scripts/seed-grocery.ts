@@ -644,10 +644,6 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
   // ---- lanes --------------------------------------------------------------
   // mrc is left null: whether the RRA machine certificate is per org, per lane or per
   // install is still an open question, so the seed does not invent one.
-  // bhfId: exactly ONE lane may carry a given bhfId (unique per org), because each till
-  // numbers its own invoices and two lanes sharing a branch id would collide at the VSDC.
-  // So only the first lane is configured; the others are unconfigured (null) until a
-  // multi-lane numbering scheme is decided.
   const laneNames = ["Till 1", "Till 2", "Till 3 — Express"];
   const lanes = [];
   for (let i = 0; i < laneNames.length; i++) {
@@ -657,7 +653,7 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
           code: `T${i + 1}`,
           name: laneNames[i],
           locationId: location.id,
-          bhfId: i === 0 ? "00" : null,
+          bhfId: "00",
           orgId,
         },
       }),

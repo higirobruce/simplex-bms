@@ -25,12 +25,17 @@ use till_core::codes::PmtTyCd;
 use till_core::{Basket, Settled, TenderSet};
 
 use crate::schema::{Store, StoreError, decode_money, decode_pmt_ty, decode_qty, decode_tax_ty};
-use crate::sequence::allocate_on;
+use crate::sequence::{Counter, allocate_on};
 
 /// Everything `begin_sale` needs. `settled` must be what `tenders.settle`
 /// returned for this basket's total; it is re-checked, not trusted.
 #[derive(Debug, Clone, Copy)]
 pub struct NewSale<'a> {
+    /// The till's device serial: with `counter`, which numbering series the
+    /// sale draws its invoice number from.
+    pub dvc_srl_no: &'a str,
+    pub counter: Counter,
+    /// The branch id for the payload. Shared by every lane of a shop.
     pub bhf_id: &'a str,
     pub basket: &'a Basket,
     pub tenders: &'a TenderSet,
@@ -91,17 +96,19 @@ impl Store {
 
         let mut tx = self.begin_immediate().await?;
         let written = async {
-            let invc_no = allocate_on(&mut tx, new.bhf_id).await?;
+            let invc_no = allocate_on(&mut tx, new.dvc_srl_no, new.counter).await?;
             let conn = tx.conn();
             let id: String = sqlx::query_scalar("select lower(hex(randomblob(16)))")
                 .fetch_one(&mut *conn)
                 .await?;
             sqlx::query(&format!(
-                "insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, \
-                 tot_tax_amt, pmt_ty_cd, buyer_tin, created_at) \
-                 values (?, ?, ?, 'AwaitingVsdc', ?, ?, ?, ?, ?, {NOW_SQL})"
+                "insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, \
+                 tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, created_at) \
+                 values (?, ?, ?, ?, ?, 'AwaitingVsdc', ?, ?, ?, ?, ?, {NOW_SQL})"
             ))
             .bind(&id)
+            .bind(new.dvc_srl_no)
+            .bind(new.counter.as_str())
             .bind(new.bhf_id)
             .bind(invc_no)
             .bind(totals.tot_amt.to_string())
@@ -460,6 +467,7 @@ async fn cloud_payload(
 
 #[cfg(test)]
 mod tests {
+    const DVC: &str = "dvc-1";
     use super::*;
     use till_core::codes::TaxType;
     use till_core::{BasketLine, Money, Qty, TenderEntry};
@@ -512,9 +520,11 @@ mod tests {
                 settled,
             }
         }
-        fn sale<'a>(&'a self, bhf: &'a str) -> NewSale<'a> {
+        fn sale<'a>(&'a self, dvc: &'a str) -> NewSale<'a> {
             NewSale {
-                bhf_id: bhf,
+                dvc_srl_no: dvc,
+                counter: Counter::SaleInvc,
+                bhf_id: "00",
                 basket: &self.basket,
                 tenders: &self.tenders,
                 settled: &self.settled,
@@ -547,7 +557,7 @@ mod tests {
     async fn a_begun_sale_stores_its_lines_tenders_and_totals() {
         let s = Store::open_in_memory().await.unwrap();
         let f = cash();
-        let h = s.begin_sale(f.sale("00")).await.unwrap();
+        let h = s.begin_sale(f.sale(DVC)).await.unwrap();
         assert_eq!(h.invc_no, 1);
         let (state, tot, taxbl, tax, pmt): (String, String, String, String, String) =
             sqlx::query_as(
@@ -575,14 +585,14 @@ mod tests {
     async fn beginning_a_sale_queues_nothing_yet() {
         // C1: the sale is not complete, so the cloud must not hear about it
         let s = Store::open_in_memory().await.unwrap();
-        s.begin_sale(cash().sale("00")).await.unwrap();
+        s.begin_sale(cash().sale(DVC)).await.unwrap();
         assert_eq!(count(&s, "select count(*) from outbound").await, 0);
     }
 
     #[tokio::test]
     async fn confirming_stores_the_receipt_and_queues_exactly_one_row() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let (state, rcpt, sign): (String, i64, String) =
             sqlx::query_as("select state, rcpt_no, rcpt_sign from sale where id=?")
@@ -605,7 +615,7 @@ mod tests {
     async fn the_receipt_qr_fields_are_readable_from_the_sale_row_alone() {
         // A COPY reprint must rebuild the C5 QR without the outbound payload.
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         let before: (Option<String>, Option<i64>) =
             sqlx::query_as("select vsdc_rcpt_pbct_date, tot_rcpt_no from sale where id=?")
                 .bind(&h.id)
@@ -638,7 +648,7 @@ mod tests {
         let s = Store::open_in_memory().await.unwrap();
         // Two tenders: the header takes the larger total (MobileMoney), tenders keep their own.
         let f = Fixture::new(&[(PmtTyCd::Cash, "1000"), (PmtTyCd::MobileMoney, "1380")]);
-        let h = s.begin_sale(f.sale("00")).await.unwrap();
+        let h = s.begin_sale(f.sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let (kind, payload): (String, String) =
             sqlx::query_as("select kind, payload from outbound where sale_id=?")
@@ -664,7 +674,7 @@ mod tests {
     async fn a_failed_sale_keeps_its_number_for_the_retry() {
         // Review Focus 4: the refusal case must not burn the number.
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.fail_sale(&h, "894 communication error").await.unwrap();
         let (state, attempts, last_error): (String, i64, Option<String>) =
             sqlx::query_as("select state, attempts, last_error from sale where id = ?")
@@ -676,7 +686,11 @@ mod tests {
         assert_eq!(attempts, 1);
         assert_eq!(last_error.as_deref(), Some("894 communication error"));
         assert_eq!(
-            s.pending_sale("00").await.unwrap().unwrap().invc_no,
+            s.pending_sale(DVC, Counter::SaleInvc)
+                .await
+                .unwrap()
+                .unwrap()
+                .invc_no,
             h.invc_no
         );
         // a second failure counts up without losing the number
@@ -689,7 +703,7 @@ mod tests {
         assert_eq!(attempts, 2);
         // and confirming the same handle afterwards still works, on the same number
         s.confirm_sale(&h, receipt()).await.unwrap();
-        assert_eq!(s.pending_sale("00").await.unwrap(), None);
+        assert_eq!(s.pending_sale(DVC, Counter::SaleInvc).await.unwrap(), None);
         let invc: i64 = sqlx::query_scalar("select invc_no from sale where id = ?")
             .bind(&h.id)
             .fetch_one(s.pool())
@@ -701,7 +715,7 @@ mod tests {
     #[tokio::test]
     async fn confirming_twice_with_the_same_receipt_queues_one_row_only() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         assert_eq!(count(&s, "select count(*) from outbound").await, 1);
@@ -710,7 +724,7 @@ mod tests {
     #[tokio::test]
     async fn confirming_a_confirmed_sale_with_another_receipt_is_refused_and_changes_nothing() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let other = VsdcReceipt {
             rcpt_no: 43,
@@ -725,7 +739,7 @@ mod tests {
     #[tokio::test]
     async fn a_confirmed_sale_cannot_be_failed() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let e = s.fail_sale(&h, "late").await.unwrap_err();
         assert!(matches!(e, StoreError::SaleNotAwaiting { .. }), "{e:?}");
@@ -762,13 +776,13 @@ mod tests {
         let e = s
             .begin_sale(NewSale {
                 basket: &empty,
-                ..f.sale("00")
+                ..f.sale(DVC)
             })
             .await
             .unwrap_err();
         assert!(matches!(e, StoreError::EmptySale), "{e:?}");
         assert_eq!(count(&s, "select count(*) from sale").await, 0);
-        assert_eq!(s.allocate_invc_no("00").await.unwrap(), 1);
+        assert_eq!(s.allocate_invc_no(DVC, Counter::SaleInvc).await.unwrap(), 1);
     }
 
     #[tokio::test]
@@ -782,7 +796,7 @@ mod tests {
         let e = s
             .begin_sale(NewSale {
                 settled: &wrong,
-                ..f.sale("00")
+                ..f.sale(DVC)
             })
             .await
             .unwrap_err();
@@ -794,14 +808,14 @@ mod tests {
     async fn a_second_sale_is_blocked_until_the_first_is_resolved() {
         let s = Store::open_in_memory().await.unwrap();
         let f = cash();
-        let h = s.begin_sale(f.sale("00")).await.unwrap();
-        let e = s.begin_sale(f.sale("00")).await.unwrap_err();
+        let h = s.begin_sale(f.sale(DVC)).await.unwrap();
+        let e = s.begin_sale(f.sale(DVC)).await.unwrap_err();
         assert!(
             matches!(e, StoreError::SequenceBlocked { invc_no: 1 }),
             "{e:?}"
         );
         s.confirm_sale(&h, receipt()).await.unwrap();
-        assert_eq!(s.begin_sale(f.sale("00")).await.unwrap().invc_no, 2);
+        assert_eq!(s.begin_sale(f.sale(DVC)).await.unwrap().invc_no, 2);
     }
 
     #[tokio::test]
@@ -818,7 +832,7 @@ mod tests {
         .execute(s.pool())
         .await
         .unwrap();
-        let e = s.begin_sale(cash().sale("00")).await.unwrap_err();
+        let e = s.begin_sale(cash().sale(DVC)).await.unwrap_err();
         assert!(e.to_string().contains("injected failure"), "{e:?}");
         for t in ["sale", "sale_line", "sale_tender", "outbound", "invc_seq"] {
             assert_eq!(
@@ -828,7 +842,7 @@ mod tests {
             );
         }
         // and the number it would have taken is still available
-        assert_eq!(s.allocate_invc_no("00").await.unwrap(), 1);
+        assert_eq!(s.allocate_invc_no(DVC, Counter::SaleInvc).await.unwrap(), 1);
     }
 
     // ---- abandon_sale ----
@@ -836,17 +850,17 @@ mod tests {
     #[tokio::test]
     async fn abandoning_unblocks_the_branch_and_the_next_sale_gets_the_next_number() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         assert_eq!(h.invc_no, 1);
         assert!(matches!(
-            s.begin_sale(cash().sale("00")).await,
+            s.begin_sale(cash().sale(DVC)).await,
             Err(StoreError::SequenceBlocked { invc_no: 1 })
         ));
         s.abandon_sale(&h, "VSDC 994, no receipt obtainable")
             .await
             .unwrap();
-        assert_eq!(s.pending_sale("00").await.unwrap(), None);
-        let next = s.begin_sale(cash().sale("00")).await.unwrap();
+        assert_eq!(s.pending_sale(DVC, Counter::SaleInvc).await.unwrap(), None);
+        let next = s.begin_sale(cash().sale(DVC)).await.unwrap();
         assert_eq!(
             next.invc_no, 2,
             "the abandoned number is retired, not reused"
@@ -865,7 +879,7 @@ mod tests {
     #[tokio::test]
     async fn abandoning_a_confirmed_sale_is_refused_by_name_and_changes_nothing() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         assert!(matches!(
             s.abandon_sale(&h, "oops").await,
@@ -882,7 +896,7 @@ mod tests {
     #[tokio::test]
     async fn abandoning_twice_is_fine_and_keeps_the_first_reason() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.abandon_sale(&h, "first").await.unwrap();
         s.abandon_sale(&h, "second").await.unwrap();
         let why: String = sqlx::query_scalar("select last_error from sale where id = ?")
@@ -896,10 +910,10 @@ mod tests {
     #[tokio::test]
     async fn abandoning_queues_nothing_and_leaves_no_pending_sale() {
         let s = Store::open_in_memory().await.unwrap();
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.abandon_sale(&h, "permanent").await.unwrap();
         assert_eq!(count(&s, "select count(*) from outbound").await, 0);
-        assert_eq!(s.pending_sale("00").await.unwrap(), None);
+        assert_eq!(s.pending_sale(DVC, Counter::SaleInvc).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -913,7 +927,7 @@ mod tests {
             s.abandon_sale(&ghost, "x").await,
             Err(StoreError::SaleNotFound { .. })
         ));
-        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.abandon_sale(&h, "x").await.unwrap();
         assert!(matches!(
             s.confirm_sale(&h, receipt()).await,
@@ -934,6 +948,8 @@ mod tests {
         let settled = tenders.settle(totals.tot_amt).unwrap();
         let h = s
             .begin_sale(NewSale {
+                dvc_srl_no: DVC,
+                counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &basket,
                 tenders: &tenders,
@@ -970,6 +986,8 @@ mod tests {
             .unwrap();
         let r = s
             .begin_sale(NewSale {
+                dvc_srl_no: DVC,
+                counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &basket,
                 tenders: &tenders,
@@ -995,7 +1013,7 @@ mod tests {
     async fn a_ten_digit_buyer_tin_is_refused_before_an_invoice_number_is_taken() {
         let s = Store::open_in_memory().await.unwrap();
         let f = cash();
-        let mut new = f.sale("00");
+        let mut new = f.sale(DVC);
         new.buyer_tin = Some("1001102634");
         assert!(matches!(
             s.begin_sale(new).await,
@@ -1012,11 +1030,11 @@ mod tests {
         let holder = s.begin_immediate().await.unwrap();
         let f = cash();
         assert!(matches!(
-            s.begin_sale(f.sale("00")).await,
+            s.begin_sale(f.sale(DVC)).await,
             Err(StoreError::Busy)
         ));
         drop(holder);
-        assert_eq!(s.begin_sale(f.sale("00")).await.unwrap().invc_no, 1);
+        assert_eq!(s.begin_sale(f.sale(DVC)).await.unwrap().invc_no, 1);
         drop(s);
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -53,10 +53,21 @@ pub enum StoreError {
     #[error("undecodable stored value: {0}")]
     Decode(String),
     /// A new invoice number was requested while an `AwaitingVsdc` sale still
-    /// holds `invc_no` on that branch (Ruling R38). The caller must retry that
+    /// holds `invc_no` in that series (Ruling R38). The caller must retry that
     /// sale with the same number, not allocate another.
     #[error("invoice number {invc_no} is still awaiting the VSDC; resolve it first")]
     SequenceBlocked { invc_no: i64 },
+    /// `reconcile_counter_from_vsdc` was asked to lower a counter. Lowering
+    /// would reissue invoice numbers this till has already recorded.
+    #[error("counter {counter} is at {current}; refusing to lower it to {requested}")]
+    CounterWouldDecrease {
+        counter: &'static str,
+        current: i64,
+        requested: i64,
+    },
+    /// A counter value from outside is negative, which no VSDC counter is.
+    #[error("counter value {value} is out of range")]
+    CounterOutOfRange { value: i64 },
     /// A sale with no lines is a programming error, not a sale. SQLite has no
     /// deferred constraints, so the schema cannot enforce "a sale has lines";
     /// the sale transaction does.
@@ -262,24 +273,28 @@ mod tests {
 
     const NOW: &str = "2026-11-21T00:00:00Z";
 
-    /// Gives a branch its sequence row, as the allocator will in production.
-    async fn seed_seq(s: &Store, bhf: &str) {
-        sqlx::query("insert or ignore into invc_seq (bhf_id, last_invc_no) values (?, 0)")
-            .bind(bhf)
-            .execute(s.pool())
-            .await
-            .unwrap();
+    /// Gives a device's `SaleInvc` series its sequence row, as the allocator
+    /// will in production.
+    async fn seed_seq(s: &Store, dvc: &str) {
+        sqlx::query(
+            "insert or ignore into invc_seq (dvc_srl_no, counter, last_invc_no) values (?, 'SaleInvc', 0)",
+        )
+        .bind(dvc)
+        .execute(s.pool())
+        .await
+        .unwrap();
     }
 
-    /// Inserts a sale for a branch that already has a sequence row.
-    async fn insert_sale(s: &Store, id: &str, bhf: &str, no: i64) -> Result<(), sqlx::Error> {
-        seed_seq(s, bhf).await;
+    /// Inserts a sale for a device whose series already has a sequence row.
+    /// Every sale here is on branch "00": lanes of one shop share it.
+    async fn insert_sale(s: &Store, id: &str, dvc: &str, no: i64) -> Result<(), sqlx::Error> {
+        seed_seq(s, dvc).await;
         sqlx::query(
-            "insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
-             values (?, ?, ?, 'AwaitingVsdc','0','0','0','01',?)",
+            "insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
+             values (?, ?, 'SaleInvc', '00', ?, 'AwaitingVsdc','0','0','0','01',?)",
         )
         .bind(id)
-        .bind(bhf)
+        .bind(dvc)
         .bind(no)
         .bind(NOW)
         .execute(s.pool())
@@ -367,29 +382,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_invoice_number_cannot_be_used_twice_on_a_branch() {
+    async fn one_invoice_number_cannot_be_used_twice_in_a_series() {
         let s = Store::open_in_memory().await.unwrap();
-        insert_sale(&s, "s1", "00", 1).await.unwrap();
-        assert!(insert_sale(&s, "s2", "00", 1).await.is_err());
-        // another branch has its own sequence
-        insert_sale(&s, "s3", "01", 1).await.unwrap();
+        insert_sale(&s, "s1", "d1", 1).await.unwrap();
+        assert!(insert_sale(&s, "s2", "d1", 1).await.is_err());
+        // another device has its own series, on the same branch "00"
+        insert_sale(&s, "s3", "d2", 1).await.unwrap();
+        // and another counter of the same device has its own too
+        sqlx::query("insert into invc_seq values ('d1', 'TrainInvc', 0)")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s4','d1','TrainInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
+            .bind(NOW).execute(s.pool()).await.unwrap();
     }
 
     #[tokio::test]
-    async fn a_sale_for_a_branch_with_no_sequence_row_is_refused() {
+    async fn a_sale_in_a_series_with_no_sequence_row_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
-        let r = sqlx::query("insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','00',1,'AwaitingVsdc','0','0','0','01',?)")
+        let r = sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','d1','SaleInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
-        assert!(r.is_err(), "no invc_seq row for the branch");
-        seed_seq(&s, "00").await;
-        insert_sale(&s, "s", "00", 1).await.unwrap(); // same insert now succeeds
+        assert!(r.is_err(), "no invc_seq row for the series");
+        seed_seq(&s, "d1").await;
+        insert_sale(&s, "s", "d1", 1).await.unwrap(); // same insert now succeeds
     }
 
     #[tokio::test]
     async fn an_unknown_sale_state_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
-        seed_seq(&s, "00").await; // so the refusal is the CHECK, not the branch foreign key
-        let r = sqlx::query("insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','00',1,'Bogus','0','0','0','01',?)")
+        seed_seq(&s, "d1").await; // so the refusal is the CHECK, not the series foreign key
+        let r = sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','d1','SaleInvc','00',1,'Bogus','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
         assert!(r.is_err());
     }
@@ -398,7 +420,7 @@ mod tests {
     async fn a_numeric_looking_text_column_is_not_coerced() {
         // TEXT affinity must keep "10.00" as written, not turn it into 10.
         let s = Store::open_in_memory().await.unwrap();
-        insert_sale(&s, "s", "00", 1).await.unwrap();
+        insert_sale(&s, "s", "d1", 1).await.unwrap();
         sqlx::query(
             "insert into sale_tender (sale_id, seq, pmt_ty_cd, amount) values ('s',1,'01','10.00')",
         )
@@ -447,7 +469,7 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(fk, 1);
-            insert_sale(&s, "s1", "00", 1).await.unwrap();
+            insert_sale(&s, "s1", "d1", 1).await.unwrap();
         }
         let s = Store::open(&path).await.unwrap(); // re-running migrations is a no-op
         let n: i64 = sqlx::query_scalar("select count(*) from sale")
