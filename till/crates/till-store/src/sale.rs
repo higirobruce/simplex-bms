@@ -602,6 +602,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_shift_is_queued_before_any_sale_that_references_it() {
+        // The queue drains in id order and the cloud's Sale.shiftId is a
+        // foreign key, so the shift row must have the lower id.
+        let s = Store::open_in_memory().await.unwrap();
+        let shift = s.open_shift(DVC, "cashier", Money::zero()).await.unwrap();
+        let sale = cash();
+        let new = NewSale {
+            shift_id: &shift.id,
+            ..sale.sale(DVC)
+        };
+        let h = s.begin_sale(new).await.unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let shift_row: i64 =
+            sqlx::query_scalar("select id from outbound where kind = 'shift' order by id limit 1")
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        let sale_row: i64 = sqlx::query_scalar("select id from outbound where kind = 'sale'")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert!(shift_row < sale_row, "{shift_row} must precede {sale_row}");
+        let payload: String = sqlx::query_scalar("select payload from outbound where id = ?")
+            .bind(sale_row)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let shift_payload: String = sqlx::query_scalar("select payload from outbound where id = ?")
+            .bind(shift_row)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let sv: serde_json::Value = serde_json::from_str(&shift_payload).unwrap();
+        assert_eq!(v["shiftId"], sv["id"]);
+    }
+
+    #[tokio::test]
     async fn beginning_a_sale_against_a_closed_shift_is_refused() {
         let s = store().await;
         sqlx::query("update shift set closed_at = '2026-11-21T01:00:00Z', declared_cash = '0.00'")

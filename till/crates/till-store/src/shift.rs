@@ -110,6 +110,18 @@ impl Store {
             .bind(opening_float.to_string())
             .fetch_one(&mut *conn)
             .await?;
+            // Queued in THIS transaction, so a shift is never open locally
+            // yet unknown to the outbound queue. It is also queued before any
+            // sale can exist in it, and the queue drains in id order, so the
+            // cloud creates the Shift before the Sale that points at it.
+            let payload = serde_json::to_string(&serde_json::json!({
+                "id": row.0,
+                "dvcSrlNo": dvc_srl_no,
+                "openedBy": row.1,
+                "openedAt": row.2,
+                "openingFloat": row.3,
+            }))?;
+            queue_shift(&mut *conn, payload).await?;
             decode(row)
         }
         .await;
@@ -201,14 +213,36 @@ impl Store {
             let totals = totals_on(&mut *conn, shift_id).await?;
             // Signed on purpose: over and short are different problems.
             let variance = sub(declared_cash, totals.expected_cash, "variance")?;
-            sqlx::query(&format!(
+            let row: (
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+            ) = sqlx::query_as(&format!(
                 "update shift set closed_at = {NOW_SQL}, declared_cash = ? \
-                 where id = ? and closed_at is null"
+                     where id = ? and closed_at is null \
+                     returning id, dvc_srl_no, opened_by, opened_at, opening_float, \
+                     closed_at, declared_cash"
             ))
             .bind(declared_cash.to_string())
             .bind(shift_id)
-            .execute(&mut *conn)
+            .fetch_one(&mut *conn)
             .await?;
+            // The whole shift again, not a delta: the cloud upserts on `id`,
+            // so the close is correct even if the open was never delivered.
+            let payload = serde_json::to_string(&serde_json::json!({
+                "id": row.0,
+                "dvcSrlNo": row.1,
+                "openedBy": row.2,
+                "openedAt": row.3,
+                "openingFloat": row.4,
+                "closedAt": row.5,
+                "declaredCash": row.6,
+            }))?;
+            queue_shift(&mut *conn, payload).await?;
             Ok(ShiftClose {
                 totals,
                 declared_cash,
@@ -227,6 +261,19 @@ impl Store {
             }
         }
     }
+}
+
+/// Queues one `shift` row for the cloud. No `sale_id`: the row is about the
+/// shift, which the payload names. Call only inside the transaction that
+/// changed the shift.
+async fn queue_shift(conn: &mut SqliteConnection, payload: String) -> Result<(), StoreError> {
+    sqlx::query(&format!(
+        "insert into outbound (kind, payload, created_at) values ('shift', ?, {NOW_SQL})"
+    ))
+    .bind(payload)
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 /// What closing a shift recorded.
@@ -333,6 +380,74 @@ mod tests {
 
     fn m(s: &str) -> Money {
         Money::try_from_str(s).unwrap()
+    }
+
+    async fn shift_rows(s: &Store) -> Vec<(i64, serde_json::Value)> {
+        let rows: Vec<(i64, String)> =
+            sqlx::query_as("select id, payload from outbound where kind = 'shift' order by id")
+                .fetch_all(s.pool())
+                .await
+                .unwrap();
+        rows.into_iter()
+            .map(|(i, p)| (i, serde_json::from_str(&p).unwrap()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn opening_a_shift_queues_it_for_the_cloud() {
+        let s = Store::open_in_memory().await.unwrap();
+        let o = s.open_shift("d1", "alice", m("5000.00")).await.unwrap();
+        let rows = shift_rows(&s).await;
+        assert_eq!(rows.len(), 1);
+        let v = &rows[0].1;
+        assert_eq!(v["id"], o.id);
+        assert_eq!(v["dvcSrlNo"], "d1");
+        assert_eq!(v["openedBy"], "alice");
+        assert_eq!(v["openedAt"], o.opened_at);
+        // an exact decimal string, never a JSON number
+        assert_eq!(v["openingFloat"], "5000.00");
+        assert!(v.get("closedAt").is_none());
+        let sale_id: Option<String> = sqlx::query_scalar("select sale_id from outbound")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(sale_id, None);
+    }
+
+    #[tokio::test]
+    async fn closing_a_shift_queues_the_close() {
+        let s = Store::open_in_memory().await.unwrap();
+        let o = s.open_shift("d1", "alice", m("5000.00")).await.unwrap();
+        s.close_shift(&o.id, m("4990.50")).await.unwrap();
+        let rows = shift_rows(&s).await;
+        assert_eq!(rows.len(), 2, "open and close are two rows");
+        let v = &rows[1].1;
+        assert_eq!(v["id"], o.id);
+        assert_eq!(v["dvcSrlNo"], "d1");
+        assert_eq!(v["declaredCash"], "4990.50");
+        let closed_at: String = sqlx::query_scalar("select closed_at from shift where id = ?")
+            .bind(&o.id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(v["closedAt"], closed_at);
+        assert!(
+            rows[0].1.get("closedAt").is_none(),
+            "the open row is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_open_or_close_queues_nothing() {
+        let s = Store::open_in_memory().await.unwrap();
+        let o = s.open_shift("d1", "alice", m("0")).await.unwrap();
+        assert!(s.open_shift("d1", "bob", m("0")).await.is_err());
+        assert!(s.close_shift(&o.id, m("-1")).await.is_err());
+        assert!(s.close_shift("nope", m("0")).await.is_err());
+        assert_eq!(shift_rows(&s).await.len(), 1);
+        s.close_shift(&o.id, m("0")).await.unwrap();
+        assert!(s.close_shift(&o.id, m("0")).await.is_err());
+        assert_eq!(shift_rows(&s).await.len(), 2);
     }
 
     #[tokio::test]
