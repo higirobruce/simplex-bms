@@ -431,6 +431,7 @@ mod tests {
     #[tokio::test]
     async fn a_sale_in_a_series_with_no_sequence_row_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
+        seed_shift(&s).await; // so the refusal is the series foreign key, not the shift's
         let r = sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','sh1','d1','SaleInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
         assert!(r.is_err(), "no invc_seq row for the series");
@@ -441,10 +442,11 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_sale_state_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
-        seed_seq(&s, "d1").await; // so the refusal is the CHECK, not the series foreign key
+        seed_seq(&s, "d1").await; // so the refusal is not the series foreign key
+        seed_shift(&s).await; // nor the shift foreign key: only the CHECK is left
         let r = sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','sh1','d1','SaleInvc','00',1,'Bogus','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
-        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("CHECK"));
     }
 
     #[tokio::test]
