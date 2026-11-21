@@ -70,11 +70,11 @@ pub enum Action {
     /// Take back every payment; the basket stays.
     ClearTenders,
     Reprint,
-    /// Print an X report: a read-only snapshot of the open shift.
+    /// Print a shift report: a read-only snapshot of the open shift.
     ReportX,
-    /// Close the shift with the keyed cash count and print the Z report.
+    /// Close the shift with the keyed cash count and print the shift close report.
     ReportZ,
-    /// Print the last Z again (a jam is not a lost closing).
+    /// Print the last shift close report again (a jam is not a lost closing).
     ReprintZ,
     CancelSale,
     Resume,
@@ -143,8 +143,9 @@ const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
     (PmtTyCd::Other, egui::Key::Num7, "Other", "Other"),
 ];
 
-/// Shift-chorded report keys: key, name, action. Shift+F7 is the Z, beside F7's
-/// harmless X: a chord because a Z closes the shift, and Shift rather than Ctrl
+/// Shift-chorded report keys: key, name, action. Shift+F7 closes the shift and
+/// prints its close report, beside F7's harmless shift report: a chord because
+/// closing is irreversible, and Shift rather than Ctrl
 /// because the operating system reserves Ctrl+F-key chords on some machines.
 const SHIFT_KEYS: [(egui::Key, &str, Action); 2] = [
     (egui::Key::F7, "Close shift", Action::ReportZ),
@@ -270,7 +271,7 @@ fn apply(
 }
 
 /// Shift+F7: what is keyed is the cash the cashier counted. Unlike the opening
-/// float, nothing keyed is NOT taken as zero: a Z closes the shift for good, and
+/// float, nothing keyed is NOT taken as zero: closing the shift is irreversible, and
 /// a count of zero must be keyed on purpose, never by a stray key press.
 fn close_with_z(
     state: &mut LaneState,
@@ -1868,7 +1869,7 @@ mod tests {
         r.frame(tap_shift_f7());
         assert!(r.state.shift().is_some());
         assert_eq!(r.state.buffer(), "");
-        // Plain F7 is the harmless X, never a Z.
+        // Plain F7 is the harmless shift report, never a close.
         r.frame(type_text("1000"));
         r.frame(tap(Key::F7));
         assert!(r.state.shift().is_some());

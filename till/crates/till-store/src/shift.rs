@@ -164,8 +164,8 @@ impl Store {
     }
 
     /// The device's most recently closed shift, recomposed from the store: the
-    /// same [`ShiftClose`] that `close_shift` returned when it closed, so a Z
-    /// lost to a jam and a restart can still be produced. Nothing is written.
+    /// same [`ShiftClose`] that `close_shift` returned when it closed, so a close
+    /// report lost to a jam and a restart can still be produced. Nothing is written.
     /// `None` if the device has never closed a shift.
     pub async fn last_closed_shift(
         &self,
@@ -214,7 +214,7 @@ impl Store {
     /// refused: a short till (negative) closes like any other, because a till
     /// that will not close on a mismatch teaches cashiers to lie.
     ///
-    /// Refused only with `ShiftAlreadyClosed` (a Z is final), `ShiftHasPendingSale`
+    /// Refused only with `ShiftAlreadyClosed` (a closed shift stays closed), `ShiftHasPendingSale`
     /// (an `AwaitingVsdc` sale holds a live invoice number that closing would
     /// orphan from its shift) and `ShiftNotFound`. All of it runs in one
     /// `BEGIN IMMEDIATE` transaction, the totals included, so what is recorded

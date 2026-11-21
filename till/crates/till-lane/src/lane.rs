@@ -354,7 +354,7 @@ struct Pending {
     recovered: bool,
 }
 
-/// What a closed shift recorded, and whether its Z has reached paper.
+/// What a closed shift recorded, and whether its close report has reached paper.
 struct LastZ {
     close: ShiftClose,
     mrc: Option<String>,
@@ -1090,7 +1090,8 @@ impl LaneState {
         Ok(closed)
     }
 
-    /// Prints an X report: a snapshot of the open shift. **Changes nothing**:
+    /// Prints a shift report: a snapshot of the open shift (per shift, not RRA's
+    /// daily X; see `report.rs`). **Changes nothing**:
     /// it only reads the shift's totals, so it may be run as often as wanted,
     /// mid-shift and even mid-sale. It does not touch the scan buffer, the
     /// basket, the tenders or the screen; only the notice reports the outcome.
@@ -1124,11 +1125,12 @@ impl LaneState {
         Ok(())
     }
 
-    /// Closes the shift with the cash the cashier counted and prints the Z
-    /// report. **Final**: the shift is closed first, and the report is composed
-    /// from what closing recorded, so a Z exists only for a shift that really
-    /// closed. The lane then has no open shift, so a second Z is refused
-    /// (`NoShift`) rather than printing a second "final" figure.
+    /// Closes the shift with the cash the cashier counted and prints the shift
+    /// close report. Closing is irreversible: the shift is closed first, and the
+    /// report is composed from what closing recorded, so it exists only for a
+    /// shift that really closed. The lane then has no open shift, so a second
+    /// close is refused (`NoShift`) rather than printing a second closing figure.
+    /// This is a per-shift document, not RRA's daily Z (see `report.rs`).
     ///
     /// Refusals are those of [`close_shift`](Self::close_shift) (nothing is
     /// printed, the shift stays open). If the printer then fails, the shift
@@ -1669,7 +1671,7 @@ mod tests {
         assert_eq!(l.screen(), &Screen::Selling);
     }
 
-    // ---- X and Z reports ----
+    // ---- shift reports ----
 
     /// The report text as printed, shorn of printer commands.
     fn printed(p: &SimPrinter) -> String {
@@ -1759,7 +1761,7 @@ mod tests {
         assert!(l.shift().is_none());
         assert!(l.store.current_shift("DVC1").await.unwrap().is_none());
         let once = p.written.clone();
-        // A second Z has no shift to close: refused, nothing printed.
+        // A second close has no shift to close: refused, nothing printed.
         l.print_z(rwf("999"), &mut p).await.unwrap();
         assert_eq!(p.written, once);
         match l.notice() {
@@ -1800,7 +1802,7 @@ mod tests {
         }
         assert!(p.written.is_empty());
         assert!(l.store.current_shift("DVC1").await.unwrap().is_none());
-        // The Z is not lost: a reprint emits the very bytes the first attempt
+        // The close report is not lost: a reprint emits the very bytes the first attempt
         // would have (it never reached paper, so it is the original).
         let wanted = shift_close_report(
             &l.last_z.as_ref().unwrap().close,
