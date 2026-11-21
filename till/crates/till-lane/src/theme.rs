@@ -124,7 +124,6 @@ fn visuals() -> Visuals {
     v.extreme_bg_color = t.surface;
     v.faint_bg_color = t.surface_2;
     v.code_bg_color = t.surface_2;
-    v.override_text_color = Some(t.ink);
     v.hyperlink_color = t.accent;
     v.warn_fg_color = t.warning;
     v.error_fg_color = t.danger;
@@ -135,7 +134,7 @@ fn visuals() -> Visuals {
     w.noninteractive.bg_fill = t.surface;
     w.noninteractive.weak_bg_fill = t.surface;
     w.noninteractive.bg_stroke = hairline;
-    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, t.ink_soft);
+    w.noninteractive.fg_stroke = Stroke::new(1.0_f32, t.ink);
 
     w.inactive.bg_fill = t.surface;
     w.inactive.weak_bg_fill = t.surface;
@@ -235,6 +234,38 @@ mod tests {
     #[test]
     fn radius_matches_the_web_skin() {
         assert_eq!(hex_of_raw(&css(), "--radius"), format!("{RADIUS}px"));
+    }
+
+    /// WCAG relative luminance of an sRGB colour.
+    fn luminance(c: Color32) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+
+    fn contrast(a: Color32, b: Color32) -> f64 {
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
+
+    /// The colour egui paints a plain-string label with on a pressed (accent) widget:
+    /// `override_text_color` wins when set, otherwise the widget's `fg_stroke`.
+    #[test]
+    fn text_on_accent_fill_meets_wcag_aa() {
+        let v = visuals();
+        assert_eq!(v.widgets.active.bg_fill, TOKENS.accent);
+        assert_eq!(v.widgets.active.weak_bg_fill, TOKENS.accent);
+        let text = v
+            .override_text_color
+            .unwrap_or(v.widgets.active.fg_stroke.color);
+        let ratio = contrast(text, TOKENS.accent);
+        assert!(ratio >= 4.5, "text on accent is {ratio:.2}:1, needs 4.5:1");
     }
 
     #[test]
