@@ -9,3 +9,6 @@ tsconfig.tsbuildinfo
 # superpowers SDD scratch (ledger, briefs, reports, review packages)
 .superpowers/
 .env.test
+
+# Rust build output for the till workspace
+till/target/
