@@ -12,7 +12,7 @@
 //! Rust removes that class of bug outright, but a money/quantity mix-up is
 //! still possible with bare decimals. [`Money`] and [`Qty`] are therefore
 //! separate types that cannot be added to one another; the only operation that
-//! crosses between them is [`Money::times_qty`].
+//! crosses between them is [`Money::checked_times_qty`].
 
 pub mod money;
 

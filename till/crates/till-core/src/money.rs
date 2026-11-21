@@ -101,15 +101,17 @@ impl Money {
         check_digits(d, MONEY_DP).ok().map(|()| Money(d))
     }
 
-    /// Unit price times quantity, rounded half-up to two places.
+    /// Unit price times quantity, rounded half-up to two places. `None` if
+    /// the rounded product exceeds 12 digits.
     ///
-    /// Total, never panics: every construction path (parsing, `try_from_minor`,
-    /// `checked_add`, `checked_sub`) bounds money to at most `9999999999.99`,
-    /// and quantity is bounded to at most `999999999.999`, so the worst-case product is
-    /// about 1e19, needing 19 mantissa digits plus 5 of scale, 24 significant
-    /// digits against `rust_decimal`'s 28.
-    pub fn times_qty(self, qty: Qty) -> Money {
-        Money(round_half_up(self.0 * qty.0, MONEY_DP))
+    /// All four construction paths (`try_from_str`, `try_from_minor`,
+    /// `checked_add`/`checked_sub`, and this one) refuse an out-of-range
+    /// result, so no `Money` can exist that violates the bound. The multiply
+    /// itself is guarded: bounded operands give a product of at most about
+    /// 24 significant digits, inside `rust_decimal`'s 28, and `checked_mul`
+    /// covers anything else.
+    pub fn checked_times_qty(self, qty: Qty) -> Option<Money> {
+        Self::bounded(round_half_up(self.0.checked_mul(qty.0)?, MONEY_DP))
     }
 }
 
@@ -166,12 +168,14 @@ mod tests {
         // 0.734 kg x 1850 RWF/kg = 1357.900
         let got = Money::try_from_str("1850")
             .unwrap()
-            .times_qty(Qty::try_from_str("0.734").unwrap());
+            .checked_times_qty(Qty::try_from_str("0.734").unwrap())
+            .unwrap();
         assert_eq!(got.to_string(), "1357.90");
         // 1 x 0.005 = 0.005, an exact midpoint: half-up gives 0.01, banker's would give 0.00
         let mid = Money::try_from_str("1")
             .unwrap()
-            .times_qty(Qty::try_from_str("0.005").unwrap());
+            .checked_times_qty(Qty::try_from_str("0.005").unwrap())
+            .unwrap();
         assert_eq!(mid.to_string(), "0.01");
     }
     #[test]
@@ -213,12 +217,6 @@ mod tests {
             Money::try_from_str("abc"),
             Err(MoneyError::Unparsable(_))
         ));
-    }
-    #[test]
-    fn worst_case_times_qty_does_not_panic() {
-        let m = Money::try_from_str("9999999999.99").unwrap();
-        let q = Qty::try_from_str("999999999.999").unwrap();
-        assert_eq!(m.times_qty(q).to_string(), "9999999999980000000.00");
     }
     #[test]
     fn checked_add_and_sub() {
@@ -272,7 +270,6 @@ mod tests {
             doublings += 1;
         }
         assert_eq!(doublings, 1);
-        let _ = m.times_qty(Qty::try_from_str("999999999.999").unwrap());
     }
     #[test]
     fn scientific_notation_and_plus_are_rejected_but_leading_zeros_are_not() {
@@ -289,5 +286,44 @@ mod tests {
             Err(MoneyError::Unparsable(_))
         ));
         assert_eq!(Money::try_from_str("0005").unwrap().to_string(), "5.00");
+    }
+    #[test]
+    fn repeated_times_qty_terminates_instead_of_panicking() {
+        let q = Qty::try_from_str("999999999.999").unwrap();
+        let mut m = Money::try_from_str("9999999999.99").unwrap();
+        let mut steps = 0;
+        while let Some(next) = m.checked_times_qty(q) {
+            m = next;
+            steps += 1;
+            assert!(steps < 10, "bound is not being enforced");
+        }
+        assert_eq!(steps, 0, "the very first product is out of range");
+    }
+    #[test]
+    fn a_legitimate_line_still_works() {
+        let m = Money::try_from_str("1850.00").unwrap();
+        let got = m.checked_times_qty(Qty::try_from_str("0.734").unwrap());
+        assert_eq!(got.unwrap().to_string(), "1357.90");
+    }
+    #[test]
+    fn times_qty_boundary_is_exact() {
+        let one = Qty::try_from_str("1").unwrap();
+        let two = Qty::try_from_str("2").unwrap();
+        let max = Money::try_from_str("9999999999.99").unwrap();
+        assert_eq!(max.checked_times_qty(one), Some(max));
+        let half = Money::try_from_str("5000000000").unwrap();
+        assert!(half.checked_times_qty(two).is_none());
+        let just_in = Money::try_from_str("4999999999.995").unwrap_err();
+        assert!(matches!(just_in, MoneyError::TooManyPlaces { .. }));
+    }
+    #[test]
+    fn times_qty_bound_refuses_negative_products_too() {
+        let two = Qty::try_from_str("2").unwrap();
+        let neg = Money::try_from_str("-9999999999.99").unwrap();
+        assert!(neg.checked_times_qty(two).is_none());
+        assert_eq!(
+            neg.checked_times_qty(Qty::try_from_str("1").unwrap()),
+            Some(neg)
+        );
     }
 }
