@@ -36,8 +36,9 @@ pub enum BasketError {
     /// one line's supply amount. Refused, never clamped.
     #[error("the basket discount is larger than the basket it applies to")]
     DiscountExceedsBasket,
-    /// Rounding the earlier shares up left a negative residual for the last
-    /// line, which would be a surcharge. Refused rather than hidden.
+    /// Defensive only: the last line's residual is non-negative by
+    /// construction (earlier shares floor), so this is unreachable. It names
+    /// the arm instead of letting a negative share through.
     #[error("the basket discount cannot be split into whole francs across these lines")]
     DiscountNotSplittable,
     #[error(transparent)]
@@ -141,7 +142,7 @@ impl Basket {
     /// The total discount is a whole-franc figure: an amount rounds half-up, a
     /// percentage is taken of the summed `sply_amt` (the lines' own discounts
     /// do not shrink the base) and rounds half-up. Each line's share is
-    /// `total x sply_amt / sum(sply_amt)` rounded half-up to whole francs, and
+    /// `total x sply_amt / sum(sply_amt)` floored to whole francs (Ruling R68), and
     /// the LAST line takes `total - sum(earlier shares)`, so the shares sum
     /// exactly to the total. It is added to the line's own discount. With no
     /// basket discount the lines come back untouched.
@@ -174,6 +175,10 @@ impl Basket {
         if total.is_zero() {
             return Ok(priced);
         }
+        // The first n-1 shares FLOOR, deliberately not half-up like the rest of
+        // this crate: residual = total - sum(floor(share_i)) >= total -
+        // sum(share_i) = share_n >= 0, so the last line never goes negative.
+        // Half-up can (2 off four equal lines: 1/1/1 then -1, a surcharge).
         let last = priced.len().saturating_sub(1);
         let mut given = Decimal::ZERO;
         let mut out = Vec::with_capacity(priced.len());
@@ -184,7 +189,7 @@ impl Basket {
                 total
                     .checked_mul(a.sply_amt.amount())
                     .and_then(|x| x.checked_div(sum_sply.amount()))
-                    .map(|x| round_half_up(x, 0))
+                    .map(|x| x.floor())
                     .ok_or(BasketError::TotalOutOfRange)?
             };
             if share < Decimal::ZERO {
@@ -499,15 +504,22 @@ mod tests {
     }
 
     #[test]
-    fn a_rounding_overshoot_is_refused_not_turned_into_a_surcharge() {
-        // 2 off four equal lines: each share 0.5 rounds up to 1, so the last
-        // line's residual would be -1.
+    fn a_floored_split_never_overshoots_so_two_off_four_lines_succeeds() {
+        // Half-up would give shares 1/1/1 and a residual of -1, a surcharge.
+        // Flooring gives 0/0/0/2 (Ruling R68).
         let mut b = Basket::new();
         for _ in 0..4 {
             b.push_line(line("P", "1", "100", TaxType::B, None))
                 .unwrap();
         }
         b.set_basket_discount(LineDiscount::Amount(m("2")));
-        assert_eq!(b.totals(), Err(BasketError::DiscountNotSplittable));
+        let shares: Vec<String> = b
+            .apportioned_lines()
+            .unwrap()
+            .iter()
+            .map(|(_, a)| a.dc_amt.to_string())
+            .collect();
+        assert_eq!(shares, vec!["0.00", "0.00", "0.00", "2.00"]);
+        assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "398.00");
     }
 }
