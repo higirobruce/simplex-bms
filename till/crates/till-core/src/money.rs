@@ -32,25 +32,38 @@ pub fn round_half_up(d: Decimal, dp: u32) -> Decimal {
     d.round_dp_with_strategy(dp, RoundingStrategy::MidpointAwayFromZero)
 }
 
-/// Parses text, rejecting more than `max` decimal places, then more than
-/// [`MAX_DIGITS`] digits in total (integer digits plus `max` places, which is
-/// what `Decimal(12,max)` means). Trailing zeros are not significant, so
-/// `"1.500"` is valid money.
-fn parse_exact(s: &str, max: u32) -> Result<Decimal, MoneyError> {
-    let d = Decimal::from_str(s.trim()).map_err(|_| MoneyError::Unparsable(s.to_string()))?;
-    let got = d.normalize().scale();
-    if got > max {
-        return Err(MoneyError::TooManyPlaces { got, max });
-    }
-    let mantissa_digits = d.normalize().mantissa().unsigned_abs().to_string().len() as u32;
-    let integer_digits = mantissa_digits.saturating_sub(got);
-    let digits = integer_digits + max;
+/// Rejects a value with more than [`MAX_DIGITS`] digits in total: integer
+/// digits plus `max_dp` places, which is what `Decimal(12,max_dp)` means.
+/// Every construction path of [`Money`] and [`Qty`] goes through this.
+fn check_digits(d: Decimal, max_dp: u32) -> Result<(), MoneyError> {
+    let n = d.normalize();
+    let mantissa_digits = n.mantissa().unsigned_abs().to_string().len() as u32;
+    let integer_digits = mantissa_digits.saturating_sub(n.scale());
+    let digits = integer_digits + max_dp;
     if digits > MAX_DIGITS {
         return Err(MoneyError::TooManyDigits {
             got: digits,
             max: MAX_DIGITS,
         });
     }
+    Ok(())
+}
+
+/// Parses plain decimal text, rejecting more than `max` decimal places, then
+/// more than [`MAX_DIGITS`] digits in total. Scientific notation and a leading
+/// `+` are rejected; trailing and leading zeros are harmless, so `"1.500"` and
+/// `"0005"` are valid.
+fn parse_exact(s: &str, max: u32) -> Result<Decimal, MoneyError> {
+    let t = s.trim();
+    if t.starts_with('+') || t.contains(['e', 'E']) {
+        return Err(MoneyError::Unparsable(s.to_string()));
+    }
+    let d = Decimal::from_str(t).map_err(|_| MoneyError::Unparsable(s.to_string()))?;
+    let got = d.normalize().scale();
+    if got > max {
+        return Err(MoneyError::TooManyPlaces { got, max });
+    }
+    check_digits(d, max)?;
     Ok(d)
 }
 
@@ -67,23 +80,32 @@ impl Money {
         parse_exact(s, MONEY_DP).map(Money)
     }
 
-    /// Builds money from hundredths, so `from_minor(150)` is `1.50`.
-    pub fn from_minor(minor: i64) -> Money {
-        Money(Decimal::new(minor, MONEY_DP))
+    /// Builds money from hundredths, so `try_from_minor(150)` is `1.50`.
+    pub fn try_from_minor(minor: i64) -> Result<Money, MoneyError> {
+        let d = Decimal::new(minor, MONEY_DP);
+        check_digits(d, MONEY_DP)?;
+        Ok(Money(d))
     }
 
+    /// `None` if the sum overflows or exceeds 12 digits.
     pub fn checked_add(self, other: Money) -> Option<Money> {
-        self.0.checked_add(other.0).map(Money)
+        Self::bounded(self.0.checked_add(other.0)?)
     }
 
+    /// `None` if the difference overflows or exceeds 12 digits.
     pub fn checked_sub(self, other: Money) -> Option<Money> {
-        self.0.checked_sub(other.0).map(Money)
+        Self::bounded(self.0.checked_sub(other.0)?)
+    }
+
+    fn bounded(d: Decimal) -> Option<Money> {
+        check_digits(d, MONEY_DP).ok().map(|()| Money(d))
     }
 
     /// Unit price times quantity, rounded half-up to two places.
     ///
-    /// Total, never panics: parsing bounds money to at most `9999999999.99`
-    /// and quantity to at most `999999999.999`, so the worst-case product is
+    /// Total, never panics: every construction path (parsing, `try_from_minor`,
+    /// `checked_add`, `checked_sub`) bounds money to at most `9999999999.99`,
+    /// and quantity is bounded to at most `999999999.999`, so the worst-case product is
     /// about 1e19, needing 19 mantissa digits plus 5 of scale, 24 significant
     /// digits against `rust_decimal`'s 28.
     pub fn times_qty(self, qty: Qty) -> Money {
@@ -208,8 +230,11 @@ mod tests {
     }
     #[test]
     fn from_minor_and_is_positive_and_negative_display() {
-        assert_eq!(Money::from_minor(150).to_string(), "1.50");
-        assert_eq!(Money::from_minor(-120050).to_string(), "-1200.50");
+        assert_eq!(Money::try_from_minor(150).unwrap().to_string(), "1.50");
+        assert_eq!(
+            Money::try_from_minor(-120050).unwrap().to_string(),
+            "-1200.50"
+        );
         assert_eq!(
             Money::try_from_str("-1200.5").unwrap().to_string(),
             "-1200.50"
@@ -217,5 +242,52 @@ mod tests {
         assert!(Qty::try_from_str("0.001").unwrap().is_positive());
         assert!(!Qty::try_from_str("0").unwrap().is_positive());
         assert!(!Qty::try_from_str("-1").unwrap().is_positive());
+    }
+    #[test]
+    fn try_from_minor_is_bounded() {
+        assert_eq!(
+            Money::try_from_minor(120050).unwrap().to_string(),
+            "1200.50"
+        );
+        assert!(matches!(
+            Money::try_from_minor(i64::MAX),
+            Err(MoneyError::TooManyDigits { max: 12, .. })
+        ));
+    }
+    #[test]
+    fn checked_add_and_sub_are_none_beyond_twelve_digits() {
+        let max = Money::try_from_str("9999999999.99").unwrap();
+        let min = Money::try_from_str("-9999999999.99").unwrap();
+        assert!(max.checked_add(max).is_none());
+        assert!(min.checked_sub(max).is_none());
+        assert_eq!(
+            max.checked_add(Money::try_from_str("0.00").unwrap()),
+            Some(max)
+        );
+        // the re-review's repro: doubling can no longer escape the bound
+        let mut m = Money::try_from_str("2500000000").unwrap();
+        let mut doublings = 0;
+        while let Some(next) = m.checked_add(m) {
+            m = next;
+            doublings += 1;
+        }
+        assert_eq!(doublings, 1);
+        let _ = m.times_qty(Qty::try_from_str("999999999.999").unwrap());
+    }
+    #[test]
+    fn scientific_notation_and_plus_are_rejected_but_leading_zeros_are_not() {
+        assert!(matches!(
+            Money::try_from_str("1e5"),
+            Err(MoneyError::Unparsable(_))
+        ));
+        assert!(matches!(
+            Money::try_from_str("+5"),
+            Err(MoneyError::Unparsable(_))
+        ));
+        assert!(matches!(
+            Qty::try_from_str("1E2"),
+            Err(MoneyError::Unparsable(_))
+        ));
+        assert_eq!(Money::try_from_str("0005").unwrap().to_string(), "5.00");
     }
 }
