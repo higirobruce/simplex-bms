@@ -35,7 +35,7 @@ pub fn rwf(m: Money) -> String {
     // Money formats as "{:.2}", e.g. "1234.56"
     let s = m.to_string();
     // Parse back to Decimal so we can round to whole francs
-    let decimal = Decimal::from_str(&s).unwrap_or(Decimal::ZERO);
+    let decimal = Decimal::from_str(&s).expect("Money's Display is always a valid decimal");
     // Round to 0 decimal places using half-up (away from zero)
     let rounded = round_half_up(decimal, 0);
     // Convert to string and ensure we never produce "-0"
