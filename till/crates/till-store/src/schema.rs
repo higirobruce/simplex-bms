@@ -173,7 +173,14 @@ mod tests {
     async fn money_survives_a_round_trip_exactly() {
         // the reason every amount column is TEXT: 0.1+0.2 in a float column is not 0.3
         let s = Store::open_in_memory().await.unwrap();
-        for (id, price) in [("p1", "1234567.89"), ("p2", "0.10"), ("p3", "10.00")] {
+        // (id, text, is a quantity-scale value)
+        for (id, price, is_qty) in [
+            ("p1", "1234567.89", false),
+            ("p2", "0.10", false),
+            ("p3", "10.00", false),
+            ("p4", "0.001", true),
+            ("p5", "9999999999.99", false),
+        ] {
             sqlx::query("insert into product (id, sku, name, unit_price, tax_ty_cd, is_weighed, synced_at) values (?,?,?,?,?,?,?)")
                 .bind(id).bind("S").bind("N").bind(price).bind("B").bind(0).bind(NOW)
                 .execute(s.pool()).await.unwrap();
@@ -183,7 +190,12 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(got, price);
-            assert_eq!(decode_money("unit_price", &got).unwrap().to_string(), price);
+            let back = if is_qty {
+                decode_qty("unit_price", &got).unwrap().to_string()
+            } else {
+                decode_money("unit_price", &got).unwrap().to_string()
+            };
+            assert_eq!(back, price);
         }
     }
 
@@ -246,8 +258,6 @@ mod tests {
     async fn a_numeric_looking_text_column_is_not_coerced() {
         // TEXT affinity must keep "10.00" as written, not turn it into 10.
         let s = Store::open_in_memory().await.unwrap();
-        sqlx::query("insert into sale_tender (sale_id, seq, pmt_ty_cd, amount) select 's',1,'01','10.00' where 0")
-            .execute(s.pool()).await.unwrap();
         insert_sale(&s, "s", "00", 1).await.unwrap();
         sqlx::query(
             "insert into sale_tender (sale_id, seq, pmt_ty_cd, amount) values ('s',1,'01','10.00')",
@@ -309,11 +319,60 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn every_pooled_connection_of_a_file_store_has_fk_and_wal() {
+        // foreign_keys defaults OFF and is per-connection: if pool construction
+        // ever drops it, every FK silently stops being enforced. This uses a
+        // FILE-backed store (not open_in_memory, which is pinned to one connection)
+        // and holds several connections at once so each is a distinct one.
+        let dir = std::env::temp_dir().join(format!("till-store-pragma-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Store::open(&dir.join("till.db")).await.unwrap();
+        let mut conns = Vec::new();
+        for _ in 0..4 {
+            conns.push(s.pool().acquire().await.unwrap());
+        }
+        for c in conns.iter_mut() {
+            let fk: i64 = sqlx::query_scalar("pragma foreign_keys")
+                .fetch_one(&mut **c)
+                .await
+                .unwrap();
+            assert_eq!(fk, 1);
+            let mode: String = sqlx::query_scalar("pragma journal_mode")
+                .fetch_one(&mut **c)
+                .await
+                .unwrap();
+            assert_eq!(mode, "wal");
+            let r = sqlx::query("insert into sale_line (sale_id, item_seq, item_nm, qty, prc, sply_amt, dc_rt, dc_amt, taxbl_amt, tax_amt, tax_ty_cd) values ('nope',1,'x','1','1','1','0','0','1','0','B')")
+                .execute(&mut **c).await;
+            assert!(
+                r.is_err(),
+                "a violating insert must be refused on every connection"
+            );
+        }
+        drop(conns);
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn every_migration_file_is_embedded() {
+        // Compare names, not counts, and only *.sql: a stray .DS_Store must not
+        // fail this, and a registered-but-wrong file must.
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-        let files = std::fs::read_dir(dir).unwrap().count();
-        assert_eq!(files, migrator().migrations.len());
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".sql"))
+            .collect();
+        on_disk.sort();
+        let mut registered: Vec<String> = migrator()
+            .migrations
+            .iter()
+            .map(|m| format!("{:04}_{}.sql", m.version, m.description))
+            .collect();
+        registered.sort();
+        assert_eq!(on_disk, registered);
     }
 
     #[test]

@@ -28,6 +28,9 @@ CREATE TABLE invc_seq (
     last_invc_no  INTEGER NOT NULL CHECK (last_invc_no >= 0)
 );
 
+-- A sale's branch must have a sequence row: that is what makes the per-branch
+-- numbering mean anything. SQLite cannot add a constraint to an existing table
+-- without a full rebuild, so it lives here in the initial migration.
 CREATE TABLE sale (
     id             TEXT PRIMARY KEY,
     bhf_id         TEXT NOT NULL REFERENCES invc_seq (bhf_id),
@@ -50,9 +53,6 @@ CREATE TABLE sale (
     last_error     TEXT,
     UNIQUE (bhf_id, invc_no)
 );
--- A sale's branch must have a sequence row: that is what makes the per-branch
--- numbering mean anything. SQLite cannot add a constraint to an existing table
--- without a full rebuild, so it lives here in the initial migration.
 -- Finding sales that still need the VSDC's attention (resume after a crash).
 CREATE INDEX sale_open_state ON sale (state) WHERE state IN ('AwaitingVsdc', 'Failed');
 
