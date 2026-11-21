@@ -336,12 +336,18 @@ const COL_AMOUNT: f32 = 110.0;
 const GAP: f32 = 8.0;
 const ROW_PAD: f32 = 12.0;
 
-/// One row of the basket grid: `#`, item (takes what is left), qty, price,
-/// band, amount.
-fn row(ui: &mut Ui, height: f32, cells: [&dyn Fn(&mut Ui); 6]) {
-    let width = ui.available_width();
-    let item_w =
-        width - 2.0 * ROW_PAD - COL_SEQ - COL_QTY - COL_PRICE - COL_BAND - COL_AMOUNT - 5.0 * GAP;
+/// The six cell rects of a basket row occupying `row`: `#`, item (takes what
+/// is left), qty, price, band, amount. Pure arithmetic, so a test can pin it:
+/// every column gets exactly its width on every row, whatever the text is.
+fn column_rects(row: Rect) -> [Rect; 6] {
+    let item_w = row.width()
+        - 2.0 * ROW_PAD
+        - COL_SEQ
+        - COL_QTY
+        - COL_PRICE
+        - COL_BAND
+        - COL_AMOUNT
+        - 5.0 * GAP;
     let widths = [
         COL_SEQ,
         item_w.max(80.0),
@@ -350,18 +356,29 @@ fn row(ui: &mut Ui, height: f32, cells: [&dyn Fn(&mut Ui); 6]) {
         COL_BAND,
         COL_AMOUNT,
     ];
-    ui.horizontal(|ui| {
-        ui.add_space(ROW_PAD);
-        ui.spacing_mut().item_spacing.x = GAP;
-        for (i, cell) in cells.iter().enumerate() {
-            let layout = match i {
-                0 | 1 => Layout::left_to_right(Align::Center),
-                4 => Layout::centered_and_justified(egui::Direction::LeftToRight),
-                _ => Layout::right_to_left(Align::Center),
-            };
-            ui.allocate_ui_with_layout(vec2(widths[i], height), layout, |ui| cell(ui));
-        }
-    });
+    let mut x = row.left() + ROW_PAD;
+    widths.map(|w| {
+        let r = Rect::from_min_size(egui::pos2(x, row.top()), vec2(w, row.height()));
+        x += w + GAP;
+        r
+    })
+}
+
+/// One row of the basket grid. The row is reserved at full width first and
+/// each cell is placed in its own rect: `allocate_ui_with_layout` only sets a
+/// MAXIMUM, so the cursor would advance by content width and columns drift.
+fn row(ui: &mut Ui, height: f32, cells: [&dyn Fn(&mut Ui); 6]) {
+    let (row_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    for (i, (cell, rect)) in cells.iter().zip(column_rects(row_rect)).enumerate() {
+        let layout = match i {
+            0 | 1 => Layout::left_to_right(Align::Center),
+            4 => Layout::centered_and_justified(egui::Direction::LeftToRight),
+            _ => Layout::right_to_left(Align::Center),
+        };
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        cell(&mut child);
+    }
 }
 
 fn rule(ui: &mut Ui, color: Color32) {
@@ -1083,6 +1100,70 @@ mod tests {
             },
         ];
         assert!(actions_from(&ev).is_empty());
+    }
+
+    #[test]
+    fn basket_columns_tile_the_row_exactly_at_any_width() {
+        for width in [640.0_f32, 840.0, 1280.0] {
+            let row = Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(width, 38.0));
+            let cols = column_rects(row);
+            assert!(cols[1].width() > 0.0, "item column at {width}");
+            // Fixed columns keep their width; the item column flexes.
+            let fixed = [
+                (0, COL_SEQ),
+                (2, COL_QTY),
+                (3, COL_PRICE),
+                (4, COL_BAND),
+                (5, COL_AMOUNT),
+            ];
+            for (i, w) in fixed {
+                assert_eq!(cols[i].width(), w);
+            }
+            // Gapped, in order, and the amount ends ROW_PAD short of the edge.
+            for pair in cols.windows(2) {
+                assert!((pair[1].left() - pair[0].right() - GAP).abs() < 0.01);
+            }
+            assert!((cols[5].right() - (width - ROW_PAD)).abs() < 0.01);
+        }
+    }
+
+    /// Whatever the text, rows (header and data) must lay out identically:
+    /// the rect each cell is given must not depend on its content.
+    #[test]
+    fn row_cells_do_not_move_with_their_content() {
+        let ctx = Context::default();
+        theme::apply(&ctx);
+        let mut seen: Vec<Vec<f32>> = Vec::new();
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                vec2(840.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for name in ["Inyange Fresh Milk 1L", "Kabuye Sugar 1kg", "I"] {
+                    let xs = std::cell::RefCell::new(Vec::new());
+                    let probe = |i: usize| {
+                        let xs = &xs;
+                        move |ui: &mut Ui| {
+                            // Measured before the content goes in.
+                            xs.borrow_mut().push(ui.max_rect().left());
+                            ui.label(name);
+                            let _ = i;
+                        }
+                    };
+                    let (p0, p1, p2, p3, p4, p5) =
+                        (probe(0), probe(1), probe(2), probe(3), probe(4), probe(5));
+                    row(ui, 38.0, [&p0, &p1, &p2, &p3, &p4, &p5]);
+                    seen.push(xs.into_inner());
+                }
+            });
+        });
+        assert_eq!(seen.len(), 3);
+        assert_eq!(seen[0], seen[1]);
+        assert_eq!(seen[0], seen[2]);
     }
 
     #[test]
