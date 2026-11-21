@@ -1,5 +1,6 @@
 // Later tasks consume the full token set; until then parts of it are unused.
 #[allow(dead_code)]
+mod fmt;
 mod theme;
 
 use eframe::egui;

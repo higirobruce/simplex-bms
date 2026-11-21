@@ -17,6 +17,7 @@ pub const RADIUS: f32 = 14.0;
 /// light surface. Mixing them up is the one way to break this palette's contrast
 /// guarantees.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct Tokens {
     pub canvas: Color32,
     pub surface: Color32,
