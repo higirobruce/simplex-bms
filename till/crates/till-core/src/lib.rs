@@ -14,10 +14,12 @@
 //! separate types that cannot be added to one another; the only operation that
 //! crosses between them is [`Money::checked_times_qty`].
 
+pub mod basket;
 pub mod codes;
 pub mod line;
 pub mod money;
 pub mod tax;
 
+pub use basket::{Basket, BasketError, BasketTotals};
 pub use line::{BasketLine, LineAmounts, LineDiscount, LineError};
 pub use money::{Money, MoneyError, Qty, round_half_up};
