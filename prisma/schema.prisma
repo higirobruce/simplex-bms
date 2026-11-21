@@ -158,6 +158,7 @@ model Product {
   batches            Batch[]
   promotions         Promotion[]
   priceChanges       PriceChange[]
+  saleLines          SaleLine[]
   writeOffs          StockWriteOff[]
   lineItems          InvoiceLineItem[]
   salesOrderLines    SalesOrderLine[]
@@ -196,6 +197,7 @@ model Location {
   movementsFrom StockMovement[]    @relation("from")
   movementsTo   StockMovement[]    @relation("to")
   writeOffs     StockWriteOff[]
+  lanes         Lane[]
   deliveryNotes DeliveryNote[]
   goodsReceipts GoodsReceiptNote[]
   createdAt     DateTime           @default(now())
@@ -631,4 +633,100 @@ model PriceChange {
   orgId       String
 
   @@index([orgId, productId, changedAt])
+}
+
+enum TenderMethod {
+  CASH
+  CREDIT
+  CASH_CREDIT
+  BANK_CHECK
+  CARD
+  MOBILE_MONEY
+}
+
+model Lane {
+  id         String    @id @default(cuid())
+  code       String
+  name       String
+  locationId String
+  location   Location  @relation(fields: [locationId], references: [id])
+  orgId      String
+  mrc        String?
+  bhfId      String?
+  lastInvcNo Int       @default(0)
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime?
+  shifts     Shift[]
+  sales      Sale[]
+
+  @@unique([code, orgId])
+}
+
+model Shift {
+  id           String    @id @default(cuid())
+  laneId       String
+  lane         Lane      @relation(fields: [laneId], references: [id])
+  openedById   String
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+  openingFloat Decimal   @db.Decimal(12, 2)
+  declaredCash Decimal?  @db.Decimal(12, 2)
+  orgId        String
+  sales        Sale[]
+
+  @@index([orgId, laneId])
+}
+
+model Sale {
+  id            String        @id @default(cuid())
+  shiftId       String
+  shift         Shift         @relation(fields: [shiftId], references: [id])
+  laneId        String
+  lane          Lane          @relation(fields: [laneId], references: [id])
+  invcNo        Int
+  rcptNo        Int?
+  totAmt        Decimal       @db.Decimal(12, 2)
+  totTaxblAmt   Decimal       @db.Decimal(12, 2)
+  totTaxAmt     Decimal       @db.Decimal(12, 2)
+  buyerTin      String?
+  discountKind  DiscountKind?
+  discountValue Decimal?      @db.Decimal(12, 2)
+  voidedAt      DateTime?
+  orgId         String
+  soldAt        DateTime      @default(now())
+  lines         SaleLine[]
+  tenders       Tender[]
+
+  @@unique([laneId, invcNo])
+  @@index([orgId, soldAt])
+}
+
+model SaleLine {
+  id            String        @id @default(cuid())
+  saleId        String
+  sale          Sale          @relation(fields: [saleId], references: [id])
+  productId     String
+  product       Product       @relation(fields: [productId], references: [id])
+  itemSeq       Int
+  qty           Decimal       @db.Decimal(12, 3)
+  prc           Decimal       @db.Decimal(12, 2)
+  taxTyCd       TaxType
+  discountKind  DiscountKind?
+  discountValue Decimal?      @db.Decimal(12, 2)
+  orgId         String
+
+  @@unique([saleId, itemSeq])
+}
+
+model Tender {
+  id          String       @id @default(cuid())
+  saleId      String
+  sale        Sale         @relation(fields: [saleId], references: [id])
+  pmtTyCd     TenderMethod
+  amount      Decimal      @db.Decimal(12, 2)
+  providerRef String?
+  confirmed   Boolean      @default(false)
+  orgId       String
+
+  @@index([saleId])
 }
