@@ -191,7 +191,6 @@ impl Basket {
         // exceed the last line's own supply, so do not dump it all there.
         let last = priced.len().saturating_sub(1);
         let mut shares = Vec::with_capacity(priced.len());
-        let mut given = Decimal::ZERO;
         for (i, (_, a)) in priced.iter().enumerate() {
             let share = if i == last {
                 Decimal::ZERO
@@ -202,25 +201,32 @@ impl Basket {
                     .map(|x| x.floor())
                     .ok_or(BasketError::TotalOutOfRange)?
             };
-            given += share;
             shares.push(share);
         }
-        let mut remaining = total - given;
+        // R73: a share is clamped to its line's headroom (sply_amt less its own
+        // discount), because proportional shares ignore own discounts. Clamping
+        // only lowers shares, so what is left is >= 0 and
+        // sum(headroom - share) = sum(headroom) - sum(share) >= total - sum(share)
+        // = left whenever the discount fits in the total headroom. The backward
+        // walk then always places it; if it cannot, the discount genuinely
+        // exceeds total headroom and that is the one refusal.
+        let mut placed = Decimal::ZERO;
+        for ((_, a), share) in priced.iter().zip(shares.iter_mut()) {
+            let headroom = a.sply_amt.amount() - a.dc_amt.amount();
+            *share = (*share).min(headroom);
+            placed += *share;
+        }
+        let mut remaining = total - placed;
         if remaining < Decimal::ZERO {
             return Err(BasketError::DiscountNotSplittable);
         }
         for ((_, a), share) in priced.iter().zip(shares.iter_mut()).rev() {
             let headroom = a.sply_amt.amount() - a.dc_amt.amount();
-            if *share > headroom {
-                return Err(BasketError::LineDiscountExceedsLine);
-            }
             let take = remaining.min(headroom - *share);
             *share += take;
             remaining -= take;
         }
         if remaining > Decimal::ZERO {
-            // Only reachable when lines' own discounts leave less headroom than
-            // the basket discount asks for.
             return Err(BasketError::LineDiscountExceedsLine);
         }
         let mut out = Vec::with_capacity(priced.len());
@@ -514,19 +520,46 @@ mod tests {
         assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "800.00");
     }
 
-    #[test]
-    fn the_combined_discount_on_one_line_cannot_exceed_its_supply() {
-        // Shares are 50 / 50, but line 1 already has 80 off its 100.
+    fn own_discount_basket() -> Basket {
+        // Line A: 100 supply, 80 already off, so 20 headroom. Line B: 100.
         let mut b = Basket::new();
         let d = Some(LineDiscount::Amount(m("80")));
         b.push_line(line("A", "1", "100", TaxType::B, d)).unwrap();
         b.push_line(line("B", "1", "100", TaxType::B, None))
             .unwrap();
-        b.set_basket_discount(LineDiscount::Amount(m("100")));
-        assert!(matches!(
-            b.totals(),
-            Err(BasketError::LineDiscountExceedsLine)
-        ));
+        b
+    }
+
+    #[test]
+    fn a_discount_equal_to_total_headroom_succeeds_and_zeroes_every_line() {
+        let mut b = own_discount_basket();
+        b.set_basket_discount(LineDiscount::Amount(m("120")));
+        for (_, a) in b.apportioned_lines().unwrap() {
+            assert_eq!(a.taxbl_amt.to_string(), "0.00");
+        }
+    }
+
+    #[test]
+    fn one_franc_past_total_headroom_is_refused() {
+        let mut b = own_discount_basket();
+        b.set_basket_discount(LineDiscount::Amount(m("121")));
+        assert_eq!(b.totals(), Err(BasketError::LineDiscountExceedsLine));
+    }
+
+    #[test]
+    fn an_early_lines_own_discount_clamps_its_share_instead_of_refusing() {
+        // A: 1000 supply, 950 off (50 headroom). B: 1000. 400 off: proportional
+        // shares 200/200, A is over its headroom. This used to be refused.
+        let mut b = Basket::new();
+        let d = Some(LineDiscount::Amount(m("950")));
+        b.push_line(line("A", "1", "1000", TaxType::B, d)).unwrap();
+        b.push_line(line("B", "1", "1000", TaxType::B, None))
+            .unwrap();
+        b.set_basket_discount(LineDiscount::Amount(m("400")));
+        let ap = b.apportioned_lines().unwrap();
+        let dcs: Vec<String> = ap.iter().map(|(_, a)| a.dc_amt.to_string()).collect();
+        assert_eq!(dcs, vec!["1000.00", "350.00"]); // own 950 + 50, and 350
+        assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "650.00");
     }
 
     #[test]
