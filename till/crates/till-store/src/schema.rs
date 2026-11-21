@@ -122,7 +122,18 @@ mod tests {
 
     const NOW: &str = "2026-11-21T00:00:00Z";
 
+    /// Gives a branch its sequence row, as the allocator will in production.
+    async fn seed_seq(s: &Store, bhf: &str) {
+        sqlx::query("insert or ignore into invc_seq (bhf_id, last_invc_no) values (?, 0)")
+            .bind(bhf)
+            .execute(s.pool())
+            .await
+            .unwrap();
+    }
+
+    /// Inserts a sale for a branch that already has a sequence row.
     async fn insert_sale(s: &Store, id: &str, bhf: &str, no: i64) -> Result<(), sqlx::Error> {
+        seed_seq(s, bhf).await;
         sqlx::query(
             "insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
              values (?, ?, ?, 'AwaitingVsdc','0','0','0','01',?)",
@@ -213,8 +224,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_sale_for_a_branch_with_no_sequence_row_is_refused() {
+        let s = Store::open_in_memory().await.unwrap();
+        let r = sqlx::query("insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','00',1,'AwaitingVsdc','0','0','0','01',?)")
+            .bind(NOW).execute(s.pool()).await;
+        assert!(r.is_err(), "no invc_seq row for the branch");
+        seed_seq(&s, "00").await;
+        insert_sale(&s, "s", "00", 1).await.unwrap(); // same insert now succeeds
+    }
+
+    #[tokio::test]
     async fn an_unknown_sale_state_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
+        seed_seq(&s, "00").await; // so the refusal is the CHECK, not the branch foreign key
         let r = sqlx::query("insert into sale (id, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','00',1,'Bogus','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
         assert!(r.is_err());
