@@ -27,6 +27,10 @@ mod fiscal;
 #[allow(dead_code)]
 mod lane;
 
+// Task 10: latency budgets and the timings `lane` records against them.
+#[allow(dead_code)]
+mod latency;
+
 use eframe::egui;
 
 struct LaneApp;

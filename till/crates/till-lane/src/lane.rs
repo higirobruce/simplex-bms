@@ -52,6 +52,7 @@
 
 use crate::device::{Drawer, Printer};
 use crate::fiscal::{FiscalError, FiscalPort, SalePayload};
+use crate::latency::{Timer, Timings};
 use crate::receipt::{ReceiptInput, compose};
 use thiserror::Error;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
@@ -189,10 +190,13 @@ pub struct LaneState {
     /// The bytes `compose` returned for the last confirmed sale, kept verbatim
     /// so a reprint is the same document and never a recomposition.
     last_receipt: Option<Vec<u8>>,
+    /// The last measurement of each latency path (see `crate::latency`).
+    timings: Timings,
 }
 
 impl LaneState {
     pub async fn new(store: Store, cfg: LaneConfig) -> Result<LaneState, LaneError> {
+        let timer = Timer::start();
         // A sale left `AwaitingVsdc` by a previous session (a crash between a
         // rejection and its retry) holds an invoice number, and the store
         // refuses to issue another while it exists: without this the till
@@ -222,6 +226,10 @@ impl LaneState {
             });
             notice = Notice::Problem(LaneError::OutstandingSale.to_string());
         }
+        let timings = Timings {
+            cold_start: Some(timer.elapsed()),
+            ..Timings::default()
+        };
         Ok(LaneState {
             store,
             cfg,
@@ -232,6 +240,7 @@ impl LaneState {
             tenders: TenderSet::default(),
             pending,
             last_receipt: None,
+            timings,
         })
     }
 
@@ -251,6 +260,7 @@ impl LaneState {
 
     /// A character from the wedge. Starting a new scan clears the previous notice.
     pub fn key(&mut self, c: char) {
+        let timer = Timer::start();
         if self.screen != Screen::Selling
             || c.is_control()
             || self.buffer.chars().count() >= MAX_BUFFER
@@ -261,6 +271,7 @@ impl LaneState {
             self.notice = Notice::None;
         }
         self.buffer.push(c);
+        self.timings.key_to_screen = Some(timer.elapsed());
     }
 
     pub fn backspace(&mut self) {
@@ -270,9 +281,13 @@ impl LaneState {
     /// Terminates a scan. On refusal the notice is already set and the buffer
     /// already cleared; `Err` is reserved for faults the cashier cannot act on.
     pub async fn enter(&mut self) -> Result<(), LaneError> {
+        let timer = Timer::start();
         let raw = std::mem::take(&mut self.buffer);
         match self.try_enter(&raw).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.timings.scan_to_line = Some(timer.elapsed());
+                Ok(())
+            }
             Err(e) => self.refuse(e),
         }
     }
@@ -329,8 +344,9 @@ impl LaneState {
         printer: &mut dyn Printer,
         drawer: &mut dyn Drawer,
     ) -> Result<Option<Settled>, LaneError> {
+        let timer = Timer::start();
         self.buffer.clear();
-        match self.try_settle(fiscal, printer, drawer).await {
+        match self.try_settle(fiscal, printer, drawer, timer).await {
             Ok(settled) => Ok(Some(settled)),
             Err(e) => self.refuse(e).map(|()| None),
         }
@@ -405,6 +421,7 @@ impl LaneState {
         fiscal: &mut dyn FiscalPort,
         printer: &mut dyn Printer,
         drawer: &mut dyn Drawer,
+        timer: Timer,
     ) -> Result<Settled, LaneError> {
         if self.screen != Screen::Selling {
             return Err(LaneError::NotSelling);
@@ -487,8 +504,9 @@ impl LaneState {
             Ok(bytes) => {
                 // Retained BEFORE the write: a jam must not lose the bytes.
                 let bytes = self.last_receipt.insert(bytes);
-                if let Err(e) = printer.write(bytes) {
-                    faults.push(format!("the receipt did not print ({e})"));
+                match printer.write(bytes) {
+                    Ok(()) => self.timings.tender_to_bytes = Some(timer.elapsed()),
+                    Err(e) => faults.push(format!("the receipt did not print ({e})")),
                 }
             }
             Err(e) => faults.push(format!("the receipt could not be composed ({e})")),
@@ -636,6 +654,11 @@ impl LaneState {
     pub fn tenders(&self) -> &TenderSet {
         &self.tenders
     }
+    /// The last measurement of each latency path.
+    pub fn timings(&self) -> &Timings {
+        &self.timings
+    }
+
     pub fn config(&self) -> &LaneConfig {
         &self.cfg
     }
@@ -767,6 +790,7 @@ fn one() -> Result<Qty, LaneError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::latency::Budget;
     use till_core::basket::MAX_ITEM_SEQ;
     use till_core::codes::TaxType;
 
@@ -1076,6 +1100,71 @@ mod tests {
             .await
             .unwrap()
             .map(|p| p.invc_no)
+    }
+
+    #[tokio::test]
+    async fn a_scan_becomes_a_line_within_budget() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        assert!(l.timings().scan_to_line.is_none());
+        assert!(l.timings().key_to_screen.is_none());
+        scan(&mut l, EAN).await.unwrap();
+        let t = l.timings();
+        assert!(t.scan_to_line.expect("scan measured").as_millis() < Budget::SCAN_TO_LINE_MS);
+        assert!(t.key_to_screen.expect("key measured").as_millis() < Budget::KEY_TO_SCREEN_MS);
+        assert!(t.cold_start.expect("start measured").as_millis() < Budget::COLD_START_MS);
+        eprintln!("timings: {t:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refused_scan_records_no_scan_timing() {
+        let mut l = lane_with(&[], EmbeddedMode::Weight).await;
+        scan(&mut l, EAN).await.unwrap();
+        assert!(l.timings().scan_to_line.is_none());
+    }
+
+    #[tokio::test]
+    async fn settling_reaches_printer_bytes_within_budget() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("2000")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        assert!(!p.written.is_empty());
+        let t = l.timings().tender_to_bytes.expect("settle measured");
+        assert!(t.as_millis() < Budget::TENDER_TO_BYTES_MS);
+        eprintln!("tender_to_bytes: {t:?}");
+    }
+
+    #[tokio::test]
+    async fn a_settle_that_completes_no_sale_records_no_timing() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("100")).unwrap();
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(l.timings().tender_to_bytes.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_print_records_no_timing() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("2000")).unwrap();
+        let (mut p, mut d) = devices();
+        p.fail_next = true;
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        assert!(l.timings().tender_to_bytes.is_none());
     }
 
     #[tokio::test]
