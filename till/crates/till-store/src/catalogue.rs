@@ -93,6 +93,10 @@ fn validate(p: &CachedProduct) -> Result<(), StoreError> {
     if p.id.is_empty() {
         return Err(reject(p, "empty id"));
     }
+    // Zero is allowed: a free item is legitimate.
+    if p.unit_price < Money::zero() {
+        return Err(StoreError::NegativeCataloguePrice { id: p.id.clone() });
+    }
     if p.barcode.as_deref() == Some("") {
         return Err(reject(p, "empty barcode"));
     }
@@ -603,6 +607,43 @@ mod tests {
             .sync_catalogue(&[prod("z", Some("4006381333931"), None, "1", TaxType::B)])
             .await;
         assert!(matches!(r, Err(StoreError::Sqlx(_))));
+    }
+
+    #[tokio::test]
+    async fn a_negative_catalogue_price_is_refused_by_name_and_the_cache_untouched() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[prod("ok", Some("96385074"), None, "50", TaxType::B)])
+            .await
+            .unwrap();
+        let batch = [
+            prod("ok", Some("96385074"), None, "99", TaxType::B),
+            prod("neg", None, None, "-5", TaxType::B),
+        ];
+        assert!(matches!(
+            s.sync_catalogue(&batch).await,
+            Err(StoreError::NegativeCataloguePrice { ref id }) if id == "neg"
+        ));
+        assert_eq!(count(&s).await, 1);
+        let p = s
+            .lookup(&Scanned::Barcode("96385074".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.unit_price.to_string(), "50.00");
+    }
+
+    #[tokio::test]
+    async fn a_zero_catalogue_price_is_accepted() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[prod("free", Some("96385074"), None, "0", TaxType::B)])
+            .await
+            .unwrap();
+        let p = s
+            .lookup(&Scanned::Barcode("96385074".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.unit_price.to_string(), "0.00");
     }
 
     #[tokio::test]

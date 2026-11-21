@@ -55,6 +55,10 @@ pub enum StoreError {
     /// rolled back rather than caching something no scan could ever reach.
     #[error("catalogue product {id} rejected: {reason}")]
     CatalogueRejected { id: String, reason: String },
+    /// A catalogue price below zero. `Money` allows negatives (refunds need
+    /// them), but a product that pays the customer is a data error.
+    #[error("catalogue product {id} has a negative price")]
+    NegativeCataloguePrice { id: String },
     /// Several cached products share one PLU. A PLU is not unique in the
     /// schema, and guessing between them would price the wrong goods.
     #[error("PLU {plu} belongs to more than one cached product")]
