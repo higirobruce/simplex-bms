@@ -18,8 +18,7 @@ import { useMoney } from "@/lib/currency";
 import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Plus, Search, Package, Pencil, Trash2, Upload } from "lucide-react";
 import { sumQty } from "@/lib/qty-display";
-
-const IMPORT_TEMPLATE = "sku,name,category,unitPrice,costPrice,reorderLevel\nMLK-001,Inyange Milk 1L,Dairy,1200,950,24\n";
+import { PRODUCT_IMPORT_TEMPLATE } from "@/lib/product-import-template";
 
 export default function ProductsPage() {
   const fmt = useMoney();
@@ -342,8 +341,8 @@ export default function ProductsPage() {
         onClose={() => setShowImport(false)}
         title="Import products from CSV"
         endpoint={`/api/${slug}/products/import`}
-        columns="sku, name, category, unitPrice, costPrice, reorderLevel"
-        template={IMPORT_TEMPLATE}
+        columns="sku, name, category, unitPrice, costPrice, reorderLevel, barcode, plu, taxTyCd (A, B, C or D; blank = B, 18% VAT; use A for VAT-exempt goods), department, isWeighed (true/yes/y/1 for weighed goods; blank = no), packSize, shelfLifeDays"
+        template={PRODUCT_IMPORT_TEMPLATE}
         templateName="products-template.csv"
         onImported={(s) => {
           queryClient.invalidateQueries({ queryKey: ["products", slug] });
