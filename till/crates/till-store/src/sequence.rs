@@ -25,6 +25,33 @@ use sqlx::{Sqlite, SqliteConnection, Transaction};
 
 use crate::schema::{Store, StoreError};
 
+/// A write transaction opened with `BEGIN IMMEDIATE`, and the only kind
+/// [`allocate_on`] accepts.
+///
+/// The field is private to this module and the only constructor is
+/// [`Store::begin_immediate`], so a deferred transaction or a bare pooled
+/// connection cannot reach `allocate_on`: the wrong call does not compile.
+/// Dropping it without `commit` rolls back.
+pub(crate) struct ImmediateTx(Transaction<'static, Sqlite>);
+
+impl ImmediateTx {
+    /// The connection inside the transaction, for the caller's own statements
+    /// (the sale, its lines and tenders) so they share the allocation's fate.
+    pub(crate) fn conn(&mut self) -> &mut SqliteConnection {
+        &mut self.0
+    }
+
+    pub(crate) async fn commit(self) -> Result<(), StoreError> {
+        Ok(self.0.commit().await?)
+    }
+
+    // Used by tests now and by the sale transaction (Task 12) next.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn rollback(self) -> Result<(), StoreError> {
+        Ok(self.0.rollback().await?)
+    }
+}
+
 /// A sale holding an invoice number that the VSDC has not yet confirmed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingSale {
@@ -38,8 +65,10 @@ impl Store {
     /// NEVER use `pool().begin()` for an allocation: it issues a deferred
     /// `BEGIN`, which reintroduces the read-then-upgrade race and can collide
     /// or fail under concurrency.
-    pub(crate) async fn begin_immediate(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
-        Ok(self.pool().begin_with("BEGIN IMMEDIATE").await?)
+    pub(crate) async fn begin_immediate(&self) -> Result<ImmediateTx, StoreError> {
+        Ok(ImmediateTx(
+            self.pool().begin_with("BEGIN IMMEDIATE").await?,
+        ))
     }
 
     /// Allocates the next invoice number for `bhf_id` in its own transaction.
@@ -79,17 +108,14 @@ where
     Ok(row.map(|(id, invc_no)| PendingSale { id, invc_no }))
 }
 
-/// Issues the next number for `bhf_id` on `conn`, which MUST be inside a
-/// `BEGIN IMMEDIATE` transaction (see [`Store::begin_immediate`]); the caller
-/// commits. Creates the branch's `invc_seq` row on first use.
+/// Issues the next number for `bhf_id` inside `tx`, which the type guarantees
+/// is a `BEGIN IMMEDIATE` transaction; the caller commits. Creates the branch's `invc_seq` row on first use.
 ///
 /// Refuses with [`StoreError::SequenceBlocked`] while an `AwaitingVsdc` sale
 /// exists on the branch. Branches are independent: only `bhf_id`'s own sales
 /// and sequence row are consulted.
-pub(crate) async fn allocate_on(
-    conn: &mut SqliteConnection,
-    bhf_id: &str,
-) -> Result<i64, StoreError> {
+pub(crate) async fn allocate_on(tx: &mut ImmediateTx, bhf_id: &str) -> Result<i64, StoreError> {
+    let conn = tx.conn();
     if let Some(p) = pending_on(&mut *conn, bhf_id).await? {
         return Err(StoreError::SequenceBlocked { invc_no: p.invc_no });
     }

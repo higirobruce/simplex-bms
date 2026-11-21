@@ -3,6 +3,7 @@
 
 use std::path::Path;
 use std::str::FromStr;
+use std::time::Duration;
 
 use std::borrow::Cow;
 
@@ -49,6 +50,13 @@ fn migrator() -> Migrator {
     m
 }
 
+/// How long a writer waits for SQLite's write lock before failing with
+/// `SQLITE_BUSY`. Under `BEGIN IMMEDIATE` a second invoice allocator queues on
+/// this. Set explicitly (it equals sqlx's default) so it is a recorded
+/// decision: 5 s outlasts any sale transaction by orders of magnitude, yet a
+/// genuinely wedged lock surfaces at the counter instead of hanging the lane.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Handle to the local database.
 #[derive(Debug, Clone)]
 pub struct Store {
@@ -66,6 +74,7 @@ impl Store {
             .filename(path)
             .create_if_missing(true)
             .foreign_keys(true)
+            .busy_timeout(BUSY_TIMEOUT)
             .journal_mode(SqliteJournalMode::Wal);
         let pool = SqlitePoolOptions::new().connect_with(opts).await?;
         Store::migrated(pool).await
@@ -78,6 +87,7 @@ impl Store {
     pub async fn open_in_memory() -> Result<Store, StoreError> {
         let opts = SqliteConnectOptions::new()
             .in_memory(true)
+            .busy_timeout(BUSY_TIMEOUT)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -358,6 +368,16 @@ mod tests {
         drop(conns);
         drop(s);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn busy_timeout_is_set_explicitly() {
+        let s = Store::open_in_memory().await.unwrap();
+        let ms: i64 = sqlx::query_scalar("pragma busy_timeout")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(ms, 5000);
     }
 
     #[test]
