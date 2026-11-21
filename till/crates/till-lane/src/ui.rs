@@ -67,6 +67,10 @@ pub enum Action {
     VoidLine,
     /// Take a payment under this RRA code: the keyed amount, or the balance.
     Tender(PmtTyCd),
+    /// Take back the last payment keyed (a mis-key).
+    UndoTender,
+    /// Take back every payment; the basket stays.
+    ClearTenders,
     Reprint,
     CancelSale,
     Resume,
@@ -76,7 +80,7 @@ pub enum Action {
 /// Function keys: (egui key, label, name, action). The first seven are the
 /// mockup's; the lane has no discount, suspend, refund, buyer-TIN or report
 /// flow yet, so those say so rather than doing nothing silently.
-const FKEYS: [(egui::Key, &str, &str, Action); 10] = [
+const FKEYS: [(egui::Key, &str, &str, Action); 11] = [
     (egui::Key::F1, "F1", "Void line", Action::VoidLine),
     (
         egui::Key::F2,
@@ -107,6 +111,7 @@ const FKEYS: [(egui::Key, &str, &str, Action); 10] = [
     ),
     (egui::Key::F9, "F9", "Reprint", Action::Reprint),
     (egui::Key::F10, "F10", "Cancel sale", Action::CancelSale),
+    (egui::Key::F11, "F11", "Undo tender", Action::UndoTender),
 ];
 
 /// The payment methods, one per RRA code (C5b): code, key digit, name, the
@@ -160,6 +165,8 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
                 modifiers,
                 ..
             } => match key {
+                // Ctrl+Backspace is not a wedge character and not a method key.
+                egui::Key::Backspace if modifiers.ctrl => out.push(Action::ClearTenders),
                 k if modifiers.ctrl => {
                     if let Some((code, ..)) = METHODS.iter().find(|(_, mk, ..)| mk == k) {
                         out.push(Action::Tender(*code));
@@ -226,6 +233,8 @@ fn apply(
             }
         }
         Action::Tender(code) => tender(state, local, code),
+        Action::UndoTender => state.remove_last_tender(),
+        Action::ClearTenders => state.clear_tenders(),
         Action::Reprint => state.reprint(devices.printer.as_mut()),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
@@ -288,12 +297,11 @@ fn tender(
         return Ok(());
     }
     let amount = if state.buffer().is_empty() {
-        let due = state.basket().totals().map(|t| t.tot_amt).ok();
-        let paid = state.tender_total();
-        match (due, paid) {
-            (Some(d), Some(p)) => d.checked_sub(p).filter(|m| *m > Money::zero()),
-            _ => None,
-        }
+        state
+            .basket()
+            .totals()
+            .ok()
+            .and_then(|t| state.remaining(t.tot_amt))
     } else {
         Money::try_from_str(state.buffer()).ok()
     };
@@ -858,23 +866,39 @@ fn balance_tile(ui: &mut Ui, state: &LaneState, due: Money) {
             TOKENS.ink,
             TOKENS.ink_mute,
         ),
-        Err(TenderError::Insufficient { due, taken }) => amount_tile(
+        // Nothing tendered yet is the same state as a shortfall: all of it is
+        // still to pay. `remaining` does the sum; the UI never subtracts.
+        Err(TenderError::Insufficient { .. } | TenderError::Empty) => amount_tile(
             ui,
             "Still to pay",
-            due.checked_sub(taken).unwrap_or(due),
+            state.remaining(due).unwrap_or(due),
             TOKENS.surface,
             TOKENS.ink,
             TOKENS.ink_mute,
         ),
-        Err(TenderError::OverTenderOnNonCash) => tile(ui, TOKENS.surface, |ui| {
-            ui.label(text(
-                "NO CHANGE ON NON-CASH. The payment is more than is due and cash received does not cover the difference.",
-                sans_semibold(14.0),
-                TOKENS.danger,
-            ));
-        }),
-        Err(_) => {}
+        Err(TenderError::OverTenderOnNonCash) => balance_alert(
+            ui,
+            "NO CHANGE ON NON-CASH. The payment is more than is due and cash received does not cover the difference. Take the last payment back (F11) and key it again.",
+        ),
+        // The basket's own total or the tender sum is unusable; the cashier
+        // must see that rather than a blank panel.
+        Err(
+            TenderError::NegativeDue(_)
+            | TenderError::FractionalDue(_)
+            | TenderError::OutOfRange
+            | TenderError::NonPositiveAmount
+            | TenderError::FractionalAmount(_),
+        ) => balance_alert(
+            ui,
+            "THE BALANCE CANNOT BE WORKED OUT. Take the payments back and check the basket, or ask a supervisor.",
+        ),
     }
+}
+
+fn balance_alert(ui: &mut Ui, message: &str) {
+    tile(ui, TOKENS.surface, |ui| {
+        ui.label(text(message, sans_semibold(14.0), TOKENS.danger));
+    });
 }
 
 fn band_table(ui: &mut Ui, t: &till_core::BasketTotals) {
@@ -964,6 +988,13 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         };
         all.push((label, *cap, Action::Tender(*code), false, false));
     }
+    all.push((
+        "Ctrl Bksp",
+        "Clear tenders",
+        Action::ClearTenders,
+        false,
+        false,
+    ));
     all.push((enter.0, enter.1, Action::Enter, enter.2, false));
 
     let cols = 4;
@@ -1515,6 +1546,65 @@ mod tests {
         assert!(shown.contains(&fmt::rwf(Money::try_from_str("1000").unwrap())));
         assert!(shown.contains("STILL TO PAY"));
         assert!(shown.contains("1,100"), "{shown}");
+    }
+
+    #[test]
+    fn the_balance_is_shown_before_the_first_tender_is_taken() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("STILL TO PAY"), "{shown}");
+        assert!(shown.contains("7,100"), "{shown}");
+    }
+
+    #[test]
+    fn f11_takes_back_a_mis_keyed_card_tender_and_the_sale_can_then_settle() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("8000"));
+        r.frame(tap_ctrl(Key::Num5)); // card 8,000 against 7,100: a mis-key
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("NO CHANGE ON NON-CASH"), "{shown}");
+        let shown = r.frame(tap(Key::F11));
+        assert!(r.tenders().is_empty());
+        assert!(!shown.contains("NO CHANGE ON NON-CASH"), "{shown}");
+        assert!(shown.contains("STILL TO PAY"), "{shown}");
+        r.frame(tap_ctrl(Key::Num5)); // card, the exact balance
+        r.frame(tap(Key::Enter));
+        assert_eq!(
+            *r.state.screen(),
+            Screen::Settled {
+                change: Money::zero()
+            }
+        );
+    }
+
+    #[test]
+    fn ctrl_backspace_clears_every_tender_and_keeps_the_basket() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("1000"));
+        r.frame(tap_ctrl(Key::Num5));
+        r.frame(type_text("500"));
+        r.frame(tap_ctrl(Key::Num6));
+        assert_eq!(r.tenders().len(), 2);
+        let lines = r.state.basket().len();
+        r.frame(tap_ctrl(Key::Backspace));
+        assert!(r.tenders().is_empty());
+        assert_eq!(r.state.basket().len(), lines);
+        assert_eq!(r.due().to_string(), "7100.00");
+    }
+
+    #[test]
+    fn the_undo_keys_are_on_screen() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        let shown = r.frame(vec![]);
+        assert!(
+            shown.contains("Undo tender") && shown.contains("F11"),
+            "{shown}"
+        );
+        assert!(shown.contains("Clear tenders"), "{shown}");
     }
 
     #[test]

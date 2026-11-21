@@ -181,6 +181,8 @@ pub enum LaneError {
     NotStopped,
     #[error("There is no pending sale to cancel.")]
     NothingPending,
+    #[error("No payment has been taken, so there is none to take back.")]
+    NoTenderToRemove,
 }
 
 /// The store operation that failed. Each one has its own message, because the
@@ -488,6 +490,65 @@ impl LaneState {
             }
             Err(e) => self.refuse(e),
         }
+    }
+
+    /// Takes back the last payment keyed, for a mis-key. Before settlement
+    /// only: once a sale is settled or pending at the VSDC its tenders are
+    /// history. Nothing to remove is a `Problem`, like any cashier error.
+    ///
+    /// `TenderSet` has no removal, so the set is rebuilt from the entries kept;
+    /// each goes back through `push`, the same gate it first passed.
+    pub fn remove_last_tender(&mut self) -> Result<(), LaneError> {
+        self.buffer.clear();
+        let removed = self.ensure_open().and_then(|()| {
+            let entries = self.tenders.entries();
+            let Some((last, kept)) = entries.split_last() else {
+                return Err(LaneError::NoTenderToRemove);
+            };
+            let last = *last;
+            self.tenders = rebuild(kept)?;
+            Ok(last)
+        });
+        match removed {
+            Ok(e) => {
+                self.notice = Notice::Info(format!(
+                    "{} tender of {} taken back.",
+                    e.pmt_ty_cd.wire(),
+                    e.amount
+                ));
+                Ok(())
+            }
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    /// Takes back every payment, leaving the basket as it is: the lines are the
+    /// customer's shopping, only the payment was wrong. Same limits as
+    /// [`LaneState::remove_last_tender`].
+    pub fn clear_tenders(&mut self) -> Result<(), LaneError> {
+        self.buffer.clear();
+        let cleared = self.ensure_open().and_then(|()| {
+            if self.tenders.entries().is_empty() {
+                return Err(LaneError::NoTenderToRemove);
+            }
+            self.tenders = TenderSet::default();
+            Ok(())
+        });
+        match cleared {
+            Ok(()) => {
+                self.notice = Notice::Info("All payments taken back.".to_owned());
+                Ok(())
+            }
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    /// What is still owed on `due` after the payments so far. `None` when
+    /// nothing is left to pay (or the sum cannot be represented), so callers
+    /// never do arithmetic on money themselves.
+    pub fn remaining(&self, due: Money) -> Option<Money> {
+        let paid = self.tenders.total()?;
+        due.checked_sub(paid).filter(|m| *m > Money::zero())
     }
 
     /// The payments taken so far, in the order taken. Read-only: every entry
@@ -979,6 +1040,15 @@ impl LaneState {
 
 /// The lane clock as the CIS block wants it: `yyyymmddhhmmss`, Kigali time.
 /// Rwanda is UTC+2 all year (no daylight saving), so no zone database is needed.
+/// A tender set holding exactly `entries`, each re-validated by `push`.
+fn rebuild(entries: &[TenderEntry]) -> Result<TenderSet, LaneError> {
+    let mut set = TenderSet::default();
+    for e in entries {
+        set.push(*e)?;
+    }
+    Ok(set)
+}
+
 fn kigali_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2127,6 +2197,121 @@ mod tests {
             .unwrap();
         assert!(r.is_none());
         assert!(matches!(l.notice(), Notice::Problem(_)));
+    }
+
+    fn kept(l: &LaneState) -> Vec<(PmtTyCd, Money)> {
+        l.tenders()
+            .entries()
+            .iter()
+            .map(|e| (e.pmt_ty_cd, e.amount))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_last_tender_can_be_taken_back_before_settling() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Card, rwf("500")).unwrap();
+        l.add_tender(PmtTyCd::MobileMoney, rwf("300")).unwrap();
+        l.remove_last_tender().unwrap();
+        assert_eq!(kept(&l), vec![(PmtTyCd::Card, rwf("500"))]);
+        assert_eq!(l.tender_total(), Some(rwf("500")));
+        assert!(matches!(l.notice(), Notice::Info(_)));
+        assert_eq!(l.remaining(rwf("1250")), Some(rwf("750")));
+    }
+
+    #[tokio::test]
+    async fn clearing_tenders_leaves_the_basket_untouched() {
+        // The lines are the customer's shopping; only the payment was wrong.
+        let mut l = lane_with_item().await;
+        scan(&mut l, EAN).await.unwrap();
+        l.add_tender(PmtTyCd::Card, rwf("500")).unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("100")).unwrap();
+        let lines_before = l.basket().len();
+        l.clear_tenders().unwrap();
+        assert!(l.tenders().entries().is_empty());
+        assert_eq!(l.tender_total(), Some(Money::zero()));
+        assert_eq!(l.basket().len(), lines_before);
+        assert_eq!(l.screen(), &Screen::Selling);
+    }
+
+    #[tokio::test]
+    async fn a_mis_keyed_card_overpayment_can_be_corrected() {
+        // The hazard, end to end: card 8,000 against 7,450 due, remove it,
+        // tender 7,450 by card instead, settle. No overcharge.
+        let mut l = lane_with_item().await;
+        // Six lines of 1,250: the figures differ from the brief's 7,450 but the
+        // shape is the same, a card overpayment of 550 that cannot be paid out.
+        for _ in 0..5 {
+            scan(&mut l, EAN).await.unwrap();
+        }
+        let due = l.basket().totals().unwrap().tot_amt;
+        let over = due.checked_add(rwf("550")).unwrap();
+        l.add_tender(PmtTyCd::Card, over).unwrap();
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none(), "an overpayment on card must not settle");
+        l.remove_last_tender().unwrap();
+        l.add_tender(PmtTyCd::Card, due).unwrap();
+        let s = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        assert_eq!(s.change, Money::zero());
+        assert_eq!(kept(&l), vec![(PmtTyCd::Card, due)]);
+    }
+
+    #[tokio::test]
+    async fn tenders_cannot_be_removed_once_the_sale_is_settled() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        l.remove_last_tender().unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        l.clear_tenders().unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(kept(&l), vec![(PmtTyCd::Cash, rwf("1250"))]);
+        assert!(matches!(l.screen(), Screen::Settled { .. }));
+    }
+
+    #[tokio::test]
+    async fn tenders_cannot_be_removed_while_the_sale_is_pending_at_the_vsdc() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = fiscal(SimMode::Reject("894 Bad item class".into()));
+        assert!(l.settle(&mut f, &mut p, &mut d).await.unwrap().is_none());
+        l.remove_last_tender().unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        l.clear_tenders().unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(kept(&l), vec![(PmtTyCd::Cash, rwf("1250"))]);
+    }
+
+    #[tokio::test]
+    async fn removing_from_an_empty_tender_set_is_a_problem_not_an_error() {
+        let mut l = lane_with_item().await;
+        assert!(l.remove_last_tender().is_ok());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert!(l.clear_tenders().is_ok());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+    }
+
+    #[tokio::test]
+    async fn remaining_is_what_is_still_owed_and_none_once_covered() {
+        let mut l = lane_with_item().await;
+        assert_eq!(l.remaining(rwf("1250")), Some(rwf("1250")));
+        l.add_tender(PmtTyCd::Card, rwf("1000")).unwrap();
+        assert_eq!(l.remaining(rwf("1250")), Some(rwf("250")));
+        l.add_tender(PmtTyCd::Cash, rwf("250")).unwrap();
+        assert_eq!(l.remaining(rwf("1250")), None);
     }
 
     #[test]
