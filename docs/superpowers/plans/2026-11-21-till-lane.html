@@ -1,0 +1,243 @@
+<title>Till Lane Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#F1F6FB; --surface:#FFFFFF; --surface-2:#F7FAFD; --ink:#0F1B2A;
+    --ink-soft:#41576E; --ink-mute:#546A7E; --line:#E2EBF4;
+    --accent:#176596; --accent-soft:#DDEBF6; --hi-vis:#3FA9E5;
+    --danger:#B5271F; --danger-soft:#FBE4E2; --radius:14px;
+    --ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0B141F; --surface:#13202E; --surface-2:#18283A; --ink:#EAF2FA;
+      --ink-soft:#AFC3D6; --ink-mute:#8CA2B8; --line:#22354A;
+      --accent:#41ADEA; --accent-soft:#13334A; --hi-vis:#41ADEA;
+      --danger:#FF6369; --danger-soft:#3A1618; color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0B141F; --surface:#13202E; --surface-2:#18283A; --ink:#EAF2FA;
+    --ink-soft:#AFC3D6; --ink-mute:#8CA2B8; --line:#22354A;
+    --accent:#41ADEA; --accent-soft:#13334A; --hi-vis:#41ADEA;
+    --danger:#FF6369; --danger-soft:#3A1618; color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg); color:var(--ink); font-family:var(--ui); margin:0;
+    font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:70rem; margin:0 auto; padding-inline:16px; padding-block:36px 72px}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-mute); margin:0 0 12px}
+  h1{font-size:clamp(1.8rem,5vw,2.7rem); line-height:1.05; letter-spacing:-.028em;
+    font-weight:800; margin:0 0 15px; text-wrap:balance; max-width:24ch}
+  .stand{font-size:1.05rem; color:var(--ink-soft); margin:0 0 24px; max-width:60ch}
+  .pills{display:flex; gap:7px; flex-wrap:wrap; margin-bottom:44px}
+  .pill{font-size:11.5px; font-weight:700; letter-spacing:.02em; padding:6px 12px;
+    border-radius:999px; background:var(--accent); color:#fff}
+  .pill.ghost{background:transparent; color:var(--ink-mute);
+    border:1px solid var(--line)}
+  h2{font-size:clamp(1.1rem,2.6vw,1.4rem); font-weight:700; margin:0 0 6px;
+    letter-spacing:-.018em; text-wrap:balance}
+  .sec-no{font-family:var(--mono); font-size:10.5px; color:var(--accent);
+    font-weight:600; letter-spacing:.1em; display:block; margin-bottom:7px}
+  section{margin-bottom:44px}
+  p{margin:0 0 14px; max-width:66ch; color:var(--ink-soft)}
+  p.tight{margin-bottom:10px}
+  .tasks{display:grid; gap:11px;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,19rem),1fr))}
+  .task{background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius); padding:15px 16px; min-width:0;
+    display:flex; flex-direction:column}
+  .task .no{font-family:var(--mono); font-size:10.5px; color:var(--ink-mute);
+    letter-spacing:.08em; margin-bottom:6px}
+  .task h3{font-size:.97rem; font-weight:700; margin:0 0 7px; letter-spacing:-.01em}
+  .task p{font-size:.86rem; margin:0 0 10px; color:var(--ink-soft)}
+  .proof{margin-top:auto; padding-top:10px; border-top:1px solid var(--line);
+    font-size:.78rem; color:var(--ink-mute)}
+  .proof b{color:var(--ink); font-weight:600; display:block; font-size:.72rem;
+    letter-spacing:.06em; text-transform:uppercase; margin-bottom:3px}
+  .m{font-family:var(--mono); font-size:.84em; background:var(--accent-soft);
+    color:var(--accent); padding:1px 6px; border-radius:5px}
+  ol.rf{counter-reset:rf; list-style:none; padding:0; margin:0; display:grid; gap:9px}
+  ol.rf li{background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--danger); border-radius:var(--radius);
+    padding:13px 15px; font-size:.9rem; color:var(--ink-soft)}
+  ol.rf li b{color:var(--ink); display:block; margin-bottom:3px; font-size:.93rem}
+  ol.rf li .owner{font-family:var(--mono); font-size:.72rem; color:var(--ink-mute);
+    float:right; margin-left:10px}
+  ul{margin:0 0 14px; padding-left:19px; max-width:66ch; color:var(--ink-soft);
+    font-size:.93rem}
+  li{margin-bottom:6px}
+  ul strong{color:var(--ink)}
+  .split{display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr))}
+  .box{background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius); padding:15px 16px; min-width:0}
+  .box h3{font-size:.9rem; font-weight:700; margin:0 0 8px}
+  .box ul{font-size:.85rem; margin:0; padding-left:17px}
+  .flag{background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--accent); border-radius:var(--radius);
+    padding:15px 16px; margin-bottom:14px}
+  .flag strong{display:block; font-size:.93rem; margin-bottom:5px; color:var(--ink)}
+  .flag p{font-size:.89rem; margin:0}
+  footer{border-top:1px solid var(--line); padding-top:18px}
+  footer p{font-size:.88rem; color:var(--ink-mute)}
+  .path{font-family:var(--mono); font-size:.8rem; word-break:break-all}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Implementation plan · Phase 2 continued</p>
+  <h1>A till you can run on a desk</h1>
+  <p class="stand">Eleven tasks producing one thing: a window that scans, prices,
+  totals, tenders and prints — with no hardware attached and no VSDC in reach.</p>
+  <div class="pills">
+    <span class="pill">11 tasks</span>
+    <span class="pill ghost">branch till-lane</span>
+    <span class="pill ghost">builds on 200 merged tests</span>
+    <span class="pill ghost">runs on this Mac</span>
+  </div>
+
+  <section>
+    <span class="sec-no">01 — The decomposition that matters</span>
+    <h2>The sale is egui-free</h2>
+    <p><span class="m">LaneState</span> holds the whole sale — the scan buffer, the
+    basket, the tender, the fiscal sequence — and knows nothing about egui. The UI
+    layer only renders it and feeds it keystrokes.</p>
+    <p>That single boundary is what lets tasks 7 through 10 be tested without opening
+    a window: the hard-stop, the 999-line cap, an unknown barcode and a printer
+    failure are all unit tests. If the sale lived inside the widget tree, none of
+    them could be.</p>
+    <div class="flag">
+      <strong>A keyboard-wedge scanner is a keyboard</strong>
+      <p>Digits accumulate, <span class="m">Enter</span> terminates. There is no
+      device to poll in that path and no way to tell a scan from fast typing —
+      deliberately, because that is exactly what the shop already owns.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">02 — The tasks</span>
+    <h2>Each ends with something that runs</h2>
+    <div class="tasks">
+      <div class="task"><div class="no">TASK 1</div><h3>Crate, theme, fonts</h3>
+        <p>egui window in Cloud &amp; Azure, Inter and JetBrains Mono embedded as
+        TTFs so the counter needs nothing installed.</p>
+        <div class="proof"><b>Proved by</b>A test that parses the real
+        <span class="m">globals.css</span> and fails when either side drifts.</div></div>
+
+      <div class="task"><div class="no">TASK 2</div><h3>Money formatting</h3>
+        <p>7,450 not 7450.00. <span class="m">Money</span> exposes no Decimal, so
+        this formats from its <span class="m">Display</span> — the intended route.</p>
+        <div class="proof"><b>Proved by</b>Exact strings, including 0 and
+        1,234,567.</div></div>
+
+      <div class="task"><div class="no">TASK 3</div><h3>Device traits</h3>
+        <p>Printer, Drawer, Scale, ScanSource, each with a simulated implementation
+        that records what it was asked to do.</p>
+        <div class="proof"><b>Proved by</b>A one-shot
+        <span class="m">fail_next</span>, so a test can provoke exactly one
+        failure.</div></div>
+
+      <div class="task"><div class="no">TASK 4</div><h3>ESC/POS encoder</h3>
+        <p>Bytes only, no device: init, align, bold, feed, cut, drawer kick, QR.</p>
+        <div class="proof"><b>Proved by</b>Exact byte sequences —
+        <span class="m">cut</span> is <span class="m">1D 56 42 00</span>, and the QR
+        length prefix is checked against its payload.</div></div>
+
+      <div class="task"><div class="no">TASK 5</div><h3>C5 receipt</h3>
+        <p>The mandated SDC block, internal data and signature dashed every four
+        characters, and the six-field QR payload.</p>
+        <div class="proof"><b>Proved by</b>The printed VAT is
+        <span class="m">983.89</span> and must not be
+        <span class="m">983.90</span> — sum of lines, never recomputed.</div></div>
+
+      <div class="task"><div class="no">TASK 6</div><h3>Fiscal port</h3>
+        <p>The trait Phase 3 will implement for real, plus a simulated VSDC that can
+        succeed, reject, or be unreachable.</p>
+        <div class="proof"><b>Proved by</b>Unreachable returns an error and never a
+        fabricated receipt.</div></div>
+
+      <div class="task"><div class="no">TASK 7</div><h3>Scanning</h3>
+        <p>Keystrokes to a priced line, through classify and the catalogue.</p>
+        <div class="proof"><b>Proved by</b>Unknown barcode adds nothing; the 999th
+        line refuses with an instruction, not a panic.</div></div>
+
+      <div class="task"><div class="no">TASK 8</div><h3>Tender and the hard stop</h3>
+        <p>begin_sale → VSDC → confirm_sale → print → kick, in that order.</p>
+        <div class="proof"><b>Proved by</b>An unreachable VSDC stops the lane,
+        abandons the number, and prints nothing.</div></div>
+
+      <div class="task"><div class="no">TASK 9</div><h3>Printing is not the sale</h3>
+        <p>A jam after the VSDC accepted the sale must not undo it.</p>
+        <div class="proof"><b>Proved by</b>The sale stays confirmed and the receipt
+        reprints byte for byte.</div></div>
+
+      <div class="task"><div class="no">TASK 10</div><h3>Latency budgets</h3>
+        <p>The four numbers standing in for a speed gate we cannot run.</p>
+        <div class="proof"><b>Proved by</b>Scan-to-line under 100 ms, tender-to-bytes
+        under 300 ms.</div></div>
+
+      <div class="task"><div class="no">TASK 11</div><h3>The screen</h3>
+        <p>Selling, hard-stop and settled, laid out from the approved mockup.</p>
+        <div class="proof"><b>Proved by</b>
+        <span class="m">cargo run -p till-lane -- --demo</span> — scan and tender with
+        a keyboard alone.</div></div>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">03 — Review focus</span>
+    <h2>The five things no happy path touches</h2>
+    <p class="tight">Written with the spec open, before the tasks were drawn. Each is
+    assigned to the task that owns the code, so none of them is left to goodwill.</p>
+    <ol class="rf">
+      <li><span class="owner">Task 8</span><b>A scan arrives while the lane is
+        stopped</b>Keystrokes during a C1 hard-stop must not quietly accumulate into
+        a sale the cashier cannot finish.</li>
+      <li><span class="owner">Task 7</span><b>A barcode the catalogue does not
+        have</b>The cashier is told. Nothing is guessed, no line appears.</li>
+      <li><span class="owner">Task 7</span><b>The 999-line cap, mid-sale</b>It
+        surfaces as "finish this sale and start another", not a panic.</li>
+      <li><span class="owner">Task 8</span><b>Under-tender, and over-tender on a
+        card</b>Neither settles. Change is cash-only and capped by cash
+        received.</li>
+      <li><span class="owner">Task 9</span><b>The printer fails after the VSDC
+        accepted</b>The sale is already fiscally done. It stays done.</li>
+    </ol>
+  </section>
+
+  <section>
+    <span class="sec-no">04 — Boundaries</span>
+    <h2>What this does not build</h2>
+    <div class="split">
+      <div class="box"><h3>Deliberately out of scope</h3>
+        <ul>
+          <li>The signed <span class="m">.msi</span>, update channel and lane pairing
+          — Windows-specific, 2a-install.</li>
+          <li>The real VSDC client — Phase 3. This builds the trait and honours C1
+          against it.</li>
+          <li>Refunds, suspend/resume, X and Z reports, shift open and close.</li>
+          <li>Real hardware drivers.</li>
+        </ul></div>
+      <div class="box"><h3>Carried constraints</h3>
+        <ul>
+          <li>Whole francs at the line; tax keeps 2dp.</li>
+          <li>Header tax is the sum of line taxes, never recomputed.</li>
+          <li><span class="m">sqlx</span> macros stay off.</li>
+          <li><span class="m">till-core</span> and <span class="m">till-store</span>
+          are not to be modified — a need to is a finding, not a licence.</li>
+        </ul></div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Source of record:
+      <span class="path">docs/superpowers/plans/2026-11-21-till-lane.md</span> on
+      branch <span class="m">till-lane</span>, from
+      <span class="path">docs/superpowers/specs/2026-11-21-till-ui-toolkit-design.md</span>.
+      Executing subagent-driven — a fresh implementer per task, a fresh reviewer
+      before the next one starts. Tell me if a boundary above is wrong; that is the
+      cheapest moment to move it.</p>
+  </footer>
+</div>

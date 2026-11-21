@@ -1,0 +1,18 @@
+[package]
+name = "till-lane"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+eframe.workspace = true
+rust_decimal.workspace = true
+thiserror.workspace = true
+# The UI owns the runtime that drives the async store (see main.rs).
+tokio.workspace = true
+till-core = { path = "../till-core" }
+till-store = { path = "../till-store" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+sqlx.workspace = true
