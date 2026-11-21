@@ -6,8 +6,11 @@
 //! future code the till does not understand cannot be silently treated as
 //! some default.
 //!
-//! Note that `derive(Serialize)` emits the variant *name* (`"Cash"`), not the
-//! wire code (`"01"`); use `wire()` for anything sent to or shown by the RRA.
+//! The RRA code string is the single external representation of every table:
+//! `wire()`, `FromStr` and `Serialize` all produce and accept it identically,
+//! generated from one literal per variant so they cannot drift apart. A
+//! payload struct that derives `Serialize` therefore emits `"01"`, not
+//! `"Cash"`, and stored values survive a Rust rename of a variant.
 
 use std::str::FromStr;
 
@@ -30,7 +33,7 @@ macro_rules! code_table {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
         pub enum $name {
-            $($(#[$vmeta])* $variant),+
+            $($(#[$vmeta])* #[serde(rename = $code)] $variant),+
         }
 
         impl $name {
@@ -216,6 +219,23 @@ mod tests {
         assert_eq!(SalesSttsCd::ALL.len(), 6);
         assert_eq!(SalesTyCd::ALL.len(), 4);
         assert_eq!(RcptTyCd::ALL.len(), 2);
+    }
+
+    #[test]
+    fn serialize_emits_the_wire_code_for_every_variant() {
+        fn check<T: Serialize + Copy>(all: &[T], wire: fn(T) -> &'static str) {
+            for v in all {
+                assert_eq!(
+                    serde_json::to_string(v).unwrap(),
+                    format!("\"{}\"", wire(*v))
+                );
+            }
+        }
+        check(TaxType::ALL, TaxType::wire);
+        check(PmtTyCd::ALL, PmtTyCd::wire);
+        check(SalesTyCd::ALL, SalesTyCd::wire);
+        check(RcptTyCd::ALL, RcptTyCd::wire);
+        check(SalesSttsCd::ALL, SalesSttsCd::wire);
     }
 
     #[test]
