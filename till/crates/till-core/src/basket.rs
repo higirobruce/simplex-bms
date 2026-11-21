@@ -32,13 +32,17 @@ pub enum BasketError {
     /// Refused rather than saturated: a clipped total is a wrong fiscal total.
     #[error("basket total is outside the supported range")]
     TotalOutOfRange,
-    /// The basket discount is larger than the basket, or would take more than
-    /// one line's supply amount. Refused, never clamped.
+    /// The basket discount is larger than the basket. Refused, never clamped.
     #[error("the basket discount is larger than the basket it applies to")]
     DiscountExceedsBasket,
-    /// Defensive only: the last line's residual is non-negative by
-    /// construction (earlier shares floor), so this is unreachable. It names
-    /// the arm instead of letting a negative share through.
+    /// One line's own discount plus its share of the basket discount would
+    /// exceed that line's supply amount, or the lines' own discounts leave no
+    /// room for the basket discount. Remedy: that line already has a discount.
+    #[error("a line's own discount leaves no room for its share of the basket discount")]
+    LineDiscountExceedsLine,
+    /// Defensive only: the residual is non-negative (earlier shares floor) and
+    /// always fits in the lines' headroom, so this is unreachable. It names the
+    /// arm instead of letting a negative share through.
     #[error("the basket discount cannot be split into whole francs across these lines")]
     DiscountNotSplittable,
     #[error(transparent)]
@@ -133,6 +137,8 @@ impl Basket {
         Ok(())
     }
 
+    /// Sets the whole-basket discount, replacing any earlier one. Checked when
+    /// the basket is totalled or apportioned, not here.
     pub fn set_basket_discount(&mut self, discount: LineDiscount) {
         self.basket_discount = Some(discount);
     }
@@ -175,16 +181,20 @@ impl Basket {
         if total.is_zero() {
             return Ok(priced);
         }
-        // The first n-1 shares FLOOR, deliberately not half-up like the rest of
-        // this crate: residual = total - sum(floor(share_i)) >= total -
-        // sum(share_i) = share_n >= 0, so the last line never goes negative.
-        // Half-up can (2 off four equal lines: 1/1/1 then -1, a surcharge).
+        // The first n-1 shares FLOOR (deliberately not half-up like the rest of
+        // this crate, which can overshoot the total). The remainder, up to n-1
+        // francs of flooring slack plus the last line's own share, is then
+        // walked BACKWARDS from the last line, each line taking at most its
+        // headroom (sply_amt less what it already has off). It always fits:
+        // sum(headroom) = sum(sply) - sum(shares) >= total - sum(shares). Merely
+        // proving the residual is non-negative is NOT enough: the residual can
+        // exceed the last line's own supply, so do not dump it all there.
         let last = priced.len().saturating_sub(1);
+        let mut shares = Vec::with_capacity(priced.len());
         let mut given = Decimal::ZERO;
-        let mut out = Vec::with_capacity(priced.len());
-        for (i, (mut line, a)) in priced.into_iter().enumerate() {
+        for (i, (_, a)) in priced.iter().enumerate() {
             let share = if i == last {
-                total - given
+                Decimal::ZERO
             } else {
                 total
                     .checked_mul(a.sply_amt.amount())
@@ -192,15 +202,31 @@ impl Basket {
                     .map(|x| x.floor())
                     .ok_or(BasketError::TotalOutOfRange)?
             };
-            if share < Decimal::ZERO {
-                return Err(BasketError::DiscountNotSplittable);
-            }
             given += share;
+            shares.push(share);
+        }
+        let mut remaining = total - given;
+        if remaining < Decimal::ZERO {
+            return Err(BasketError::DiscountNotSplittable);
+        }
+        for ((_, a), share) in priced.iter().zip(shares.iter_mut()).rev() {
+            let headroom = a.sply_amt.amount() - a.dc_amt.amount();
+            if *share > headroom {
+                return Err(BasketError::LineDiscountExceedsLine);
+            }
+            let take = remaining.min(headroom - *share);
+            *share += take;
+            remaining -= take;
+        }
+        if remaining > Decimal::ZERO {
+            // Only reachable when lines' own discounts leave less headroom than
+            // the basket discount asks for.
+            return Err(BasketError::LineDiscountExceedsLine);
+        }
+        let mut out = Vec::with_capacity(priced.len());
+        for ((mut line, a), share) in priced.into_iter().zip(shares) {
             let combined = Money::from_decimal(a.dc_amt.amount() + share)
                 .ok_or(BasketError::TotalOutOfRange)?;
-            if combined > a.sply_amt {
-                return Err(BasketError::DiscountExceedsBasket);
-            }
             line.discount = Some(LineDiscount::Amount(combined));
             let amounts = line.amounts()?;
             out.push((line, amounts));
@@ -272,11 +298,11 @@ impl Basket {
 mod tests {
     use super::*;
     use crate::money::Qty;
+    use crate::tax::extract_tax;
 
     fn dec(n: i64) -> Decimal {
         Decimal::from(n)
     }
-    use crate::tax::extract_tax;
 
     fn line(
         item_cd: &str,
@@ -499,7 +525,7 @@ mod tests {
         b.set_basket_discount(LineDiscount::Amount(m("100")));
         assert!(matches!(
             b.totals(),
-            Err(BasketError::DiscountExceedsBasket)
+            Err(BasketError::LineDiscountExceedsLine)
         ));
     }
 
@@ -521,5 +547,54 @@ mod tests {
             .collect();
         assert_eq!(shares, vec!["0.00", "0.00", "0.00", "2.00"]);
         assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "398.00");
+    }
+
+    fn totals_in_order(prices: &[&str], off: &str) -> Basket {
+        let mut b = Basket::new();
+        for p in prices {
+            b.push_line(line("P", "1", p, TaxType::B, None)).unwrap();
+        }
+        b.set_basket_discount(LineDiscount::Amount(m(off)));
+        b
+    }
+
+    #[test]
+    fn the_residual_never_exceeds_the_last_lines_supply_and_the_total_is_order_independent() {
+        // Flooring slack used to land on the zero line and be refused.
+        let forward = totals_in_order(&["1000", "1000", "0"], "1");
+        let reverse = totals_in_order(&["0", "1000", "1000"], "1");
+        assert_eq!(
+            forward.totals().unwrap().tot_taxbl_amt.to_string(),
+            "1999.00"
+        );
+        assert_eq!(
+            reverse.totals().unwrap().tot_taxbl_amt.to_string(),
+            "1999.00"
+        );
+    }
+
+    #[test]
+    fn the_backward_walk_can_spill_onto_more_than_one_line() {
+        let b = totals_in_order(&["100", "100", "1"], "200");
+        let shares: Vec<String> = b
+            .apportioned_lines()
+            .unwrap()
+            .iter()
+            .map(|(_, a)| a.dc_amt.to_string())
+            .collect();
+        assert_eq!(shares, vec!["99.00", "100.00", "1.00"]);
+    }
+
+    #[test]
+    fn a_half_basket_discount_on_uneven_lines_is_not_refused() {
+        let mut b = totals_in_order(&["3", "3", "1"], "0");
+        b.set_basket_discount(LineDiscount::Percent(dec(50)));
+        let shares: Vec<String> = b
+            .apportioned_lines()
+            .unwrap()
+            .iter()
+            .map(|(_, a)| a.dc_amt.to_string())
+            .collect();
+        assert_eq!(shares, vec!["1.00", "2.00", "1.00"]);
     }
 }
