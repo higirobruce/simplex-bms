@@ -187,7 +187,7 @@ pub struct LaneState {
 }
 
 impl LaneState {
-    pub async fn new(store: Store, cfg: LaneConfig) -> LaneState {
+    pub async fn new(store: Store, cfg: LaneConfig) -> Result<LaneState, LaneError> {
         // A sale left `AwaitingVsdc` by a previous session (a crash between a
         // rejection and its retry) holds an invoice number, and the store
         // refuses to issue another while it exists: without this the till
@@ -199,24 +199,25 @@ impl LaneState {
         // counterpart. That is a reconciliation problem for Phase 3
         // (`Store::reconcile_counter_from_vsdc`), not illegal trading, and it
         // is strictly better than a till nobody can use.
+        //
+        // If that read itself fails the lane does not open: a till that cannot
+        // read its own database may be hiding exactly such a sale, and would
+        // look healthy while every sale failed. `Err`, not a notice and not a
+        // HardStop (which would blame a VSDC that may be perfectly reachable).
         let mut pending = None;
         let mut notice = Notice::None;
-        match store.pending_sale(&cfg.dvc_srl_no, cfg.counter).await {
-            Ok(Some(p)) => {
-                pending = Some(Pending {
-                    handle: SaleHandle {
-                        id: p.id,
-                        invc_no: p.invc_no,
-                    },
-                    receipt: None,
-                    recovered: true,
-                });
-                notice = Notice::Problem(LaneError::OutstandingSale.to_string());
-            }
-            Ok(None) => {}
-            Err(e) => notice = Notice::Problem(LaneError::Store(e).to_string()),
+        if let Some(p) = store.pending_sale(&cfg.dvc_srl_no, cfg.counter).await? {
+            pending = Some(Pending {
+                handle: SaleHandle {
+                    id: p.id,
+                    invc_no: p.invc_no,
+                },
+                receipt: None,
+                recovered: true,
+            });
+            notice = Notice::Problem(LaneError::OutstandingSale.to_string());
         }
-        LaneState {
+        Ok(LaneState {
             store,
             cfg,
             buffer: String::new(),
@@ -225,7 +226,7 @@ impl LaneState {
             basket: Basket::new(),
             tenders: TenderSet::default(),
             pending,
-        }
+        })
     }
 
     /// The next customer: leaves `Settled`, clearing the finished basket and
@@ -763,6 +764,7 @@ mod tests {
             },
         )
         .await
+        .unwrap()
     }
 
     async fn scan(l: &mut LaneState, code: &str) -> Result<(), LaneError> {
@@ -963,7 +965,6 @@ mod tests {
     #[tokio::test]
     async fn a_store_fault_returns_err_sets_the_notice_and_clears_the_buffer() {
         let store = Store::open_in_memory().await.unwrap();
-        store.pool().close().await; // a genuine failure: the pool is gone
         let mut l = LaneState::new(
             store,
             LaneConfig {
@@ -976,7 +977,9 @@ mod tests {
                 shop_tin: "123456789".into(),
             },
         )
-        .await;
+        .await
+        .unwrap();
+        l.store.pool().close().await; // a genuine failure: the pool is gone
         EAN.chars().for_each(|c| l.key(c));
         let r = l.enter().await;
         assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
@@ -1121,7 +1124,9 @@ mod tests {
         // Abandoned, not awaiting: the number is retired.
         assert_eq!(awaiting(&l).await, None);
         // Retired, not reused: the next sale on this store takes number 2.
-        let mut l2 = LaneState::new(l.store.clone(), l.cfg.clone()).await;
+        let mut l2 = LaneState::new(l.store.clone(), l.cfg.clone())
+            .await
+            .unwrap();
         scan(&mut l2, EAN).await.unwrap();
         l2.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
         l2.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
@@ -1163,6 +1168,26 @@ mod tests {
         f.mode = SimMode::Succeed;
         l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
         assert!(l.settle(&mut f, &mut p, &mut d).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_lane_that_cannot_read_its_own_pending_sales_does_not_open() {
+        let store = Store::open_in_memory().await.unwrap();
+        store.pool().close().await;
+        let r = LaneState::new(
+            store,
+            LaneConfig {
+                dvc_srl_no: "DVC1".into(),
+                bhf_id: "00".into(),
+                embedded: EmbeddedMode::Weight,
+                counter: Counter::SaleInvc,
+                shop_name: "Simplex Mart".into(),
+                shop_address: "KG 7 Ave, Kigali".into(),
+                shop_tin: "123456789".into(),
+            },
+        )
+        .await;
+        assert!(matches!(r, Err(LaneError::Store(_))), "{:?}", r.err());
     }
 
     #[tokio::test]
@@ -1213,7 +1238,7 @@ mod tests {
         let (store, cfg) = (l.store.clone(), l.cfg.clone());
         drop(l); // the "crash"
 
-        let mut l2 = LaneState::new(store, cfg).await;
+        let mut l2 = LaneState::new(store, cfg).await.unwrap();
         match l2.notice() {
             Notice::Problem(m) => assert!(m.contains("previous session"), "{m}"),
             n => panic!("expected Problem, got {n:?}"),
