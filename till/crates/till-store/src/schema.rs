@@ -111,6 +111,12 @@ pub enum StoreError {
     /// A sale needs an open shift on the device and there is none.
     #[error("device {dvc_srl_no} has no open shift")]
     NoOpenShift { dvc_srl_no: String },
+    /// A closed shift's Z report is final; it cannot be closed again.
+    #[error("this shift is already closed")]
+    ShiftAlreadyClosed,
+    /// A sale on this shift is still awaiting the VSDC and holds a live invoice number.
+    #[error("a sale on this shift is still awaiting the VSDC")]
+    ShiftHasPendingSale,
     /// An opening float below zero is a data-entry error, not a float.
     #[error("the opening float cannot be negative")]
     NegativeOpeningFloat,

@@ -62,7 +62,8 @@ use till_core::{
     TenderEntry, TenderError, TenderSet,
 };
 use till_store::{
-    CachedProduct, Counter, NewSale, OpenShift, SaleHandle, Store, StoreError, VsdcReceipt,
+    CachedProduct, Counter, NewSale, OpenShift, SaleHandle, ShiftClose, Store, StoreError,
+    VsdcReceipt,
 };
 
 /// Longest scan buffer kept. Longer than any code (EAN-13 is 13); the excess
@@ -183,6 +184,14 @@ pub enum LaneError {
     NothingPending,
     #[error("No payment has been taken, so there is none to take back.")]
     NoTenderToRemove,
+    #[error(
+        "A sale is still waiting on the VSDC, so the shift cannot be closed. Finish or cancel that sale first; it must be accounted for to RRA."
+    )]
+    ShiftHasPendingSale,
+    #[error("The declared cash cannot be negative. Count the drawer again.")]
+    NegativeDeclaredCash,
+    #[error("This shift was already closed. Open a new shift to sell.")]
+    ShiftAlreadyClosed,
 }
 
 /// The store operation that failed. Each one has its own message, because the
@@ -194,6 +203,8 @@ pub enum StoreOp {
     Startup,
     /// Writing a new shift.
     OpenShift,
+    /// Closing the shift and recording the declared cash.
+    CloseShift,
     /// Looking a scanned code up in the catalogue.
     Scan,
     /// Allocating the invoice number, before the VSDC is asked anything.
@@ -227,6 +238,9 @@ impl StoreOp {
             ),
             StoreOp::OpenShift => format!(
                 "The shift could not be opened ({e}). Nothing was recorded. Try again; if it repeats, call support."
+            ),
+            StoreOp::CloseShift => format!(
+                "The shift could not be closed ({e}). Nothing was recorded and the shift is still open. Try again; if it repeats, call support."
             ),
             StoreOp::Scan => format!(
                 "The catalogue could not be read ({e}). Try the scan again; if it repeats, call support."
@@ -988,6 +1002,86 @@ impl LaneState {
         self.notice = Notice::Info("Shift opened. Ready to sell.".into());
         Ok(())
     }
+
+    /// Closes the shift with the cash the cashier counted. A short (or over)
+    /// drawer is NOT refused: the variance is recorded and the shift closes.
+    /// The lane then returns to `NoShift`, as a till is left overnight.
+    ///
+    /// Because the return type carries the closing figures, a refusal the
+    /// cashier can act on (a sale awaiting the VSDC, a negative count, no open
+    /// shift) is `Err` here, with the `Problem` notice also set; it is told apart
+    /// from a fault by its variant (anything but `LaneError::Store` and
+    /// `LaneError::Internal`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no screen closes a shift yet; the UI task wires it"
+        )
+    )]
+    pub async fn close_shift(&mut self, declared_cash: Money) -> Result<ShiftClose, LaneError> {
+        self.buffer.clear();
+        match self.try_close_shift(declared_cash).await {
+            Ok(closed) => {
+                self.notice = Notice::Info(format!(
+                    "Shift closed. Expected {}, declared {}, variance {}.",
+                    closed.totals.expected_cash, closed.declared_cash, closed.variance
+                ));
+                Ok(closed)
+            }
+            Err(e) => {
+                self.notice = Notice::Problem(e.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no screen closes a shift yet; the UI task wires it"
+        )
+    )]
+    async fn try_close_shift(&mut self, declared_cash: Money) -> Result<ShiftClose, LaneError> {
+        let Some(shift) = self.shift.as_ref() else {
+            return Err(LaneError::NoShift);
+        };
+        if declared_cash < Money::zero() {
+            return Err(LaneError::NegativeDeclaredCash);
+        }
+        if self.pending.is_some() {
+            return Err(LaneError::ShiftHasPendingSale);
+        }
+        let closed = match self.store.close_shift(&shift.id, declared_cash).await {
+            Ok(c) => c,
+            Err(StoreError::ShiftHasPendingSale) => return Err(LaneError::ShiftHasPendingSale),
+            Err(StoreError::ShiftAlreadyClosed) => {
+                // Closed elsewhere: this lane's shift is stale.
+                self.end_shift();
+                return Err(LaneError::ShiftAlreadyClosed);
+            }
+            Err(e) => return Err(LaneError::store(StoreOp::CloseShift, e)),
+        };
+        self.end_shift();
+        Ok(closed)
+    }
+
+    /// Back to the start of the day: no shift, nothing in the basket.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no screen closes a shift yet; the UI task wires it"
+        )
+    )]
+    fn end_shift(&mut self) {
+        self.shift = None;
+        self.screen = Screen::NoShift;
+        self.basket = Basket::new();
+        self.tenders = TenderSet::default();
+    }
+
     pub fn basket(&self) -> &Basket {
         &self.basket
     }
@@ -1298,6 +1392,68 @@ mod tests {
         assert_eq!(l.screen(), &Screen::Selling);
         assert_eq!(l.shift(), Some(&opened));
         assert_eq!(l.notice(), &Notice::None);
+    }
+
+    #[tokio::test]
+    async fn closing_a_short_till_succeeds_and_returns_to_no_shift() {
+        let mut l = lane_without_shift().await;
+        l.open_shift("alice", rwf("1000")).await.unwrap();
+        scan(&mut l, EAN).await.unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        // expected 2250; the cashier counts 250
+        let c = l.close_shift(rwf("250")).await.unwrap();
+        assert_eq!(c.totals.expected_cash, rwf("2250"));
+        assert_eq!(c.variance, rwf("-2000"));
+        assert_eq!(l.screen(), &Screen::NoShift);
+        assert!(l.shift().is_none());
+        assert!(matches!(l.notice(), Notice::Info(_)));
+        // the next morning: a new shift opens
+        l.open_shift("bob", rwf("0")).await.unwrap();
+        assert_eq!(l.screen(), &Screen::Selling);
+    }
+
+    #[tokio::test]
+    async fn closing_with_a_sale_awaiting_the_vsdc_is_refused_and_the_shift_stays_open() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = fiscal(SimMode::Reject("894 No".into()));
+        l.settle(&mut f, &mut p, &mut d).await.unwrap();
+        let r = l.close_shift(rwf("0")).await;
+        assert!(matches!(r, Err(LaneError::ShiftHasPendingSale)), "{r:?}");
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert!(l.shift().is_some());
+    }
+
+    #[tokio::test]
+    async fn closing_with_no_shift_or_a_negative_count_is_refused() {
+        let mut l = lane_without_shift().await;
+        assert!(matches!(
+            l.close_shift(rwf("0")).await,
+            Err(LaneError::NoShift)
+        ));
+        l.open_shift("alice", rwf("0")).await.unwrap();
+        assert!(matches!(
+            l.close_shift(rwf("-1")).await,
+            Err(LaneError::NegativeDeclaredCash)
+        ));
+        assert!(l.shift().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_store_fault_closing_a_shift_leaves_the_lane_open() {
+        let mut l = lane_without_shift().await;
+        l.open_shift("alice", rwf("0")).await.unwrap();
+        l.store.pool().close().await;
+        let r = l.close_shift(rwf("0")).await;
+        assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
+        assert!(l.shift().is_some());
+        assert_eq!(l.screen(), &Screen::Selling);
     }
 
     async fn scan(l: &mut LaneState, code: &str) -> Result<(), LaneError> {

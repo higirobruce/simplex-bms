@@ -1,6 +1,7 @@
 //! A cashier's shift on one device. The cloud's `Sale.shiftId` is non-null, so
 //! a sale can only be recorded (and later synced) inside an open shift.
 
+use sqlx::SqliteConnection;
 use till_core::Money;
 use till_core::codes::PmtTyCd;
 
@@ -146,10 +147,99 @@ impl Store {
     /// exact `Money`; the single query filters on `sale.shift_id` (`sale_shift`) and reads
     /// state, totals and tenders in one statement, so it is one snapshot.
     pub async fn shift_totals(&self, shift_id: &str) -> Result<ShiftTotals, StoreError> {
+        let mut conn = self.pool().acquire().await?;
+        totals_on(&mut conn, shift_id).await
+    }
+
+    /// Closes a shift: the cashier has counted the drawer and declares
+    /// `declared_cash`. The variance is `declared - expected` and is NEVER
+    /// refused: a short till (negative) closes like any other, because a till
+    /// that will not close on a mismatch teaches cashiers to lie.
+    ///
+    /// Refused only with `ShiftAlreadyClosed` (a Z is final), `ShiftHasPendingSale`
+    /// (an `AwaitingVsdc` sale holds a live invoice number that closing would
+    /// orphan from its shift) and `ShiftNotFound`. All of it runs in one
+    /// `BEGIN IMMEDIATE` transaction, the totals included, so what is recorded
+    /// is exactly what the shift took at the instant it closed and no sale can
+    /// confirm between the totals and the close.
+    pub async fn close_shift(
+        &self,
+        shift_id: &str,
+        declared_cash: Money,
+    ) -> Result<ShiftClose, StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        let closed = async {
+            let conn = tx.conn();
+            let closed_at: Option<(Option<String>,)> =
+                sqlx::query_as("select closed_at from shift where id = ?")
+                    .bind(shift_id)
+                    .fetch_optional(&mut *conn)
+                    .await?;
+            match closed_at {
+                None => {
+                    return Err(StoreError::ShiftNotFound {
+                        id: shift_id.to_string(),
+                    });
+                }
+                Some((Some(_),)) => return Err(StoreError::ShiftAlreadyClosed),
+                Some((None,)) => {}
+            }
+            let pending: i64 = sqlx::query_scalar(
+                "select count(*) from sale where shift_id = ? and state = 'AwaitingVsdc'",
+            )
+            .bind(shift_id)
+            .fetch_one(&mut *conn)
+            .await?;
+            if pending > 0 {
+                return Err(StoreError::ShiftHasPendingSale);
+            }
+            let totals = totals_on(&mut *conn, shift_id).await?;
+            // Signed on purpose: over and short are different problems.
+            let variance = sub(declared_cash, totals.expected_cash, "variance")?;
+            sqlx::query(&format!(
+                "update shift set closed_at = {NOW_SQL}, declared_cash = ? \
+                 where id = ? and closed_at is null"
+            ))
+            .bind(declared_cash.to_string())
+            .bind(shift_id)
+            .execute(&mut *conn)
+            .await?;
+            Ok(ShiftClose {
+                totals,
+                declared_cash,
+                variance,
+            })
+        }
+        .await;
+        match closed {
+            Ok(c) => {
+                tx.commit().await?;
+                Ok(c)
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
+        }
+    }
+}
+
+/// What closing a shift recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShiftClose {
+    pub totals: ShiftTotals,
+    pub declared_cash: Money,
+    /// `declared_cash - totals.expected_cash`. Negative when the drawer is
+    /// short, positive when it is over. Never clamped and never an absolute value.
+    pub variance: Money,
+}
+
+async fn totals_on(conn: &mut SqliteConnection, shift_id: &str) -> Result<ShiftTotals, StoreError> {
+    {
         let float: Option<String> =
             sqlx::query_scalar("select opening_float from shift where id = ?")
                 .bind(shift_id)
-                .fetch_optional(self.pool())
+                .fetch_optional(&mut *conn)
                 .await?;
         let float = float.ok_or_else(|| StoreError::ShiftNotFound {
             id: shift_id.to_string(),
@@ -170,7 +260,7 @@ impl Store {
         );
         let rows: Vec<Joined> = sqlx::query_as(TOTALS_SQL)
             .bind(shift_id)
-            .fetch_all(self.pool())
+            .fetch_all(&mut *conn)
             .await?;
         let mut seen = std::collections::HashSet::new();
         let (mut sale_count, mut voided_count) = (0u32, 0u32);
@@ -572,5 +662,122 @@ mod tests {
         assert_eq!(t.sale_count, 1);
         assert!(t.by_code.is_empty());
         assert_eq!(t.expected_cash, m("10"));
+    }
+
+    // ---- close_shift ----
+
+    #[tokio::test]
+    async fn closing_records_the_declared_cash_and_the_variance() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "5000.00").await;
+        seed_sale(
+            &s,
+            &sh,
+            1,
+            "Confirmed",
+            ("2380.00", "180.00"),
+            &[("01", "5000.00")],
+        )
+        .await;
+        // expected: 5000 + 5000 - 2620 = 7380
+        let c = s.close_shift(&sh, m("7400.00")).await.unwrap();
+        assert_eq!(c.totals.expected_cash, m("7380.00"));
+        assert_eq!(c.totals.sale_count, 1);
+        assert_eq!(c.declared_cash, m("7400.00"));
+        assert_eq!(c.variance, m("20.00"));
+        let (closed_at, declared): (Option<String>, Option<String>) =
+            sqlx::query_as("select closed_at, declared_cash from shift where id = ?")
+                .bind(&sh)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert!(closed_at.is_some());
+        assert_eq!(declared.as_deref(), Some("7400.00"));
+    }
+
+    #[tokio::test]
+    async fn a_short_till_records_a_negative_variance_rather_than_failing() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "1000.00").await;
+        seed_sale(
+            &s,
+            &sh,
+            1,
+            "Confirmed",
+            ("500.00", "0.00"),
+            &[("01", "500.00")],
+        )
+        .await;
+        // expected 1500; declare 1000 short
+        let c = s.close_shift(&sh, m("500.00")).await.unwrap();
+        assert_eq!(c.variance, m("-1000.00"));
+        assert_eq!(s.current_shift("d1").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn closing_a_shift_with_a_pending_sale_is_refused() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        seed_sale(
+            &s,
+            &sh,
+            1,
+            "AwaitingVsdc",
+            ("100.00", "0.00"),
+            &[("01", "100.00")],
+        )
+        .await;
+        let r = s.close_shift(&sh, m("0")).await;
+        assert!(matches!(r, Err(StoreError::ShiftHasPendingSale)), "{r:?}");
+        // nothing was written: still open
+        assert!(s.current_shift("d1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn closing_an_already_closed_shift_is_refused() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        s.close_shift(&sh, m("0")).await.unwrap();
+        let r = s.close_shift(&sh, m("999")).await;
+        assert!(matches!(r, Err(StoreError::ShiftAlreadyClosed)), "{r:?}");
+        let declared: Option<String> =
+            sqlx::query_scalar("select declared_cash from shift where id = ?")
+                .bind(&sh)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(declared.as_deref(), Some("0.00"));
+        assert!(matches!(
+            s.close_shift("nope", m("0")).await,
+            Err(StoreError::ShiftNotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_closed_shift_is_no_longer_current() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        assert!(s.current_shift("d1").await.unwrap().is_some());
+        s.close_shift(&sh, m("0")).await.unwrap();
+        assert_eq!(s.current_shift("d1").await.unwrap(), None);
+        s.open_shift("d1", "bob", m("0")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_voided_sale_does_not_block_closing() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        seed_sale(
+            &s,
+            &sh,
+            1,
+            "Voided",
+            ("100.00", "0.00"),
+            &[("01", "100.00")],
+        )
+        .await;
+        let c = s.close_shift(&sh, m("0")).await.unwrap();
+        assert_eq!(c.totals.voided_count, 1);
+        assert_eq!(c.variance, Money::zero());
     }
 }
