@@ -478,3 +478,49 @@ is the bug this task exists to prevent.
 
 - [ ] **Step 4: Run and watch pass**
 - [ ] **Step 5: Commit**
+
+---
+
+### Task 10: A mis-keyed tender can be taken back
+
+**Added during execution.** Task 5's implementer identified a hazard that Task 5
+itself created. With cash the only method, an overpayment always produced change,
+so a mis-key was self-correcting. Once a tender can be non-cash, it is not: change
+is cash-only and capped by cash received, so a cashier who taps card for 8,000 on a
+7,450 sale cannot produce the 550 — and cannot undo the tender either. The sale
+settles and the customer is **silently overcharged**. Mis-keys happen constantly on
+a real counter, so this closes a money-losing hole in the slice that opened it.
+
+**Files:**
+- Modify: `till/crates/till-lane/src/lane.rs`, `till/crates/till-lane/src/ui.rs`
+
+**Interfaces:**
+- Produces, on `LaneState`:
+```rust
+pub fn remove_last_tender(&mut self) -> Result<(), LaneError>;
+pub fn clear_tenders(&mut self) -> Result<(), LaneError>;
+```
+
+Both operate only before settlement — a tender on a sale already sent to the VSDC
+is history, not a draft. `TenderSet`'s field is private and `till-core` is frozen,
+so rebuild the set from the entries you keep rather than reaching into it.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[tokio::test] async fn the_last_tender_can_be_taken_back_before_settling() { }
+#[tokio::test] async fn clearing_tenders_leaves_the_basket_untouched() {
+    // The lines are the customer's shopping; only the payment was wrong.
+}
+#[tokio::test] async fn a_mis_keyed_card_overpayment_can_be_corrected() {
+    // The hazard, end to end: card 8,000 against 7,450 due, remove it,
+    // tender 7,450 by card instead, settle. No overcharge.
+}
+#[tokio::test] async fn tenders_cannot_be_removed_once_the_sale_is_settled() { }
+#[tokio::test] async fn removing_from_an_empty_tender_set_is_a_problem_not_an_error() { }
+```
+
+- [ ] **Step 2: Run and watch fail**
+- [ ] **Step 3: Implement, and wire a key for each**
+- [ ] **Step 4: Run and watch pass**
+- [ ] **Step 5: Commit**
