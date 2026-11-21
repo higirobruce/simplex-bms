@@ -64,9 +64,19 @@ impl Esc {
         self
     }
 
-    /// Text encoded as CP437. This assumes the printer is on its default code
-    /// page (0 on standard ESC/POS printers); `init` deliberately emits only
-    /// `ESC @`, so no page is selected explicitly.
+    /// `ESC t n`: select character code page `n`.
+    ///
+    /// Page 0 is CP437, the page `text` encodes to. `init` only resets and does
+    /// not configure, so the receipt composer is responsible for calling
+    /// `code_page(0)` after `init`; otherwise a printer defaulting to another
+    /// page would garble product names.
+    pub fn code_page(mut self, n: u8) -> Self {
+        self.buf.extend([ESC, 0x74, n]);
+        self
+    }
+
+    /// Text encoded as CP437. The printer must be on code page 0; see
+    /// `code_page`. Control characters are never passed through (see `cp437`).
     pub fn text(mut self, s: &str) -> Self {
         self.buf.extend(s.chars().map(cp437));
         self
@@ -94,7 +104,8 @@ impl Esc {
         self
     }
 
-    /// `GS ! n`: bit 4 doubles character height; width stays normal.
+    /// `GS ! n`: the low bits select the height multiplier, so 0x01 is height x2
+    /// at width x1.
     pub fn double_height(mut self, on: bool) -> Self {
         self.buf.extend([GS, 0x21, if on { 0x01 } else { 0x00 }]);
         self
@@ -121,9 +132,16 @@ impl Esc {
     /// Print a QR code via the `GS ( k` family: select model 2, set module
     /// size, set error correction, store the payload, print the stored symbol.
     ///
+    /// Module size 6 and error-correction level M are not constrained by the
+    /// RRA specification (CIS 7.24.7 defines only the payload string); they
+    /// were chosen for scanner reliability and are not mandated values.
+    ///
     /// The payload is the Rwanda Revenue Authority receipt signature, so it is
     /// never truncated: a payload that cannot fit one store command is a bug in
-    /// the caller and panics rather than printing a QR that fails to verify.
+    /// the caller and panics rather than printing a QR that fails to verify. The
+    /// bound is `len + 3 <= 65535`; a receipt signature is tens of characters,
+    /// so it is unreachable in practice, and a loud failure beats silently
+    /// truncating a legal signature.
     pub fn qr(mut self, payload: &str) -> Self {
         const MODULE_SIZE: u8 = 6;
         const ERROR_CORRECTION_M: u8 = 49; // 48 L, 49 M, 50 Q, 51 H
@@ -174,6 +192,10 @@ mod tests {
             Esc::new().align(Align::Right).bytes(),
             vec![0x1B, 0x61, 0x02]
         );
+    }
+    #[test]
+    fn code_page_zero_is_esc_t_0() {
+        assert_eq!(Esc::new().code_page(0).bytes(), vec![0x1B, 0x74, 0x00]);
     }
     #[test]
     fn bold_on_is_esc_e_1() {
@@ -281,5 +303,7 @@ mod tests {
             vec![b'a', b'?', b'@', b'b', b'?']
         );
         assert_eq!(Esc::new().text("\x7F").bytes(), vec![b'?']);
+        // Newline is the one control character that is kept.
+        assert_eq!(Esc::new().text("a\nb").bytes(), vec![b'a', 0x0A, b'b']);
     }
 }
