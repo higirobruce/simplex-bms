@@ -128,7 +128,12 @@ fn is_in_store(bytes: &[u8]) -> bool {
 /// Classifies a scan. Length decides first: 4-5 digits is a PLU, 8 and 13 are
 /// EANs, anything else is `BadLength`. For 13 digits the in-store prefix is
 /// recognised after the check digit has been verified.
+///
+/// Surrounding ASCII whitespace (the Enter or CR/LF a scanner appends) is
+/// trimmed first. Only the ends are trimmed, so `"400 6381333931"` is still
+/// `NonNumeric` and no invalid code can become valid.
 pub fn classify(input: &str, embedded: EmbeddedMode) -> Result<Scanned, ScanError> {
+    let input = input.trim_matches(|c: char| c.is_ascii_whitespace());
     let bytes = digits_of(input)?;
     match bytes.len() {
         4 | 5 => Ok(Scanned::Plu(input.to_string())),
@@ -150,8 +155,20 @@ pub fn classify(input: &str, embedded: EmbeddedMode) -> Result<Scanned, ScanErro
 
 /// `code` is 13 verified ASCII digits: item reference is digits 3-7, the
 /// embedded value digits 8-12.
+///
+/// The layout is shop-dependent: some scales put a price check digit in digit
+/// 8 and carry only 4 price digits. This is the one place to change if the
+/// pilot shop's scales do so; [`EmbeddedMode`] is the extension point.
+///
+/// The item reference is returned without leading zeros (at least one digit
+/// kept), the same canonical form a stored PLU has: no standard PLU begins
+/// with `0`, so `"04011"` is PLU `"4011"` and the stripping is lossless.
 fn decode_embedded(code: &str, embedded: EmbeddedMode) -> Result<Scanned, ScanError> {
     let item_ref = code.get(2..7).ok_or(ScanError::BadLength(code.len()))?;
+    let item_ref = match item_ref.trim_start_matches('0') {
+        "" => "0",
+        rest => rest,
+    };
     let value = code.get(7..12).ok_or(ScanError::BadLength(code.len()))?;
     let (qty, price) = match embedded {
         EmbeddedMode::Weight => {
@@ -341,8 +358,7 @@ mod tests {
     fn hostile_input_never_panics() {
         for s in [
             "\n",
-            " 4011",
-            "4011\r\n",
+            "40 11",
             "４０１１",
             "é",
             "٣٣٣٣",
@@ -370,6 +386,36 @@ mod tests {
         assert!(!ean13_is_valid("400638133393"));
         assert!(!ean13_is_valid("40063813339AB"));
         assert!(!ean13_is_valid(""));
+    }
+    #[test]
+    fn item_ref_drops_leading_zeros_but_keeps_a_five_digit_plu() {
+        let code = with_check_digit("020401100734");
+        assert!(matches!(
+            classify(&code, Weight).unwrap(),
+            Scanned::WeightEmbedded { item_ref, .. } if item_ref == "4011"
+        ));
+        let code = with_check_digit("209401100734");
+        assert!(matches!(
+            classify(&code, Weight).unwrap(),
+            Scanned::WeightEmbedded { item_ref, .. } if item_ref == "94011"
+        ));
+        let code = with_check_digit("200000000734");
+        assert!(matches!(
+            classify(&code, Weight).unwrap(),
+            Scanned::WeightEmbedded { item_ref, .. } if item_ref == "0"
+        ));
+    }
+    #[test]
+    fn surrounding_whitespace_is_trimmed_but_inner_is_refused() {
+        assert!(matches!(classify("4011\r\n", Weight).unwrap(), Scanned::Plu(p) if p == "4011"));
+        assert!(
+            matches!(classify(" \t4006381333931\n", Weight).unwrap(), Scanned::Barcode(b) if b == "4006381333931")
+        );
+        assert!(matches!(
+            classify("400 6381333931", Weight),
+            Err(ScanError::NonNumeric)
+        ));
+        assert!(matches!(classify("\r\n", Weight), Err(ScanError::Empty)));
     }
     #[test]
     fn zero_embedded_values_decode_as_zero() {
