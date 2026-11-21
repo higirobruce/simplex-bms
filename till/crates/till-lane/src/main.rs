@@ -13,6 +13,9 @@ mod escpos;
 // Composes the RRA tax receipt.
 mod receipt;
 
+// Composes the X and Z shift reports (internal documents, not fiscal receipts).
+mod report;
+
 // Fiscal port trait and simulated VSDC. Phase 3 will write the real client.
 mod fiscal;
 

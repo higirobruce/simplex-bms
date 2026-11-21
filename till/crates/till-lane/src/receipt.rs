@@ -53,7 +53,7 @@ use crate::escpos::{Align, Esc};
 use crate::fmt::{qty, rwf, tax};
 
 /// Columns on an 80mm printer in the default font.
-const WIDTH: usize = 42;
+pub(crate) const WIDTH: usize = 42;
 
 /// Everything a receipt prints.
 ///
@@ -336,7 +336,7 @@ fn qr_payload(stamp: &Stamp, v: &VsdcReceipt) -> Result<String, ReceiptError> {
 }
 
 /// The VSDC's receipt instant, `yyyymmddhhmmss` (VSDC sample responses).
-struct Stamp {
+pub(crate) struct Stamp {
     y: u32,
     mo: u32,
     d: u32,
@@ -348,7 +348,7 @@ struct Stamp {
 impl Stamp {
     /// Non-digits are ignored, so the compact form and an ISO form both parse;
     /// anything that is not 14 digits forming a real clock time is refused.
-    fn parse(raw: &str) -> Result<Stamp, ReceiptError> {
+    pub(crate) fn parse(raw: &str) -> Result<Stamp, ReceiptError> {
         let bad = || ReceiptError::BadTimestamp(raw.to_owned());
         let digits: Vec<u32> = raw.chars().filter_map(|c| c.to_digit(10)).collect();
         if digits.len() != 14 {
@@ -378,10 +378,10 @@ impl Stamp {
     }
 
     /// The sample receipt prints `25/5/2012`: day and month are not padded.
-    fn date_printed(&self) -> String {
+    pub(crate) fn date_printed(&self) -> String {
         format!("{}/{}/{}", self.d, self.mo, self.y)
     }
-    fn time_printed(&self) -> String {
+    pub(crate) fn time_printed(&self) -> String {
         format!("{:02}:{:02}:{:02}", self.h, self.mi, self.s)
     }
     /// Fixed width, so zero-padded.
@@ -403,7 +403,7 @@ fn banner_lines(e: Esc, text: &str) -> Esc {
         .bold(false)
 }
 
-fn rule() -> String {
+pub(crate) fn rule() -> String {
     "-".repeat(WIDTH)
 }
 
@@ -414,7 +414,7 @@ fn band_label(band: TaxType, rate: Decimal) -> String {
     }
 }
 
-fn pmt_label(code: PmtTyCd) -> &'static str {
+pub(crate) fn pmt_label(code: PmtTyCd) -> &'static str {
     match code {
         PmtTyCd::Cash => "CASH",
         PmtTyCd::Credit => "CREDIT",
@@ -429,7 +429,7 @@ fn pmt_label(code: PmtTyCd) -> &'static str {
 /// Free text as it may reach the printer. The encoder prints `\r` and `\t` as
 /// `?` and `\n` as a line break that would wreck the layout, so every control
 /// character becomes a space.
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect::<String>()
@@ -438,7 +438,7 @@ fn clean(s: &str) -> String {
 }
 
 /// Breaks text into `WIDTH`-column lines. One byte is one column in CP437.
-fn wrap(s: &str) -> Vec<String> {
+pub(crate) fn wrap(s: &str) -> Vec<String> {
     let chars: Vec<char> = s.chars().collect();
     if chars.is_empty() {
         return vec![String::new()];
@@ -448,7 +448,7 @@ fn wrap(s: &str) -> Vec<String> {
 
 /// `left` flush left, `right` flush right, in `WIDTH` columns. If both do not
 /// fit, `left` is cut: the figure on the right must never be.
-fn pair(left: &str, right: &str) -> String {
+pub(crate) fn pair(left: &str, right: &str) -> String {
     let room = WIDTH.saturating_sub(right.chars().count() + 1);
     let left: String = left.chars().take(room).collect();
     let gap = WIDTH.saturating_sub(left.chars().count() + right.chars().count());

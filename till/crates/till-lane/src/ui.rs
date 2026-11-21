@@ -72,14 +72,18 @@ pub enum Action {
     /// Take back every payment; the basket stays.
     ClearTenders,
     Reprint,
+    /// Print an X report: a read-only snapshot of the open shift.
+    ReportX,
+    /// Close the shift with the keyed cash count and print the Z report.
+    ReportZ,
     CancelSale,
     Resume,
     NotBuilt(&'static str),
 }
 
 /// Function keys: (egui key, label, name, action). The first seven are the
-/// mockup's; the lane has no discount, suspend, refund, buyer-TIN or report
-/// flow yet, so those say so rather than doing nothing silently.
+/// mockup's; the lane has no discount, suspend, refund or buyer-TIN flow yet,
+/// so those say so rather than doing nothing silently.
 const FKEYS: [(egui::Key, &str, &str, Action); 11] = [
     (egui::Key::F1, "F1", "Void line", Action::VoidLine),
     (
@@ -97,12 +101,7 @@ const FKEYS: [(egui::Key, &str, &str, Action); 11] = [
         "Buyer TIN",
         Action::NotBuilt("Buyer TIN"),
     ),
-    (
-        egui::Key::F7,
-        "F7",
-        "X / Z report",
-        Action::NotBuilt("X / Z report"),
-    ),
+    (egui::Key::F7, "F7", "X report", Action::ReportX),
     (
         egui::Key::F8,
         "F8 · Ctrl 1",
@@ -144,6 +143,16 @@ const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
     (PmtTyCd::Other, egui::Key::Num7, "Other", "Other"),
 ];
 
+/// The Z report key. Ctrl is held because a Z closes the shift: it must not
+/// be one stray press of the key beside F7's harmless X.
+const Z_KEY: (egui::Key, &str, Action) = (egui::Key::F7, "Z close shift", Action::ReportZ);
+
+/// The key cap of a Ctrl chord, derived from the key itself so a cap can never
+/// disagree with the binding that `actions_from` really reads.
+fn ctrl_cap(key: egui::Key) -> String {
+    format!("Ctrl {}", key.name())
+}
+
 fn method_name(code: PmtTyCd) -> &'static str {
     METHODS
         .iter()
@@ -167,6 +176,7 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
             } => match key {
                 // Ctrl+Backspace is not a wedge character and not a method key.
                 egui::Key::Backspace if modifiers.ctrl => out.push(Action::ClearTenders),
+                k if modifiers.ctrl && *k == Z_KEY.0 => out.push(Z_KEY.2),
                 k if modifiers.ctrl => {
                     if let Some((code, ..)) = METHODS.iter().find(|(_, mk, ..)| mk == k) {
                         out.push(Action::Tender(*code));
@@ -236,6 +246,8 @@ fn apply(
         Action::UndoTender => state.remove_last_tender(),
         Action::ClearTenders => state.clear_tenders(),
         Action::Reprint => state.reprint(devices.printer.as_mut()),
+        Action::ReportX => block_on(state.print_x(devices.printer.as_mut())),
+        Action::ReportZ => close_with_z(state, local, devices),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
         Action::NotBuilt(name) => {
@@ -244,6 +256,34 @@ fn apply(
         }
     };
     local.fault = result.err().map(|e| e.to_string());
+}
+
+/// Ctrl+F7: what is keyed is the cash the cashier counted. Unlike the opening
+/// float, nothing keyed is NOT taken as zero: a Z closes the shift for good, and
+/// a count of zero must be keyed on purpose, never by a stray key press.
+fn close_with_z(
+    state: &mut LaneState,
+    local: &mut Local,
+    devices: &mut Devices,
+) -> Result<(), crate::lane::LaneError> {
+    let digits = state.buffer().chars().filter(char::is_ascii_digit).count();
+    let counted = if state.buffer().is_empty() || digits > MAX_FLOAT_DIGITS {
+        None
+    } else {
+        Money::try_from_str(state.buffer()).ok()
+    };
+    let Some(counted) = counted else {
+        // Never close on a scanned barcode or a mis-key.
+        while !state.buffer().is_empty() {
+            state.backspace();
+        }
+        local.note = Some(
+            "Key the cash you counted in the drawer (0 if empty), then press Ctrl F7 to close the shift."
+                .into(),
+        );
+        return Ok(());
+    };
+    block_on(state.print_z(counted, devices.printer.as_mut()))
 }
 
 /// The longest opening float the till will take from the keyboard.
@@ -972,30 +1012,32 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         Screen::Settled { .. } => ("ENTER", "Next customer", true),
         _ => ("ENTER", "Scan / Pay", true),
     };
-    let mut all: Vec<(&str, &str, Action, bool, bool)> = FKEYS
+    let mut all: Vec<(String, &str, Action, bool, bool)> = FKEYS
         .iter()
-        .map(|(_, k, n, a)| (*k, *n, *a, false, matches!(a, Action::NotBuilt(_))))
+        .map(|(_, k, n, a)| {
+            (
+                (*k).to_owned(),
+                *n,
+                *a,
+                false,
+                matches!(a, Action::NotBuilt(_)),
+            )
+        })
         .collect();
-    // Cash already has F8; its cap carries the Ctrl+1 alias too.
-    for (code, _, _, cap) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
-        let label: &'static str = match code {
-            PmtTyCd::Credit => "Ctrl 2",
-            PmtTyCd::CashCredit => "Ctrl 3",
-            PmtTyCd::BankCheck => "Ctrl 4",
-            PmtTyCd::Card => "Ctrl 5",
-            PmtTyCd::MobileMoney => "Ctrl 6",
-            _ => "Ctrl 7",
-        };
-        all.push((label, *cap, Action::Tender(*code), false, false));
+    // Cash already has F8; its cap carries the Ctrl+1 alias too. Every label is
+    // derived from `METHODS`, the table `actions_from` reads, so they cannot drift.
+    for (code, key, _, cap) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
+        all.push((ctrl_cap(*key), *cap, Action::Tender(*code), false, false));
     }
+    all.push((ctrl_cap(Z_KEY.0), Z_KEY.1, Z_KEY.2, false, false));
     all.push((
-        "Ctrl Bksp",
+        "Ctrl Bksp".to_owned(),
         "Clear tenders",
         Action::ClearTenders,
         false,
         false,
     ));
-    all.push((enter.0, enter.1, Action::Enter, enter.2, false));
+    all.push((enter.0.to_owned(), enter.1, Action::Enter, enter.2, false));
 
     let cols = 4;
     let gap = 6.0;
@@ -1004,7 +1046,7 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for (fk, name, action, hot, muted) in chunk {
-                if key_cap(ui, w, fk, name, *hot, *muted) {
+                if key_cap(ui, w, fk.as_str(), name, *hot, *muted) {
                     tapped = Some(*action);
                 }
             }
@@ -1758,5 +1800,66 @@ mod tests {
         let ctx = Context::default();
         theme::apply(&ctx);
         let _ = ctx.run(RawInput::default(), |ctx| fatal(ctx, "database unreadable"));
+    }
+
+    fn tap_ctrl_f7() -> Vec<Event> {
+        tap_ctrl(Key::F7)
+    }
+
+    #[test]
+    fn f7_prints_an_x_report_and_leaves_the_shift_open() {
+        let mut r = Rig::new();
+        r.frame(tap(Key::F7));
+        r.frame(tap(Key::F7));
+        assert!(r.state.shift().is_some());
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        match r.state.notice() {
+            Notice::Info(m) => assert!(m.contains("X report printed"), "{m}"),
+            n => panic!("{n:?}"),
+        }
+    }
+
+    #[test]
+    fn z_needs_a_keyed_count_and_a_stray_press_closes_nothing() {
+        let mut r = Rig::new();
+        let shown = r.frame(tap_ctrl_f7());
+        assert!(shown.contains("Key the cash you counted"), "{shown}");
+        assert!(r.state.shift().is_some());
+        // A scanned barcode is not a cash count either.
+        r.frame(type_text("6001234567890"));
+        r.frame(tap_ctrl_f7());
+        assert!(r.state.shift().is_some());
+        assert_eq!(r.state.buffer(), "");
+        // Plain F7 is the harmless X, never a Z.
+        r.frame(type_text("1000"));
+        r.frame(tap(Key::F7));
+        assert!(r.state.shift().is_some());
+    }
+
+    #[test]
+    fn ctrl_f7_with_a_counted_amount_closes_the_shift() {
+        let mut r = Rig::new();
+        r.frame(type_text("1000"));
+        r.frame(tap_ctrl_f7());
+        assert!(r.state.shift().is_none());
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        match r.state.notice() {
+            Notice::Info(m) => assert!(
+                m.contains("Z report printed") && m.contains("variance +1,000"),
+                "{m}"
+            ),
+            n => panic!("{n:?}"),
+        }
+    }
+
+    #[test]
+    fn every_ctrl_key_cap_is_derived_from_the_binding_it_labels() {
+        let mut r = Rig::new();
+        let shown = r.frame(vec![]);
+        for (_, key, ..) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
+            assert!(shown.contains(&ctrl_cap(*key)), "{key:?} cap in {shown}");
+        }
+        assert!(shown.contains("Ctrl F7") && shown.contains("Z close shift"));
+        assert!(shown.contains("X report"));
     }
 }

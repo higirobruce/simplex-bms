@@ -52,8 +52,10 @@
 
 use crate::device::{Drawer, Printer};
 use crate::fiscal::{FiscalError, FiscalPort, SalePayload};
+use crate::fmt;
 use crate::latency::{Timer, Timings};
 use crate::receipt::{ReceiptInput, compose};
+use crate::report::{self, x_report, z_report};
 use thiserror::Error;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
 use till_core::scan::{EmbeddedMode, ScanError, Scanned, classify};
@@ -209,6 +211,8 @@ pub enum StoreOp {
     OpenShift,
     /// Closing the shift and recording the declared cash.
     CloseShift,
+    /// Reading the shift's totals for an X report.
+    ShiftTotals,
     /// Looking a scanned code up in the catalogue.
     Scan,
     /// Allocating the invoice number, before the VSDC is asked anything.
@@ -245,6 +249,9 @@ impl StoreOp {
             ),
             StoreOp::CloseShift => format!(
                 "The shift could not be closed ({e}). Nothing was recorded and the shift is still open. Try again; if it repeats, call support."
+            ),
+            StoreOp::ShiftTotals => format!(
+                "The shift's figures could not be read ({e}). Nothing was printed and nothing was changed. Try again; if it repeats, call support."
             ),
             StoreOp::Scan => format!(
                 "The catalogue could not be read ({e}). Try the scan again; if it repeats, call support."
@@ -1015,13 +1022,6 @@ impl LaneState {
     /// act on (no shift, negative count, a sale in progress or awaiting the
     /// VSDC); the `Problem` notice says which and the shift stays open. `Err`
     /// only for a store fault. Same contract as `settle`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no screen closes a shift yet; the UI task wires it"
-        )
-    )]
     pub async fn close_shift(
         &mut self,
         declared_cash: Money,
@@ -1039,13 +1039,6 @@ impl LaneState {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no screen closes a shift yet; the UI task wires it"
-        )
-    )]
     async fn try_close_shift(&mut self, declared_cash: Money) -> Result<ShiftClose, LaneError> {
         let Some(shift) = self.shift.as_ref() else {
             return Err(LaneError::NoShift);
@@ -1077,14 +1070,76 @@ impl LaneState {
         Ok(closed)
     }
 
+    /// Prints an X report: a snapshot of the open shift. **Changes nothing**:
+    /// it only reads the shift's totals, so it may be run as often as wanted,
+    /// mid-shift and even mid-sale. It does not touch the scan buffer, the
+    /// basket, the tenders or the screen; only the notice reports the outcome.
+    ///
+    /// Same contract as `reprint`: `Ok` for anything the cashier can act on
+    /// (no shift, printer trouble, the `Problem` notice says which); `Err` only
+    /// for a store fault.
+    pub async fn print_x(&mut self, printer: &mut dyn Printer) -> Result<(), LaneError> {
+        let Some(shift) = self.shift.as_ref() else {
+            return self.refuse_keeping_buffer(LaneError::NoShift);
+        };
+        let totals = match self.store.shift_totals(&shift.id).await {
+            Ok(t) => t,
+            Err(e) => {
+                return self.refuse_keeping_buffer(LaneError::store(StoreOp::ShiftTotals, e));
+            }
+        };
+        let bytes = x_report(&totals, &self.cfg, &kigali_now());
+        self.notice = match printer.write(&bytes) {
+            Ok(()) => Notice::Info("X report printed. The shift is still open.".into()),
+            Err(e) => Notice::Problem(format!(
+                "The X report did not print ({e}). Check the printer and try again; nothing was changed."
+            )),
+        };
+        Ok(())
+    }
+
+    /// Closes the shift with the cash the cashier counted and prints the Z
+    /// report. **Final**: the shift is closed first, and the report is composed
+    /// from what closing recorded, so a Z exists only for a shift that really
+    /// closed. The lane then has no open shift, so a second Z is refused
+    /// (`NoShift`) rather than printing a second "final" figure.
+    ///
+    /// Refusals are those of [`close_shift`](Self::close_shift) (nothing is
+    /// printed, the shift stays open). If the printer then fails, the shift
+    /// stays closed, and the notice says so and repeats the figures.
+    pub async fn print_z(
+        &mut self,
+        declared_cash: Money,
+        printer: &mut dyn Printer,
+    ) -> Result<(), LaneError> {
+        let Some(closed) = self.close_shift(declared_cash).await? else {
+            return Ok(()); // refused: close_shift left the Problem notice
+        };
+        let bytes = z_report(&closed, &self.cfg, &kigali_now());
+        let figures = format!(
+            "Expected {}, declared {}, variance {}.",
+            fmt::rwf(closed.totals.expected_cash),
+            fmt::rwf(closed.declared_cash),
+            report::variance(closed.variance)
+        );
+        self.notice = match printer.write(&bytes) {
+            Ok(()) => Notice::Info(format!("Shift closed. Z report printed. {figures}")),
+            Err(e) => Notice::Problem(format!(
+                "The shift is closed and its figures are final, but the Z report did not print ({e}). {figures} Write them down and call a supervisor."
+            )),
+        };
+        Ok(())
+    }
+
+    /// `refuse`, for a read-only report: the half-keyed scan is not lost.
+    fn refuse_keeping_buffer(&mut self, e: LaneError) -> Result<(), LaneError> {
+        let keep = std::mem::take(&mut self.buffer);
+        let r = self.refuse(e);
+        self.buffer = keep;
+        r
+    }
+
     /// Back to the start of the day: no shift, nothing in the basket.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no screen closes a shift yet; the UI task wires it"
-        )
-    )]
     fn end_shift(&mut self) {
         self.shift = None;
         self.screen = Screen::NoShift;
@@ -1501,6 +1556,215 @@ mod tests {
         assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
         assert!(l.shift().is_some());
         assert_eq!(l.screen(), &Screen::Selling);
+    }
+
+    // ---- X and Z reports ----
+
+    /// The report text as printed, shorn of printer commands.
+    fn printed(p: &SimPrinter) -> String {
+        crate::report::printable(&p.written)
+    }
+
+    /// One 1250 sale paid with `code`, then on to the next customer.
+    async fn sell_one(l: &mut LaneState, code: PmtTyCd) {
+        scan(l, EAN).await.unwrap();
+        l.add_tender(code, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        l.next_customer().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_x_report_does_not_close_the_shift() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let id = l.shift().unwrap().id.clone();
+        sell_one(&mut l, PmtTyCd::Cash).await;
+        let before = l.store.shift_totals(&id).await.unwrap();
+        let (mut p, _) = devices();
+        l.print_x(&mut p).await.unwrap();
+        l.print_x(&mut p).await.unwrap();
+        // Open throughout, and the store is exactly as it was.
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert_eq!(l.shift().map(|s| s.id.clone()), Some(id.clone()));
+        assert_eq!(l.store.shift_totals(&id).await.unwrap(), before);
+        assert!(l.store.current_shift("DVC1").await.unwrap().is_some());
+        // Two reports, identical, because nothing moved between them.
+        // (Minus the PRINTED clock line, which may tick between the two.)
+        let both = printed(&p);
+        assert!(both.contains("X REPORT"));
+        let figures = |t: &str| {
+            t.lines()
+                .filter(|l| !l.starts_with("PRINTED"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (first, second) = both.split_at(both.len() / 2);
+        assert_eq!(figures(first), figures(second));
+        // And the shift still sells.
+        sell_one(&mut l, PmtTyCd::Card).await;
+        assert_eq!(l.store.shift_totals(&id).await.unwrap().sale_count, 2);
+    }
+
+    #[tokio::test]
+    async fn an_x_report_mid_sale_keeps_the_basket_and_the_half_keyed_scan() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("500")).unwrap();
+        "12".chars().for_each(|c| l.key(c));
+        let (mut p, _) = devices();
+        l.print_x(&mut p).await.unwrap();
+        assert_eq!(l.basket().len(), 1);
+        assert_eq!(l.tenders().entries().len(), 1);
+        assert_eq!(l.buffer(), "12");
+        assert!(!p.written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_x_report_with_no_shift_is_refused_and_prints_nothing() {
+        let mut l = lane_without_shift().await;
+        let (mut p, _) = devices();
+        l.print_x(&mut p).await.unwrap();
+        assert!(p.written.is_empty());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+    }
+
+    #[tokio::test]
+    async fn a_z_report_closes_the_shift_and_a_second_z_is_refused() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        sell_one(&mut l, PmtTyCd::Cash).await;
+        let (mut p, _) = devices();
+        l.print_z(rwf("1250"), &mut p).await.unwrap();
+        assert!(printed(&p).contains("Z REPORT"));
+        assert_eq!(l.screen(), &Screen::NoShift);
+        assert!(l.shift().is_none());
+        assert!(l.store.current_shift("DVC1").await.unwrap().is_none());
+        let once = p.written.clone();
+        // A second Z has no shift to close: refused, nothing printed.
+        l.print_z(rwf("999"), &mut p).await.unwrap();
+        assert_eq!(p.written, once);
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("No shift is open"), "{m}"),
+            n => panic!("expected a problem, got {n:?}"),
+        }
+        // Nor does an X find a shift to report on.
+        l.print_x(&mut p).await.unwrap();
+        assert_eq!(p.written, once);
+    }
+
+    #[tokio::test]
+    async fn a_refused_z_prints_nothing_and_leaves_the_shift_open() {
+        let mut l = lane_with_item().await; // a sale is in progress
+        let (mut p, _) = devices();
+        l.print_z(rwf("0"), &mut p).await.unwrap();
+        assert!(p.written.is_empty());
+        assert!(l.shift().is_some());
+        l.void_line(1).await.unwrap();
+        l.print_z(rwf("-1"), &mut p).await.unwrap();
+        assert!(p.written.is_empty() && l.shift().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_z_whose_printer_fails_still_closes_the_shift_and_says_so() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let (mut p, _) = devices();
+        p.fail_next = true;
+        l.print_z(rwf("0"), &mut p).await.unwrap();
+        assert!(l.shift().is_none());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("closed") && m.contains("variance"), "{m}"),
+            n => panic!("expected a problem, got {n:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn both_reports_show_every_tender_code_that_was_used() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        sell_one(&mut l, PmtTyCd::Cash).await;
+        sell_one(&mut l, PmtTyCd::Card).await;
+        sell_one(&mut l, PmtTyCd::MobileMoney).await;
+        let (mut x, _) = devices();
+        l.print_x(&mut x).await.unwrap();
+        let (mut z, _) = devices();
+        l.print_z(rwf("2250"), &mut z).await.unwrap();
+        for p in [&x, &z] {
+            let t = printed(p);
+            for needle in ["01 CASH", "05 CARD", "06 MOBILE MONEY"] {
+                assert!(t.contains(needle), "{needle} in\n{t}");
+            }
+            // Codes nobody used do not appear.
+            assert!(!t.contains("02 CREDIT") && !t.contains("07 OTHER"), "{t}");
+            assert!(t.find("01 CASH") < t.find("05 CARD"));
+            assert!(t.find("05 CARD") < t.find("06 MOBILE MONEY"));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_z_report_prints_the_variance_with_its_sign() {
+        for (counted, want) in [("250", "-2,000"), ("4250", "+2,000"), ("2250", "0")] {
+            let mut l = lane_without_shift().await;
+            l.open_shift("alice", rwf("1000")).await.unwrap();
+            scan(&mut l, EAN).await.unwrap();
+            l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+            let (mut p, mut d) = devices();
+            l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+                .await
+                .unwrap();
+            let (mut z, _) = devices();
+            l.print_z(rwf(counted), &mut z).await.unwrap();
+            let t = printed(&z);
+            let row = t.lines().find(|r| r.starts_with("VARIANCE")).expect(&t);
+            assert!(row.ends_with(want), "{row:?}");
+            assert_eq!(row.contains('-'), want.starts_with('-'), "{row:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn neither_report_carries_a_qr_or_an_sdc_block() {
+        // Not fiscal documents: assert the absence, so nobody "helpfully" adds a
+        // QR later and makes an internal report look like a tax receipt.
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        sell_one(&mut l, PmtTyCd::Cash).await;
+        let (mut x, _) = devices();
+        l.print_x(&mut x).await.unwrap();
+        let (mut z, _) = devices();
+        l.print_z(rwf("1250"), &mut z).await.unwrap();
+        for p in [&x, &z] {
+            // GS ( k is the QR store/print command family.
+            assert!(!p.written.windows(3).any(|w| w == [0x1D, 0x28, 0x6B]));
+            let t = printed(p);
+            for banned in [
+                "SDC",
+                "Internal Data",
+                "Receipt Signature",
+                "RECEIPT NUMBER",
+                "MRC:",
+                "THANK YOU",
+            ] {
+                assert!(!t.contains(banned), "{banned} in\n{t}");
+            }
+            assert!(t.contains("NOT A TAX RECEIPT"));
+        }
     }
 
     async fn scan(l: &mut LaneState, code: &str) -> Result<(), LaneError> {
