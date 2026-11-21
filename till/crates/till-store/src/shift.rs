@@ -137,7 +137,8 @@ impl Store {
     /// Change is not stored; it is each confirmed sale's tenders minus its
     /// `tot_amt`. `TenderSet::settle` only allows change up to the cash
     /// handed over, so it always leaves the drawer as cash. All arithmetic is
-    /// exact `Money`; both queries filter on `sale.shift_id` (`sale_shift`).
+    /// exact `Money`; the single query filters on `sale.shift_id` (`sale_shift`) and reads
+    /// state, totals and tenders in one statement, so it is one snapshot.
     pub async fn shift_totals(&self, shift_id: &str) -> Result<ShiftTotals, StoreError> {
         let float: Option<String> =
             sqlx::query_scalar("select opening_float from shift where id = ?")
@@ -149,50 +150,58 @@ impl Store {
         })?;
         let opening_float = decode_money("opening_float", &float)?;
 
-        let sales: Vec<(String, String, String, String)> =
-            sqlx::query_as("select id, state, tot_amt, tot_tax_amt from sale where shift_id = ?")
-                .bind(shift_id)
-                .fetch_all(self.pool())
-                .await?;
-        let (mut sale_count, mut voided_count) = (0u32, 0u32);
-        let (mut gross, mut tax) = (Money::zero(), Money::zero());
-        // sale id -> its tot_amt, for confirmed sales only
-        let mut due = std::collections::HashMap::new();
-        for (id, state, tot, tot_tax) in sales {
-            match state.as_str() {
-                "Confirmed" => {
-                    sale_count += 1;
-                    let tot = decode_money("tot_amt", &tot)?;
-                    gross = add(gross, tot, "gross")?;
-                    tax = add(tax, decode_money("tot_tax_amt", &tot_tax)?, "tax")?;
-                    due.insert(id, tot);
-                }
-                "Voided" => voided_count += 1,
-                _ => {}
-            }
-        }
-
-        let tenders: Vec<(String, String, String)> = sqlx::query_as(
-            "select t.sale_id, t.pmt_ty_cd, t.amount from sale_tender t \
-             join sale s on s.id = t.sale_id \
-             where s.shift_id = ? and s.state = 'Confirmed'",
+        // ONE statement, so one snapshot: a sale confirming mid-report is
+        // seen whole (state, total and tenders together) or not at all. Two
+        // reads could see its tenders but not its state, counting its cash
+        // without subtracting its change.
+        type Joined = (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        );
+        let rows: Vec<Joined> = sqlx::query_as(
+            "select s.id, s.state, s.tot_amt, s.tot_tax_amt, t.pmt_ty_cd, t.amount \
+             from sale s left join sale_tender t on t.sale_id = s.id \
+             where s.shift_id = ?",
         )
         .bind(shift_id)
         .fetch_all(self.pool())
         .await?;
+        let mut seen = std::collections::HashSet::new();
+        let (mut sale_count, mut voided_count) = (0u32, 0u32);
+        let (mut gross, mut tax, mut change) = (Money::zero(), Money::zero(), Money::zero());
         let mut by_code: std::collections::BTreeMap<&'static str, (PmtTyCd, Money)> =
             std::collections::BTreeMap::new();
         let mut tendered_per_sale: std::collections::HashMap<String, Money> =
             std::collections::HashMap::new();
-        for (sale_id, code, amount) in tenders {
-            let code = decode_pmt_ty("pmt_ty_cd", &code)?;
-            let amount = decode_money("amount", &amount)?;
-            let slot = by_code.entry(code.wire()).or_insert((code, Money::zero()));
-            slot.1 = add(slot.1, amount, "tender")?;
-            let t = tendered_per_sale.entry(sale_id).or_insert_with(Money::zero);
-            *t = add(*t, amount, "tender")?;
+        let mut due = std::collections::HashMap::new();
+        for (id, state, tot, tot_tax, code, amount) in rows {
+            if !seen.insert(id.clone()) {
+                // later row of a sale already counted: only its tender is new
+            } else if state == "Voided" {
+                voided_count += 1;
+            } else if state == "Confirmed" {
+                sale_count += 1;
+                let tot = decode_money("tot_amt", &tot)?;
+                gross = add(gross, tot, "gross")?;
+                tax = add(tax, decode_money("tot_tax_amt", &tot_tax)?, "tax")?;
+                due.insert(id.clone(), tot);
+            }
+            if state != "Confirmed" {
+                continue;
+            }
+            if let (Some(code), Some(amount)) = (code, amount) {
+                let code = decode_pmt_ty("pmt_ty_cd", &code)?;
+                let amount = decode_money("amount", &amount)?;
+                let slot = by_code.entry(code.wire()).or_insert((code, Money::zero()));
+                slot.1 = add(slot.1, amount, "tender")?;
+                let t = tendered_per_sale.entry(id).or_insert_with(Money::zero);
+                *t = add(*t, amount, "tender")?;
+            }
         }
-        let mut change = Money::zero();
         for (id, tot) in &due {
             let tendered = tendered_per_sale
                 .get(id)
@@ -546,5 +555,17 @@ mod tests {
         .await
         .unwrap();
         assert!(plan.iter().any(|r| r.3.contains("sale_shift")), "{plan:?}");
+    }
+
+    #[tokio::test]
+    async fn a_confirmed_sale_with_no_tenders_still_counts() {
+        // a fully discounted sale has no sale_tender rows; the join must keep it
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "10").await;
+        seed_sale(&s, &sh, 1, "Confirmed", ("0.00", "0.00"), &[]).await;
+        let t = s.shift_totals(&sh).await.unwrap();
+        assert_eq!(t.sale_count, 1);
+        assert!(t.by_code.is_empty());
+        assert_eq!(t.expected_cash, m("10"));
     }
 }
