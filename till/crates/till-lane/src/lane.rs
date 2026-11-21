@@ -71,6 +71,10 @@ pub enum LaneError {
         "{name} is not fully set up (it has no item class). Do not sell it; ask the back office to fix the product."
     )]
     Unconfigured { name: String },
+    #[error(
+        "{name} is not a weighed product, but a scale label was scanned for it. Scan its own barcode, or ask the back office to check the product."
+    )]
+    NotWeighed { name: String },
     #[error("{0}")]
     Basket(#[from] BasketError),
     #[error("{name} cannot be sold as set up: {source}. Ask a supervisor to fix the catalogue.")]
@@ -213,6 +217,13 @@ fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneErro
             });
         }
     };
+    // A scale label (weight or price) on a unit product would sell a fraction
+    // of a packet, or override its price: refuse, as for the opposite case.
+    if matches!(scanned, Scanned::WeightEmbedded { .. }) && !p.is_weighed {
+        return Err(LaneError::NotWeighed {
+            name: p.name.clone(),
+        });
+    }
     let (qty, prc) = match scanned {
         Scanned::WeightEmbedded { qty: Some(q), .. } => {
             if !q.is_positive() {
@@ -453,5 +464,57 @@ mod tests {
             n => panic!("expected Problem, got {n:?}"),
         }
         assert_eq!(l.buffer(), "");
+    }
+
+    #[tokio::test]
+    async fn a_weight_label_on_a_unit_product_is_refused_by_name() {
+        let mut l = lane_with(
+            &[product("u", None, Some("23456"), false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        scan(&mut l, WEIGHT_LABEL).await.unwrap();
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("Item u"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_price_label_on_a_unit_product_is_refused_by_name() {
+        let mut l = lane_with(
+            &[product("u", None, Some("23456"), false)],
+            EmbeddedMode::Price,
+        )
+        .await;
+        scan(&mut l, "2123456015003").await.unwrap();
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("Item u"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_store_fault_returns_err_sets_the_notice_and_clears_the_buffer() {
+        let store = Store::open_in_memory().await.unwrap();
+        store.pool().close().await; // a genuine failure: the pool is gone
+        let mut l = LaneState::new(
+            store,
+            LaneConfig {
+                dvc_srl_no: "DVC1".into(),
+                bhf_id: "00".into(),
+                embedded: EmbeddedMode::Weight,
+                counter: Counter::SaleInvc,
+            },
+        )
+        .await;
+        EAN.chars().for_each(|c| l.key(c));
+        let r = l.enter().await;
+        assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.buffer(), "");
+        assert!(l.basket().is_empty());
     }
 }
