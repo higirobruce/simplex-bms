@@ -18,6 +18,7 @@ pub mod basket;
 pub mod codes;
 pub mod line;
 pub mod money;
+pub mod scan;
 pub mod tax;
 pub mod tender;
 
