@@ -67,9 +67,10 @@ pub struct ReceiptInput<'a> {
 /// Why a receipt was refused rather than printed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ReceiptError {
-    /// A field of the QR payload is empty or contains `#`, so the payload
-    /// would not split back into its six fields.
-    #[error("QR field {0} is empty or contains '#'")]
+    /// A field of the QR payload is empty, contains `#`, or is implausibly
+    /// long: it would not split back into its six fields, or would not fit one
+    /// printer store command.
+    #[error("QR field {0} is empty, too long, or contains '#'")]
     BadQrField(&'static str),
     /// The VSDC timestamp is not a real `yyyymmddhhmmss` instant.
     #[error("VSDC timestamp is not yyyymmddhhmmss: {0:?}")]
@@ -168,7 +169,8 @@ pub fn compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
         for l in wrap(&clean(&line.item_nm)) {
             e = e.line(&l);
         }
-        let band = line.tax_ty_cd.wire();
+        // The tax label, not the bare letter (CIS 7.22): `A-EX`, `B-18.00%`.
+        let band = band_label(line.tax_ty_cd, totals.by_band(line.tax_ty_cd).1);
         e = e.line(&item_row(
             &format!("{}x", rwf(line.prc)),
             &qty(line.qty),
@@ -207,9 +209,12 @@ pub fn compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
     e = e.line(&pair("TOTAL TAX", &tax(totals.tot_tax_amt)));
     // CIS 11: the warning goes below the amount totals.
     if banner.is_some() {
+        // An identifying text: "at least twice bigger" than the amounts (CIS 11).
         e = e
             .bold(true)
+            .double_height(true)
             .line("THIS IS NOT AN OFFICIAL RECEIPT")
+            .double_height(false)
             .bold(false);
     }
     e = e.line(&rule());
@@ -284,6 +289,11 @@ pub fn compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
         .bytes())
 }
 
+/// Longest accepted QR field. Real VSDC fields are tens of characters; the
+/// bound keeps the payload far below the encoder's 65,532-byte store command,
+/// so `Esc::qr`'s length `expect` cannot fire from here.
+const MAX_QR_FIELD: usize = 512;
+
 /// `invoice_date(ddmmyyyy)#time(hhmmss)#sdc number#sdc receipt number#internal
 /// data#receipt signature` (CIS 7.24.7). Internal data and signature go in raw:
 /// the dashes are a print convenience, not part of the data.
@@ -302,7 +312,7 @@ fn qr_payload(stamp: &Stamp, v: &VsdcReceipt) -> Result<String, ReceiptError> {
         ("receipt_signature", v.rcpt_sign.clone()),
     ];
     for (name, value) in &fields {
-        if value.is_empty() || value.contains('#') {
+        if value.is_empty() || value.contains('#') || value.len() > MAX_QR_FIELD {
             return Err(ReceiptError::BadQrField(name));
         }
     }
@@ -686,18 +696,72 @@ mod tests {
             assert!(t.contains(banner), "{banner}");
             assert!(t.contains("THIS IS NOT AN OFFICIAL RECEIPT"));
             assert!(t.contains(&format!("168/258 {label}")), "{t}");
-            // Header banner precedes the items; the notice follows the totals.
-            let at = |s: &str| t.find(s).unwrap();
-            assert!(at(banner) < at("Plain Bread"));
-            assert!(at("TOTAL TAX") < at("THIS IS NOT AN OFFICIAL RECEIPT"));
-            // Doubled height is switched on for the banner.
-            assert!(
-                bytes.windows(3).any(|w| w == [0x1D, 0x21, 0x01]),
-                "{banner} not doubled"
-            );
+            let rows: Vec<&str> = t.lines().collect();
+            let row = |pred: &dyn Fn(&str) -> bool| rows.iter().position(|r| pred(r)).unwrap();
+            let tin = row(&|r| r.starts_with("TIN:"));
+            let first_banner = row(&|r| r == banner);
+            let last_banner = rows.iter().rposition(|r| *r == banner).unwrap();
+            let items = row(&|r| r == "Plain Bread");
+            let items_number = row(&|r| r.starts_with("ITEMS NUMBER"));
+            let sdc = row(&|r| r == "SDC INFORMATION");
+            // Below the header, above the items.
+            assert!(tin < first_banner && first_banner < items);
+            // Repeated above SDC INFORMATION.
+            assert!(items_number < last_banner && last_banner < sdc);
+            // Notice below the FINAL "TOTAL TAX" row, not an earlier band row.
+            let final_tax = rows
+                .iter()
+                .rposition(|r| r.starts_with("TOTAL TAX"))
+                .unwrap();
+            let notice = row(&|r| r == "THIS IS NOT AN OFFICIAL RECEIPT");
+            assert!(final_tax < notice && notice < items_number);
+            // The size command sits immediately before each identifying text
+            // and is switched off immediately after it.
+            for text in [banner, "THIS IS NOT AN OFFICIAL RECEIPT"] {
+                let enc = text.as_bytes();
+                let mut seen = 0;
+                for at in
+                    (3..bytes.len() - enc.len() - 4).filter(|&i| &bytes[i..i + enc.len()] == enc)
+                {
+                    if bytes[at + enc.len()] != 0x0A {
+                        continue;
+                    }
+                    seen += 1;
+                    assert_eq!(&bytes[at - 3..at], [0x1D, 0x21, 0x01], "{text} not doubled");
+                    assert_eq!(
+                        &bytes[at + enc.len() + 1..at + enc.len() + 4],
+                        [0x1D, 0x21, 0x00]
+                    );
+                }
+                let want = if text == banner { 2 } else { 1 };
+                assert_eq!(seen, want, "{text} occurrences");
+            }
         }
         // A normal receipt never doubles anything.
         assert!(!f.normal().windows(3).any(|w| w == [0x1D, 0x21, 0x01]));
+    }
+
+    #[test]
+    fn item_rows_carry_the_tax_label_not_a_bare_letter() {
+        let t = text(&mixed().normal());
+        let row = |name: &str| {
+            let at = t.lines().position(|l| l == name).unwrap();
+            t.lines().nth(at + 1).unwrap().to_owned()
+        };
+        assert!(row("Plain Bread").ends_with("1,000A-EX"));
+        assert!(row("Gouda cheese").ends_with("6,720B-18.00%"));
+    }
+
+    #[test]
+    fn an_implausibly_long_vsdc_field_is_refused_not_panicked_on() {
+        let mut f = mixed();
+        f.vsdc.intrl_data = "A".repeat(MAX_QR_FIELD + 1);
+        assert_eq!(
+            compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
+            Err(ReceiptError::BadQrField("internal_data"))
+        );
+        f.vsdc.intrl_data = "A".repeat(MAX_QR_FIELD);
+        assert!(compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)).is_ok());
     }
 
     #[test]
