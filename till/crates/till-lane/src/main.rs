@@ -1,6 +1,9 @@
-// Later tasks consume the full token set; until then parts of it are unused.
+// Task 5 will call these formatting functions; until then they are unused.
 #[allow(dead_code)]
 mod fmt;
+
+// Later tasks consume the full token set; until then parts of it are unused.
+#[allow(dead_code)]
 mod theme;
 
 use eframe::egui;

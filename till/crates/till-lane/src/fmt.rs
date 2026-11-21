@@ -9,26 +9,44 @@
 //! impl of their inputs — that impl is the only public route to read the inner
 //! decimal values, since `Money` and `Qty` expose no accessors.
 
-use till_core::{Money, Qty};
+use rust_decimal::Decimal;
+use till_core::{Money, Qty, round_half_up};
 
 /// Formats a price in RWF with thousands grouping and no decimal places.
 ///
-/// The Rwanda Revenue Authority recognizes only whole francs as prices. This
-/// formats the price for the till screen and printed receipt.
+/// The Rwanda Revenue Authority recognizes only whole francs as prices. Callers
+/// pass whole francs by construction (via [`till_core::line::whole_francs`]), so
+/// this function rounds using `round_half_up` as a safety net to ensure the
+/// displayed amount matches what was recorded in the transaction ledger. Without
+/// this matching, a figure could appear on screen a franc below the amount
+/// actually charged.
 ///
 /// # Examples
 ///
 /// ```ignore
 /// assert_eq!(rwf(Money::try_from_str("7450.00").unwrap()), "7,450");
 /// assert_eq!(rwf(Money::try_from_str("1234567.00").unwrap()), "1,234,567");
+/// assert_eq!(rwf(Money::try_from_str("1234.49").unwrap()), "1,234");
+/// assert_eq!(rwf(Money::try_from_str("1234.50").unwrap()), "1,235");
 /// ```
 pub fn rwf(m: Money) -> String {
-    // Money formats as "{:.2}", e.g. "7450.00"
+    use std::str::FromStr;
+
+    // Money formats as "{:.2}", e.g. "1234.56"
     let s = m.to_string();
-    // Split at the decimal and take the integer part
-    let integer_part = s.split('.').next().unwrap_or("0");
+    // Parse back to Decimal so we can round to whole francs
+    let decimal = Decimal::from_str(&s).unwrap_or(Decimal::ZERO);
+    // Round to 0 decimal places using half-up (away from zero)
+    let rounded = round_half_up(decimal, 0);
+    // Convert to string and ensure we never produce "-0"
+    let rounded_str = rounded.to_string();
+    let final_str = if rounded_str == "-0" {
+        "0".to_string()
+    } else {
+        rounded_str
+    };
     // Add thousands grouping
-    add_thousands_separators(integer_part)
+    add_thousands_separators(&final_str)
 }
 
 /// Formats tax (a money amount) with two decimal places.
@@ -116,11 +134,39 @@ mod tests {
     }
 
     #[test]
-    fn rwf_groups_thousands_and_drops_the_subunit() {
+    fn rwf_groups_thousands_and_rounds_to_whole_francs() {
+        // Exact whole francs
         assert_eq!(rwf(m("7450.00")), "7,450");
         assert_eq!(rwf(m("983.00")), "983");
         assert_eq!(rwf(m("0.00")), "0");
         assert_eq!(rwf(m("1234567.00")), "1,234,567");
+        // Rounding cases: round half-up (away from zero)
+        assert_eq!(rwf(m("1234.49")), "1,234");
+        assert_eq!(rwf(m("1234.50")), "1,235");
+        assert_eq!(rwf(m("1234.99")), "1,235");
+        assert_eq!(rwf(m("0.49")), "0");
+        assert_eq!(rwf(m("0.50")), "1");
+        assert_eq!(rwf(m("0.99")), "1");
+    }
+
+    #[test]
+    fn rwf_handles_negative_amounts_without_producing_minus_zero() {
+        // Negative amounts that don't round to zero
+        assert_eq!(rwf(m("-1500.00")), "-1,500");
+        assert_eq!(rwf(m("-1234.50")), "-1,235");
+        assert_eq!(rwf(m("-1234.99")), "-1,235");
+        // Negative sub-franc amounts that round to zero produce "0", not "-0"
+        assert_eq!(rwf(m("-0.49")), "0");
+        assert_eq!(rwf(m("-0.50")), "-1");
+    }
+
+    #[test]
+    fn thousands_separator_preserves_sign() {
+        // Positive and negative values both preserve their sign correctly
+        assert_eq!(add_thousands_separators("1234567"), "1,234,567");
+        assert_eq!(add_thousands_separators("-1234567"), "-1,234,567");
+        assert_eq!(add_thousands_separators("1500"), "1,500");
+        assert_eq!(add_thousands_separators("-1500"), "-1,500");
     }
 
     #[test]
