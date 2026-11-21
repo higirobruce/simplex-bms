@@ -11,6 +11,10 @@ mod theme;
 #[allow(dead_code)]
 mod device;
 
+// Task 4: ESC/POS byte encoder. Task 5 composes the tax receipt on top of it.
+#[allow(dead_code)]
+mod escpos;
+
 use eframe::egui;
 
 struct LaneApp;
