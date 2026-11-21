@@ -370,14 +370,24 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Guards against the busy timeout being LOWERED on either path. It does
+    /// NOT prove the option is set explicitly: 5000 ms is also sqlx's default,
+    /// so deleting the `.busy_timeout(..)` call would still pass.
     #[tokio::test]
-    async fn busy_timeout_is_set_explicitly() {
-        let s = Store::open_in_memory().await.unwrap();
-        let ms: i64 = sqlx::query_scalar("pragma busy_timeout")
-            .fetch_one(s.pool())
-            .await
-            .unwrap();
-        assert_eq!(ms, 5000);
+    async fn busy_timeout_is_five_seconds() {
+        async fn ms(s: &Store) -> i64 {
+            sqlx::query_scalar("pragma busy_timeout")
+                .fetch_one(s.pool())
+                .await
+                .unwrap()
+        }
+        assert_eq!(ms(&Store::open_in_memory().await.unwrap()).await, 5000);
+        let dir = std::env::temp_dir().join(format!("till-store-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = Store::open(&dir.join("till.db")).await.unwrap();
+        assert_eq!(ms(&s).await, 5000);
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
