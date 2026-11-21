@@ -10,7 +10,15 @@
 //!    with [`Store::begin_immediate`].
 //! 2. A VSDC failure leaves the sale `AwaitingVsdc` and the SAME number is
 //!    retried. A retry answered `994` ("There is an overlapped Data") means
-//!    the VSDC already holds that invoice: that is success, not an error.
+//!    the VSDC already holds that invoice, so the number must NEVER be
+//!    reallocated. But 994 is NOT a path to `Confirmed`: it carries no
+//!    receipt, and `saveSales` is the only sales endpoint (the one "select"
+//!    endpoint is the buyer-side purchases lookup), so there is no documented
+//!    way to re-read a receipt already issued. The sale stays unconfirmed and
+//!    needs reconciliation: an operator must obtain the receipt from the
+//!    VSDC's own records (Phase 3 builds that). Phase 3 must therefore
+//!    minimise ambiguous retries: retrying after a timeout-post-send is
+//!    exactly what produces a 994.
 //! 3. While an `AwaitingVsdc` sale exists on a branch no new number is issued
 //!    ([`StoreError::SequenceBlocked`]); [`Store::pending_sale`] finds it at
 //!    startup.

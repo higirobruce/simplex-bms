@@ -52,9 +52,11 @@ pub struct VsdcReceipt {
     pub rcpt_sign: String,
     pub sdc_id: String,
     pub mrc_no: String,
-    /// The VSDC's receipt timestamp. The `sale` table has no column for it, so
-    /// it is carried in the outbound payload only.
+    /// The VSDC's receipt timestamp: the date and time of the C5 receipt QR.
     pub vsdc_rcpt_pbct_date: String,
+    /// `saveSales`' `totRcptNo`. Stored beside `rcpt_no` because the QR's
+    /// "sdc_receipt_number" could mean either.
+    pub tot_rcpt_no: i64,
 }
 
 /// UTC timestamp in SQL, so the store never needs a clock crate.
@@ -162,9 +164,9 @@ impl Store {
     /// [`StoreError::ReceiptConflict`]; a `Failed` or `Voided` sale is
     /// [`StoreError::SaleNotAwaiting`].
     ///
-    /// A VSDC `994` ("overlapped data") carries no receipt, so it cannot be
-    /// turned into a `VsdcReceipt` here: that case needs the receipt fetched
-    /// some other way, and must never be faked.
+    /// A VSDC `994` ("overlapped data") is NOT a path to here: it carries no
+    /// receipt, and the spec has no endpoint to re-read one, so nothing may be
+    /// faked. See the `sequence` module docs.
     pub async fn confirm_sale(
         &self,
         handle: &SaleHandle,
@@ -244,7 +246,7 @@ async fn confirm_on(
 ) -> Result<(), StoreError> {
     let n = sqlx::query(&format!(
         "update sale set state = 'Confirmed', rcpt_no = ?, intrl_data = ?, rcpt_sign = ?, \
-         sdc_id = ?, mrc_no = ?, confirmed_at = {NOW_SQL} \
+         sdc_id = ?, mrc_no = ?, vsdc_rcpt_pbct_date = ?, tot_rcpt_no = ?, confirmed_at = {NOW_SQL} \
          where id = ? and invc_no = ? and state = 'AwaitingVsdc'"
     ))
     .bind(r.rcpt_no)
@@ -252,6 +254,8 @@ async fn confirm_on(
     .bind(&r.rcpt_sign)
     .bind(&r.sdc_id)
     .bind(&r.mrc_no)
+    .bind(&r.vsdc_rcpt_pbct_date)
+    .bind(r.tot_rcpt_no)
     .bind(&h.id)
     .bind(h.invc_no)
     .execute(&mut *conn)
@@ -261,7 +265,8 @@ async fn confirm_on(
         // Not awaiting. A repeat of the identical receipt is a success.
         let same: Option<i64> = sqlx::query_scalar(
             "select 1 from sale where id = ? and invc_no = ? and state = 'Confirmed' \
-             and rcpt_no = ? and intrl_data = ? and rcpt_sign = ? and sdc_id = ? and mrc_no = ?",
+             and rcpt_no = ? and intrl_data = ? and rcpt_sign = ? and sdc_id = ? and mrc_no = ? \
+             and vsdc_rcpt_pbct_date = ? and tot_rcpt_no = ?",
         )
         .bind(&h.id)
         .bind(h.invc_no)
@@ -270,6 +275,8 @@ async fn confirm_on(
         .bind(&r.rcpt_sign)
         .bind(&r.sdc_id)
         .bind(&r.mrc_no)
+        .bind(&r.vsdc_rcpt_pbct_date)
+        .bind(r.tot_rcpt_no)
         .fetch_optional(&mut *conn)
         .await?;
         if same.is_some() {
@@ -380,6 +387,7 @@ async fn cloud_payload(
             "sdcId": r.sdc_id,
             "mrcNo": r.mrc_no,
             "vsdcRcptPbctDate": r.vsdc_rcpt_pbct_date,
+            "totRcptNo": r.tot_rcpt_no,
         },
     }))?)
 }
@@ -461,6 +469,7 @@ mod tests {
             sdc_id: "SDC010000001".into(),
             mrc_no: "WIS00000001".into(),
             vsdc_rcpt_pbct_date: "20261121103000".into(),
+            tot_rcpt_no: 7,
         }
     }
 
@@ -524,6 +533,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(q, 1);
+    }
+
+    #[tokio::test]
+    async fn the_receipt_qr_fields_are_readable_from_the_sale_row_alone() {
+        // A COPY reprint must rebuild the C5 QR without the outbound payload.
+        let s = Store::open_in_memory().await.unwrap();
+        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        let before: (Option<String>, Option<i64>) =
+            sqlx::query_as("select vsdc_rcpt_pbct_date, tot_rcpt_no from sale where id=?")
+                .bind(&h.id)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(before, (None, None));
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let row = sqlx::query(
+            "select vsdc_rcpt_pbct_date, tot_rcpt_no, rcpt_no, sdc_id, intrl_data, rcpt_sign \
+             from sale where id=?",
+        )
+        .bind(&h.id)
+        .fetch_one(s.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            row.get::<String, _>("vsdc_rcpt_pbct_date"),
+            "20261121103000"
+        );
+        assert_eq!(row.get::<i64, _>("tot_rcpt_no"), 7);
+        assert_eq!(row.get::<i64, _>("rcpt_no"), 42);
+        assert_eq!(row.get::<String, _>("sdc_id"), "SDC010000001");
+        assert_eq!(row.get::<String, _>("intrl_data"), "INTRL");
+        assert_eq!(row.get::<String, _>("rcpt_sign"), "ABCD1234EFGH5678");
     }
 
     #[tokio::test]

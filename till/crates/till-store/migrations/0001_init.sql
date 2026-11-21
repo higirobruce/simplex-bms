@@ -47,6 +47,10 @@ CREATE TABLE sale (
     rcpt_sign      TEXT,
     sdc_id         TEXT,
     mrc_no         TEXT,
+    -- The VSDC's receipt timestamp (yyyyMMddHHmmss) and saveSales' totRcptNo:
+    -- a COPY reprint must rebuild the C5 QR from this row alone.
+    vsdc_rcpt_pbct_date TEXT,
+    tot_rcpt_no    INTEGER,
     created_at     TEXT NOT NULL,
     confirmed_at   TEXT,
     attempts       INTEGER NOT NULL DEFAULT 0,
