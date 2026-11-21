@@ -110,3 +110,24 @@ test("sales expose their lines and tenders through lines and tenders", async () 
   expect(s.lines).toHaveLength(1);
   expect(s.tenders).toHaveLength(1);
 });
+
+test("two lanes in one org cannot share a bhfId, but another org may reuse it", async () => {
+  const { orgId, locationId, otherOrgId } = await seedTill();
+  await prisma.lane.create({ data: { code: "B1", name: "b1", locationId, orgId, bhfId: "00" } });
+  await expect(
+    prisma.lane.create({ data: { code: "B2", name: "b2", locationId, orgId, bhfId: "00" } }),
+  ).rejects.toThrow(/Unique constraint/);
+  const other = await prisma.lane.create({
+    data: { code: "B1", name: "other org", locationId, orgId: otherOrgId, bhfId: "00" },
+  });
+  expect(other.bhfId).toBe("00");
+});
+
+test("any number of lanes with no bhfId are fine", async () => {
+  const { orgId, locationId } = await seedTill();
+  // seedTill already made two lanes with a NULL bhfId; add more
+  await prisma.lane.create({ data: { code: "N1", name: "n1", locationId, orgId } });
+  await prisma.lane.create({ data: { code: "N2", name: "n2", locationId, orgId, bhfId: null } });
+  const n = await prisma.lane.count({ where: { orgId, bhfId: null } });
+  expect(n).toBe(4);
+});

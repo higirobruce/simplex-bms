@@ -667,7 +667,15 @@ model Lane {
   orgId      String
   org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   mrc        String?
+  // The RRA branch id. The till's invoice sequence is per till DATABASE, so
+  // exactly ONE lane may carry a given bhfId: two lanes sharing one would each
+  // number 1, 2, 3 and every invoice would collide at the VSDC. Enforced by the
+  // unique index below. Nullable (an unconfigured lane); Postgres treats NULLs
+  // as distinct in a unique index, so several unconfigured lanes are legal.
   bhfId      String?
+  // DEAD: nothing writes this. The till owns the invoice sequence in its own
+  // local database (till-store `invc_seq`), so this value is stale and 0 does
+  // not mean "no invoices issued". Do not read it to draw a conclusion.
   lastInvcNo Int       @default(0)
   createdAt  DateTime  @default(now())
   deletedAt  DateTime?
@@ -675,6 +683,7 @@ model Lane {
   sales      Sale[]
 
   @@unique([code, orgId])
+  @@unique([bhfId, orgId])
 }
 
 model Shift {
