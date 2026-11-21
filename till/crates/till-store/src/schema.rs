@@ -47,6 +47,9 @@ pub enum StoreError {
     /// another variant's message.
     #[error("tender position out of range (impossible)")]
     TenderSeqOutOfRange,
+    /// `shift_totals` was asked about a shift that does not exist.
+    #[error("shift {id} does not exist")]
+    ShiftNotFound { id: String },
     #[error("migration failed: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
     /// A stored column that will not parse back into its `till-core` type.
