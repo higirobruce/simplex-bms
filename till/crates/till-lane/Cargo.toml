@@ -8,6 +8,8 @@ rust-version.workspace = true
 eframe.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
+# The UI owns the runtime that drives the async store (see main.rs).
+tokio.workspace = true
 till-core = { path = "../till-core" }
 till-store = { path = "../till-store" }
 
