@@ -6,6 +6,11 @@ mod fmt;
 #[allow(dead_code)]
 mod theme;
 
+// Task 3: Device traits and simulated implementations. Task 2 polls scanners;
+// later tasks will use the printer and drawer.
+#[allow(dead_code)]
+mod device;
+
 use eframe::egui;
 
 struct LaneApp;
