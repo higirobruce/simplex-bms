@@ -429,3 +429,52 @@ Run: `cargo test --workspace`, `cargo fmt --all --check`,
 `cargo clippy --all-targets -- -D warnings`.
 
 - [ ] **Step 5: Commit**
+
+---
+
+### Task 9: The shift reaches the cloud
+
+**Added during execution.** Task 3's review found that `cloud_payload` carries
+`shiftId` but nothing identifying the lane, while the cloud's `Sale.laneId` is
+non-null — and, more seriously, **the till never sends shifts to the cloud at
+all**. A queued sale would therefore fail on a foreign key to a `Shift` row the
+back office has never seen, which defeats the stated purpose of this whole slice.
+
+**Files:**
+- Modify: `till/crates/till-store/src/shift.rs`, `till/crates/till-store/src/sale.rs`
+
+**Interfaces:**
+- Consumes: Task 2's `open_shift`, Task 7's `close_shift`.
+- Produces: outbound rows of `kind = 'shift'`.
+
+**How the cloud resolves the lane.** The till knows its device serial, not the
+cloud's `Lane.id`. `Lane.dvcSrlNo` is unique per org, so the shift payload carries
+`dvcSrlNo` and the cloud resolves `laneId` from it. The sale payload then needs
+nothing further — the cloud reaches `laneId` through the sale's shift. The till
+never learns cloud primary keys, which is the right direction for that dependency.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[tokio::test] async fn opening_a_shift_queues_it_for_the_cloud() {
+    // One outbound row, kind 'shift', carrying the shift id, dvcSrlNo, openedBy,
+    // openedAt and openingFloat.
+}
+#[tokio::test] async fn closing_a_shift_queues_the_close() {
+    // A second outbound row carrying closedAt and declaredCash.
+}
+#[tokio::test] async fn the_shift_is_queued_before_any_sale_that_references_it() {
+    // Ordering matters: the cloud must be able to create the Shift before the
+    // Sale that points at it. Assert the shift row's id is lower.
+}
+```
+
+- [ ] **Step 2: Run and watch fail**
+- [ ] **Step 3: Implement**
+
+Queue inside the same transaction that opens or closes the shift, exactly as
+`confirm_sale` queues its sale — a shift that exists locally but was never queued
+is the bug this task exists to prevent.
+
+- [ ] **Step 4: Run and watch pass**
+- [ ] **Step 5: Commit**
