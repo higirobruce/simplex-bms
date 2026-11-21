@@ -104,6 +104,16 @@ impl Money {
         Self::bounded(self.0.checked_sub(other.0)?)
     }
 
+    /// Wraps an already-computed decimal. `None` if it has more than two
+    /// places or exceeds 12 digits. Built on [`Money::bounded`] so the bound
+    /// has a single implementation.
+    pub(crate) fn from_decimal(d: Decimal) -> Option<Money> {
+        if d.normalize().scale() > MONEY_DP {
+            return None;
+        }
+        Self::bounded(d)
+    }
+
     fn bounded(d: Decimal) -> Option<Money> {
         check_digits(d, MONEY_DP).ok().map(|()| Money(d))
     }

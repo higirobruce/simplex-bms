@@ -1,6 +1,8 @@
 //! VAT extraction from VAT-inclusive prices.
 
 use crate::codes::TaxType;
+use rust_decimal::Decimal;
+
 use crate::money::{Money, round_half_up};
 
 /// The VAT contained *within* `taxbl`, rounded half-up to two places.
@@ -25,13 +27,11 @@ pub fn extract_tax(taxbl: Money, band: TaxType) -> Money {
     }
     // `Money` holds at most 12 digits, so x rate (at most 100) cannot overflow
     // a Decimal, and the divisor is at least 100.
-    let tax = round_half_up(
-        taxbl.amount() * rate / (rate + rust_decimal::Decimal::ONE_HUNDRED),
-        2,
-    );
-    // The tax is smaller in magnitude than the gross, so it is within bounds
-    // and has two places: this goes through the checked parse and cannot fail.
-    Money::try_from_str(&tax.to_string()).expect("tax is within the bounds of its gross")
+    let tax = round_half_up(taxbl.amount() * rate / (rate + Decimal::ONE_HUNDRED), 2);
+    // Rounded to two places and smaller in magnitude than a gross that already
+    // passed the bound, so `None` is unreachable. Zero, not a panic, if that
+    // ever stops being true.
+    Money::from_decimal(tax).unwrap_or_else(Money::zero)
 }
 
 #[cfg(test)]
@@ -93,5 +93,12 @@ mod tests {
     fn the_largest_money_does_not_overflow() {
         let max = money("9999999999.99");
         assert_eq!(extract_tax(max, TaxType::B).to_string(), "1525423728.81");
+    }
+
+    #[test]
+    fn a_tiny_refund_rounds_to_plain_zero_not_negative_zero() {
+        let tax = extract_tax(money("-0.01"), TaxType::B);
+        assert_eq!(tax.to_string(), "0.00");
+        assert_eq!(tax, Money::zero());
     }
 }
