@@ -490,6 +490,12 @@ impl LaneState {
         }
     }
 
+    /// The payments taken so far, in the order taken. Read-only: every entry
+    /// came through `add_tender`, and settlement rules stay in `till-core`.
+    pub fn tenders(&self) -> &TenderSet {
+        &self.tenders
+    }
+
     /// Everything tendered so far; `None` if the sum passes the supported range.
     pub fn tender_total(&self) -> Option<Money> {
         self.tenders.total()

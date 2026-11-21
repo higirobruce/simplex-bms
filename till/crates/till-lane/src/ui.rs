@@ -18,9 +18,9 @@ use eframe::egui::{
     self, Align, Align2, Color32, Context, CornerRadius, FontFamily, FontId, Frame, Layout, Margin,
     Rect, RichText, Sense, Stroke, StrokeKind, Ui, vec2,
 };
-use till_core::Money;
 use till_core::codes::{PmtTyCd, TaxType};
 use till_core::line::LineDiscount;
+use till_core::{Money, TenderError};
 
 /// Who is at the lane. `LaneConfig` carries none of this, so `main` supplies it
 /// through the context (see [`set_session`]).
@@ -65,7 +65,8 @@ pub enum Action {
     Backspace,
     Enter,
     VoidLine,
-    Cash,
+    /// Take a payment under this RRA code: the keyed amount, or the balance.
+    Tender(PmtTyCd),
     Reprint,
     CancelSale,
     Resume,
@@ -98,10 +99,53 @@ const FKEYS: [(egui::Key, &str, &str, Action); 10] = [
         "X / Z report",
         Action::NotBuilt("X / Z report"),
     ),
-    (egui::Key::F8, "F8", "Cash", Action::Cash),
+    (
+        egui::Key::F8,
+        "F8 · Ctrl 1",
+        "Cash",
+        Action::Tender(PmtTyCd::Cash),
+    ),
     (egui::Key::F9, "F9", "Reprint", Action::Reprint),
     (egui::Key::F10, "F10", "Cancel sale", Action::CancelSale),
 ];
+
+/// The payment methods, one per RRA code (C5b): code, key digit, name, the
+/// label on the on-screen cap. Cash also answers to F8, which the cashiers
+/// already know. Letters cannot be method keys: the scanner wedge types them
+/// into the buffer. A modified digit is never wedge text, so Ctrl+1..7 is safe,
+/// and the digit is the RRA code's own number.
+const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
+    (PmtTyCd::Cash, egui::Key::Num1, "Cash", "Cash"),
+    (PmtTyCd::Credit, egui::Key::Num2, "Credit", "Credit"),
+    (
+        PmtTyCd::CashCredit,
+        egui::Key::Num3,
+        "Cash / credit",
+        "Cash/credit",
+    ),
+    (
+        PmtTyCd::BankCheck,
+        egui::Key::Num4,
+        "Bank check",
+        "Bank check",
+    ),
+    (PmtTyCd::Card, egui::Key::Num5, "Card", "Card"),
+    (
+        PmtTyCd::MobileMoney,
+        egui::Key::Num6,
+        "Mobile money",
+        "MoMo",
+    ),
+    (PmtTyCd::Other, egui::Key::Num7, "Other", "Other"),
+];
+
+fn method_name(code: PmtTyCd) -> &'static str {
+    METHODS
+        .iter()
+        .find(|(c, ..)| *c == code)
+        .map(|(_, _, name, _)| *name)
+        .unwrap_or("Other")
+}
 
 /// Translates raw input into actions, in order. Pure, so it can be tested.
 pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
@@ -113,8 +157,14 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
                 key,
                 pressed: true,
                 repeat: false,
+                modifiers,
                 ..
             } => match key {
+                k if modifiers.ctrl => {
+                    if let Some((code, ..)) = METHODS.iter().find(|(_, mk, ..)| mk == k) {
+                        out.push(Action::Tender(*code));
+                    }
+                }
                 egui::Key::Enter => out.push(Action::Enter),
                 egui::Key::Backspace => out.push(Action::Backspace),
                 egui::Key::F12 => out.push(Action::Resume),
@@ -175,7 +225,7 @@ fn apply(
                 None => Ok(()),
             }
         }
-        Action::Cash => tender_cash(state, local),
+        Action::Tender(code) => tender(state, local, code),
         Action::Reprint => state.reprint(devices.printer.as_mut()),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
@@ -201,7 +251,11 @@ fn open_shift(
     // A scanner types its code and Enter exactly like a cashier keys a float,
     // so a barcode scanned on this screen must never become an opening float.
     // No drawer opens with more than seven digits.
-    if state.buffer().chars().count() > MAX_FLOAT_DIGITS {
+    // Digits, not characters: `10000.50` is a legitimate float of eight
+    // characters and seven digits. An EAN-8 is the shortest barcode and has
+    // eight digits, which is why the limit is seven.
+    let digits = state.buffer().chars().filter(char::is_ascii_digit).count();
+    if digits > MAX_FLOAT_DIGITS {
         while !state.buffer().is_empty() {
             state.backspace();
         }
@@ -222,8 +276,14 @@ fn open_shift(
     }
 }
 
-/// F8: what is keyed is the cash handed over; nothing keyed means exact cash.
-fn tender_cash(state: &mut LaneState, local: &mut Local) -> Result<(), crate::lane::LaneError> {
+/// A payment key: what is keyed is the amount handed over; nothing keyed means
+/// the exact balance. Which code goes where, and what change is owed, is
+/// `till-core`'s: this only passes the amount and the code on.
+fn tender(
+    state: &mut LaneState,
+    local: &mut Local,
+    code: PmtTyCd,
+) -> Result<(), crate::lane::LaneError> {
     if *state.screen() != Screen::Selling {
         return Ok(());
     }
@@ -238,9 +298,16 @@ fn tender_cash(state: &mut LaneState, local: &mut Local) -> Result<(), crate::la
         Money::try_from_str(state.buffer()).ok()
     };
     match amount {
-        Some(a) => state.add_tender(PmtTyCd::Cash, a),
+        Some(a) => state.add_tender(code, a),
         None => {
-            local.note = Some("Key the cash amount first, then press F8.".into());
+            local.note = Some(if state.buffer().is_empty() {
+                "Nothing is left to pay. Press Enter to settle.".to_owned()
+            } else {
+                format!(
+                    "Key the {} amount as a plain number first.",
+                    method_name(code).to_lowercase()
+                )
+            });
             Ok(())
         }
     }
@@ -736,31 +803,78 @@ fn rail(ctx: &Context, state: &LaneState, _local: &Local) -> Option<Action> {
 
             amount_tile(
                 ui,
-                "Tendered · 01 Cash",
+                "Tendered",
                 tendered,
                 TOKENS.surface,
                 TOKENS.ink,
                 TOKENS.ink_mute,
             );
+            tender_lines(ui, state);
             if settled.is_none() {
-                let change = tendered
-                    .checked_sub(due)
-                    .filter(|m| *m > Money::zero())
-                    .unwrap_or(Money::zero());
-                amount_tile(
-                    ui,
-                    "Change",
-                    change,
-                    TOKENS.surface,
-                    TOKENS.ink,
-                    TOKENS.ink_mute,
-                );
+                balance_tile(ui, state, due);
             }
 
             scan_field(ui, state);
             tapped = keys(ui, state);
         });
     tapped
+}
+
+/// One line per tender taken, each with its RRA code, so a split is visible.
+fn tender_lines(ui: &mut Ui, state: &LaneState) {
+    let entries = state.tenders().entries();
+    if entries.is_empty() {
+        return;
+    }
+    tile(ui, TOKENS.surface, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        for e in entries {
+            ui.horizontal(|ui| {
+                ui.label(text(e.pmt_ty_cd.wire(), mono_bold(14.0), TOKENS.accent));
+                ui.label(text(
+                    method_name(e.pmt_ty_cd),
+                    sans_semibold(14.0),
+                    TOKENS.ink,
+                ));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(text(fmt::rwf(e.amount), mono_bold(14.0), TOKENS.ink));
+                });
+            });
+        }
+    });
+}
+
+/// Change, or what is still owed, before settlement. Asks `till-core` rather
+/// than subtracting: change is capped by the cash handed over, so a card
+/// overpayment owes none, and the cashier is told so instead of being shown
+/// a change figure the till will refuse to settle on.
+fn balance_tile(ui: &mut Ui, state: &LaneState, due: Money) {
+    match state.tenders().settle(due) {
+        Ok(s) => amount_tile(
+            ui,
+            "Change",
+            s.change,
+            TOKENS.surface,
+            TOKENS.ink,
+            TOKENS.ink_mute,
+        ),
+        Err(TenderError::Insufficient { due, taken }) => amount_tile(
+            ui,
+            "Still to pay",
+            due.checked_sub(taken).unwrap_or(due),
+            TOKENS.surface,
+            TOKENS.ink,
+            TOKENS.ink_mute,
+        ),
+        Err(TenderError::OverTenderOnNonCash) => tile(ui, TOKENS.surface, |ui| {
+            ui.label(text(
+                "NO CHANGE ON NON-CASH. The payment is more than is due and cash received does not cover the difference.",
+                sans_semibold(14.0),
+                TOKENS.danger,
+            ));
+        }),
+        Err(_) => {}
+    }
 }
 
 fn band_table(ui: &mut Ui, t: &till_core::BasketTotals) {
@@ -838,6 +952,18 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         .iter()
         .map(|(_, k, n, a)| (*k, *n, *a, false, matches!(a, Action::NotBuilt(_))))
         .collect();
+    // Cash already has F8; its cap carries the Ctrl+1 alias too.
+    for (code, _, _, cap) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
+        let label: &'static str = match code {
+            PmtTyCd::Credit => "Ctrl 2",
+            PmtTyCd::CashCredit => "Ctrl 3",
+            PmtTyCd::BankCheck => "Ctrl 4",
+            PmtTyCd::Card => "Ctrl 5",
+            PmtTyCd::MobileMoney => "Ctrl 6",
+            _ => "Ctrl 7",
+        };
+        all.push((label, *cap, Action::Tender(*code), false, false));
+    }
     all.push((enter.0, enter.1, Action::Enter, enter.2, false));
 
     let cols = 4;
@@ -1056,6 +1182,24 @@ mod tests {
         vec![key_event(key), up]
     }
 
+    /// Ctrl+key, press then release.
+    fn tap_ctrl(key: Key) -> Vec<Event> {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: ctrl,
+            })
+            .collect()
+    }
+
     fn type_text(s: &str) -> Vec<Event> {
         vec![Event::Text(s.to_owned())]
     }
@@ -1100,8 +1244,8 @@ mod tests {
             }
         }
 
-        /// One frame with these events.
-        fn frame(&mut self, events: Vec<Event>) {
+        /// One frame with these events; returns every string it painted.
+        fn frame(&mut self, events: Vec<Event>) -> String {
             let _g = self.rt.enter();
             let input = RawInput {
                 events,
@@ -1112,7 +1256,36 @@ mod tests {
                 ..Default::default()
             };
             let (state, devices) = (&mut self.state, &mut self.devices);
-            let _ = self.ctx.run(input, |ctx| lane(ctx, state, devices));
+            let out = self.ctx.run(input, |ctx| lane(ctx, state, devices));
+            out.shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        /// Scans these barcodes, one Enter each.
+        fn scan(&mut self, codes: &[&str]) {
+            for c in codes {
+                self.frame(type_text(c));
+                self.frame(tap(Key::Enter));
+            }
+        }
+
+        fn due(&self) -> Money {
+            self.state.basket().totals().unwrap().tot_amt
+        }
+
+        fn tenders(&self) -> Vec<(PmtTyCd, String)> {
+            self.state
+                .tenders()
+                .entries()
+                .iter()
+                .map(|e| (e.pmt_ty_cd, e.amount.to_string()))
+                .collect()
         }
     }
 
@@ -1201,6 +1374,175 @@ mod tests {
         r.frame(type_text("2000"));
         r.frame(tap(Key::F8));
         assert_eq!(r.state.tender_total().unwrap().to_string(), "2000.00");
+    }
+
+    /// 7,100 due: two milks, two sugars, a Mutzig and a cola.
+    const BASKET: [&str; 6] = [
+        "5612345000017",
+        "5612345000024",
+        "5612345000031",
+        "5449000000996",
+        "5612345000017",
+        "5612345000024",
+    ];
+
+    #[test]
+    fn each_payment_key_adds_a_tender_under_its_own_rra_code() {
+        let digits = [
+            (Key::Num1, PmtTyCd::Cash),
+            (Key::Num2, PmtTyCd::Credit),
+            (Key::Num3, PmtTyCd::CashCredit),
+            (Key::Num4, PmtTyCd::BankCheck),
+            (Key::Num5, PmtTyCd::Card),
+            (Key::Num6, PmtTyCd::MobileMoney),
+            (Key::Num7, PmtTyCd::Other),
+        ];
+        for (key, code) in digits {
+            let mut r = Rig::new();
+            r.scan(&["5612345000017"]);
+            r.frame(type_text("500"));
+            r.frame(tap_ctrl(key));
+            assert_eq!(r.tenders(), vec![(code, "500.00".to_owned())], "{code:?}");
+            // Nothing keyed: the exact balance, under the same code.
+            r.frame(tap_ctrl(key));
+            assert_eq!(r.tenders()[1], (code, "700.00".to_owned()), "{code:?}");
+        }
+        // F8 is still cash, and the wire codes are the RRA's own.
+        let mut r = Rig::new();
+        r.scan(&["5612345000017"]);
+        r.frame(tap(Key::F8));
+        assert_eq!(r.tenders()[0].0.wire(), "01");
+        assert_eq!(
+            METHODS.map(|(c, ..)| c.wire()),
+            ["01", "02", "03", "04", "05", "06", "07"]
+        );
+    }
+
+    #[test]
+    fn a_digit_without_ctrl_is_still_a_scan_digit() {
+        let mut r = Rig::new();
+        r.scan(&["5612345000017"]);
+        r.frame(type_text("5"));
+        assert_eq!(r.state.buffer(), "5");
+        assert!(r.tenders().is_empty());
+    }
+
+    #[test]
+    fn a_split_tender_across_two_methods_settles_when_the_total_covers_it() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        assert_eq!(r.due().to_string(), "7100.00");
+        r.frame(type_text("5000"));
+        r.frame(tap_ctrl(Key::Num5)); // card
+        // Short: Enter must not settle.
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        r.frame(tap_ctrl(Key::Num1)); // cash, the exact remaining 2,100
+        assert_eq!(
+            r.tenders(),
+            vec![
+                (PmtTyCd::Card, "5000.00".to_owned()),
+                (PmtTyCd::Cash, "2100.00".to_owned())
+            ]
+        );
+        r.frame(tap(Key::Enter));
+        assert_eq!(
+            *r.state.screen(),
+            Screen::Settled {
+                change: Money::zero()
+            }
+        );
+    }
+
+    #[test]
+    fn change_is_capped_by_cash_received_in_a_split_tender() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("8000"));
+        r.frame(tap_ctrl(Key::Num5)); // card 8,000 against 7,100
+        let shown = r.frame(tap(Key::Enter));
+        assert_eq!(
+            *r.state.screen(),
+            Screen::Selling,
+            "card overpay must not settle"
+        );
+        assert!(r.state.last_receipt().is_none());
+        assert!(shown.contains("NO CHANGE ON NON-CASH"), "{shown}");
+        // A token cash tender does not cover 900 of change either.
+        r.frame(type_text("100"));
+        r.frame(tap_ctrl(Key::Num1));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        // Mobile money is non-cash too.
+        let mut m = Rig::new();
+        m.scan(&BASKET);
+        m.frame(type_text("8000"));
+        m.frame(tap_ctrl(Key::Num6));
+        m.frame(tap(Key::Enter));
+        assert_eq!(*m.state.screen(), Screen::Selling);
+        // The cap is not a blanket refusal: cash received can cover change.
+        let mut ok = Rig::new();
+        ok.scan(&["5612345000017"]);
+        ok.frame(type_text("1000"));
+        ok.frame(tap_ctrl(Key::Num5));
+        ok.frame(type_text("500"));
+        ok.frame(tap_ctrl(Key::Num1));
+        ok.frame(tap(Key::Enter));
+        assert_eq!(
+            *ok.state.screen(),
+            Screen::Settled {
+                change: Money::try_from_str("300").unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn the_rail_shows_each_tender_line_with_its_code() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("5000"));
+        r.frame(tap_ctrl(Key::Num5));
+        let shown = r.frame(type_text("1000"));
+        assert!(shown.contains("05") && shown.contains("Card"), "{shown}");
+        assert!(shown.contains(&fmt::rwf(Money::try_from_str("5000").unwrap())));
+        assert!(shown.contains("STILL TO PAY"), "{shown}");
+        r.frame(tap_ctrl(Key::Num6));
+        let shown = r.frame(vec![]);
+        assert!(
+            shown.contains("06") && shown.contains("Mobile money"),
+            "{shown}"
+        );
+        assert!(shown.contains(&fmt::rwf(Money::try_from_str("1000").unwrap())));
+        assert!(shown.contains("STILL TO PAY"));
+        assert!(shown.contains("1,100"), "{shown}");
+    }
+
+    #[test]
+    fn an_opening_float_with_cents_is_not_mistaken_for_a_barcode() {
+        let mut r = Rig::without_shift();
+        r.frame(type_text("10000.50"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        assert_eq!(
+            r.state.shift().unwrap().opening_float.to_string(),
+            "10000.50"
+        );
+    }
+
+    #[test]
+    fn an_eight_digit_entry_is_refused_as_a_barcode() {
+        // EAN-8 is the shortest barcode, and the case the guard exists for.
+        let mut r = Rig::without_shift();
+        r.frame(type_text("96385074"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        assert_eq!(r.state.buffer(), "");
+        let local: Local = r.ctx.data(|d| d.get_temp(local_id())).unwrap();
+        assert!(local.note.unwrap().contains("barcode"));
+        // Seven digits is the longest float accepted.
+        r.frame(type_text("9999999"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
     }
 
     #[test]
