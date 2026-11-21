@@ -34,6 +34,10 @@ pub struct NewSale<'a> {
     /// The till's device serial: with `counter`, which numbering series the
     /// sale draws its invoice number from.
     pub dvc_srl_no: &'a str,
+    /// The shift this sale belongs to. It must be open and on `dvc_srl_no`,
+    /// or `begin_sale` refuses with [`StoreError::NoOpenShift`] before an
+    /// invoice number is allocated.
+    pub shift_id: &'a str,
     pub counter: Counter,
     /// The branch id for the payload. Shared by every lane of a shop.
     pub bhf_id: &'a str,
@@ -96,24 +100,33 @@ impl Store {
 
         let mut tx = self.begin_immediate().await?;
         let written = async {
+            // The shift is checked BEFORE the number is allocated, inside the
+            // same transaction (so a shift cannot close between check and
+            // insert). A refusal spends no number.
+            let open: i64 = sqlx::query_scalar(
+                "select count(*) from shift where id = ? and dvc_srl_no = ? and closed_at is null",
+            )
+            .bind(new.shift_id)
+            .bind(new.dvc_srl_no)
+            .fetch_one(tx.conn())
+            .await?;
+            if open == 0 {
+                return Err(StoreError::NoOpenShift {
+                    dvc_srl_no: new.dvc_srl_no.to_string(),
+                });
+            }
             let invc_no = allocate_on(&mut tx, new.dvc_srl_no, new.counter).await?;
             let conn = tx.conn();
             let id: String = sqlx::query_scalar("select lower(hex(randomblob(16)))")
                 .fetch_one(&mut *conn)
                 .await?;
-            // STOPGAP: the sale joins the device's open shift. A later task
-            // replaces this subselect with an explicit `NewSale.shift_id`
-            // (checked BEFORE the invoice number is allocated, so a refusal
-            // spends none). With no open shift the subselect is NULL and the
-            // NOT NULL constraint refuses the sale.
             sqlx::query(&format!(
                 "insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, \
                  tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, created_at) \
-                 values (?, (select id from shift where dvc_srl_no = ? and closed_at is null), \
-                 ?, ?, ?, ?, 'AwaitingVsdc', ?, ?, ?, ?, ?, {NOW_SQL})"
+                 values (?, ?, ?, ?, ?, ?, 'AwaitingVsdc', ?, ?, ?, ?, ?, {NOW_SQL})"
             ))
             .bind(&id)
-            .bind(new.dvc_srl_no)
+            .bind(new.shift_id)
             .bind(new.dvc_srl_no)
             .bind(new.counter.as_str())
             .bind(new.bhf_id)
@@ -393,7 +406,7 @@ async fn cloud_payload(
     r: &VsdcReceipt,
 ) -> Result<String, StoreError> {
     let head = sqlx::query(
-        "select bhf_id, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, \
+        "select shift_id, bhf_id, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, \
          created_at, confirmed_at from sale where id = ?",
     )
     .bind(&h.id)
@@ -449,6 +462,7 @@ async fn cloud_payload(
 
     Ok(serde_json::to_string(&serde_json::json!({
         "saleId": h.id,
+        "shiftId": head.try_get::<String, _>("shift_id")?,
         "bhfId": head.try_get::<String, _>("bhf_id")?,
         "invcNo": h.invc_no,
         "buyerTin": head.try_get::<Option<String>, _>("buyer_tin")?,
@@ -530,6 +544,7 @@ mod tests {
         fn sale<'a>(&'a self, dvc: &'a str) -> NewSale<'a> {
             NewSale {
                 dvc_srl_no: dvc,
+                shift_id: "sh-test",
                 counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &self.basket,
@@ -544,8 +559,7 @@ mod tests {
         Fixture::new(&[(PmtTyCd::Cash, "2380")])
     }
 
-    /// An in-memory store with an open shift on `DVC`. TEMPORARY: until
-    /// `NewSale` carries a shift id, `begin_sale` joins the device's open shift.
+    /// An in-memory store with an open shift `sh-test` on `DVC`.
     async fn store() -> Store {
         let s = Store::open_in_memory().await.unwrap();
         sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh-test', ?, 'cashier', '2026-11-21T00:00:00Z', '0.00')")
@@ -570,6 +584,70 @@ mod tests {
 
     async fn count(s: &Store, sql: &str) -> i64 {
         sqlx::query_scalar(sql).fetch_one(s.pool()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_cloud_payload_carries_the_shift_id() {
+        // The cloud's Sale.shiftId is non-null: without this it rejects the sale.
+        let s = store().await;
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let payload: String = sqlx::query_scalar("select payload from outbound where sale_id=?")
+            .bind(&h.id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["shiftId"], "sh-test");
+    }
+
+    #[tokio::test]
+    async fn beginning_a_sale_against_a_closed_shift_is_refused() {
+        let s = store().await;
+        sqlx::query("update shift set closed_at = '2026-11-21T01:00:00Z', declared_cash = '0.00'")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let e = s.begin_sale(cash().sale(DVC)).await.unwrap_err();
+        assert!(
+            matches!(&e, StoreError::NoOpenShift { dvc_srl_no } if dvc_srl_no == DVC),
+            "{e:?}"
+        );
+        assert_eq!(count(&s, "select count(*) from sale").await, 0);
+        assert_eq!(
+            count(&s, "select count(*) from invc_seq").await,
+            0,
+            "no number taken"
+        );
+        assert_eq!(s.allocate_invc_no(DVC, Counter::SaleInvc).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_shift_that_does_not_exist_or_is_on_another_device_is_refused_and_takes_no_number() {
+        let s = store().await;
+        let f = cash();
+        let ghost = NewSale {
+            shift_id: "nope",
+            ..f.sale(DVC)
+        };
+        assert!(matches!(
+            s.begin_sale(ghost).await,
+            Err(StoreError::NoOpenShift { .. })
+        ));
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh-other', 'dvc-2', 'c', '2026-11-21T00:00:00Z', '0.00')")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let foreign = NewSale {
+            shift_id: "sh-other",
+            ..f.sale(DVC)
+        };
+        assert!(matches!(
+            s.begin_sale(foreign).await,
+            Err(StoreError::NoOpenShift { .. })
+        ));
+        assert_eq!(count(&s, "select count(*) from invc_seq").await, 0);
+        assert_eq!(count(&s, "select count(*) from sale").await, 0);
     }
 
     #[tokio::test]
@@ -968,6 +1046,7 @@ mod tests {
         let h = s
             .begin_sale(NewSale {
                 dvc_srl_no: DVC,
+                shift_id: "sh-test",
                 counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &basket,
@@ -1006,6 +1085,7 @@ mod tests {
         let r = s
             .begin_sale(NewSale {
                 dvc_srl_no: DVC,
+                shift_id: "sh-test",
                 counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &basket,

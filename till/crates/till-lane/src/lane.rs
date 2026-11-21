@@ -571,10 +571,24 @@ impl LaneState {
         let mut pending = match self.pending.take() {
             Some(p) => p,
             None => {
+                let shift = self
+                    .store
+                    .current_shift(&self.cfg.dvc_srl_no)
+                    .await
+                    .map_err(|e| LaneError::store(StoreOp::BeginSale, e))?
+                    .ok_or_else(|| {
+                        LaneError::store(
+                            StoreOp::BeginSale,
+                            StoreError::NoOpenShift {
+                                dvc_srl_no: self.cfg.dvc_srl_no.clone(),
+                            },
+                        )
+                    })?;
                 let handle = self
                     .store
                     .begin_sale(NewSale {
                         dvc_srl_no: &self.cfg.dvc_srl_no,
+                        shift_id: &shift.id,
                         counter: self.cfg.counter,
                         bhf_id: &self.cfg.bhf_id,
                         basket: &self.basket,
