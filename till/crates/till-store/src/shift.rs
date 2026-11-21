@@ -28,6 +28,12 @@ fn decode(r: Row) -> Result<OpenShift, StoreError> {
     })
 }
 
+/// The one statement `shift_totals` runs. A const so the plan test checks
+/// this exact text and cannot drift from it.
+const TOTALS_SQL: &str = "select s.id, s.state, s.tot_amt, s.tot_tax_amt, t.pmt_ty_cd, t.amount \
+             from sale s left join sale_tender t on t.sale_id = s.id \
+             where s.shift_id = ?";
+
 /// What a shift took: the figures a supervisor reconciles the drawer against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShiftTotals {
@@ -162,14 +168,10 @@ impl Store {
             Option<String>,
             Option<String>,
         );
-        let rows: Vec<Joined> = sqlx::query_as(
-            "select s.id, s.state, s.tot_amt, s.tot_tax_amt, t.pmt_ty_cd, t.amount \
-             from sale s left join sale_tender t on t.sale_id = s.id \
-             where s.shift_id = ?",
-        )
-        .bind(shift_id)
-        .fetch_all(self.pool())
-        .await?;
+        let rows: Vec<Joined> = sqlx::query_as(TOTALS_SQL)
+            .bind(shift_id)
+            .fetch_all(self.pool())
+            .await?;
         let mut seen = std::collections::HashSet::new();
         let (mut sale_count, mut voided_count) = (0u32, 0u32);
         let (mut gross, mut tax, mut change) = (Money::zero(), Money::zero(), Money::zero());
@@ -545,16 +547,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn totals_queries_search_the_sale_shift_index() {
+    async fn totals_query_searches_the_sale_shift_index() {
         let s = Store::open_in_memory().await.unwrap();
-        let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-            "explain query plan select id, state, tot_amt, tot_tax_amt from sale where shift_id = ?",
-        )
-        .bind("x")
-        .fetch_all(s.pool())
-        .await
-        .unwrap();
-        assert!(plan.iter().any(|r| r.3.contains("sale_shift")), "{plan:?}");
+        let plan: Vec<(i64, i64, i64, String)> =
+            sqlx::query_as(&format!("explain query plan {TOTALS_SQL}"))
+                .bind("x")
+                .fetch_all(s.pool())
+                .await
+                .unwrap();
+        assert!(
+            plan.iter()
+                .any(|r| r.3.contains("sale") && r.3.contains("sale_shift")),
+            "{plan:?}"
+        );
     }
 
     #[tokio::test]
