@@ -12,10 +12,21 @@
 //!   never recomputed from a band total: each line's tax is rounded on its own,
 //!   so `18/118` of the band total can differ from that sum by a cent, and the
 //!   figure on paper must equal the figure sent to the RRA.
-//! * **A receipt that cannot be valid is not printed.** [`try_compose`] returns
-//!   an error instead of a receipt with a blank QR, a garbled timestamp or a
-//!   missing refund reference. [`compose`] is the infallible form the brief
-//!   asks for and panics on those same conditions.
+//! * **A receipt that cannot be valid is not printed.** [`compose`] returns an
+//!   error instead of a receipt with a blank QR, a garbled timestamp or a
+//!   missing refund reference. There is deliberately no panicking variant: a
+//!   caller must handle the refusal rather than abort the till mid-sale.
+//!
+//! # Known compliance gaps, deferred out of this slice
+//!
+//! Both need a raster image command the ESC/POS encoder does not have yet, and
+//! certification should meet them as known items:
+//!
+//! * the official RRA logo on every receipt (CIS 7.29);
+//! * the COPY / TRAINING / PROFORMA watermark (CIS 11). The designation is
+//!   printed as a banner and the "THIS IS NOT AN OFFICIAL RECEIPT" notice is
+//!   printed, but the watermark itself is not. The "at least twice bigger than
+//!   the amounts" rule is met by double height.
 
 use rust_decimal::Decimal;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd, TaxType};
@@ -46,6 +57,10 @@ pub struct ReceiptInput<'a> {
     pub tenders: &'a TenderSet,
     pub settled: &'a Settled,
     pub invc_no: i64,
+    /// The lane clock's instant for the CIS block, `yyyymmddhhmmss` like the
+    /// VSDC's. A string so this crate needs no clock type; it is validated and
+    /// rendered exactly as the VSDC timestamp is.
+    pub cis_datetime: &'a str,
     pub vsdc: &'a VsdcReceipt,
 }
 
@@ -81,18 +96,8 @@ pub fn dash_every_four(s: &str) -> String {
         .join("-")
 }
 
-/// The receipt as printer bytes; panics where [`try_compose`] errs. A till that
-/// reaches this with an invalid VSDC response has a bug upstream, and printing
-/// anything would be worse than stopping.
-pub fn compose(input: ReceiptInput<'_>) -> Vec<u8> {
-    match try_compose(input) {
-        Ok(bytes) => bytes,
-        Err(e) => panic!("refusing to print an invalid receipt: {e}"),
-    }
-}
-
 /// Composes the receipt, or says why it cannot be a valid one.
-pub fn try_compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
+pub fn compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
     let ReceiptInput {
         shop_name,
         shop_address,
@@ -105,6 +110,7 @@ pub fn try_compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
         tenders,
         settled,
         invc_no,
+        cis_datetime,
         vsdc,
     } = input;
 
@@ -118,6 +124,7 @@ pub fn try_compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
         });
     }
     let stamp = Stamp::parse(&vsdc.vsdc_rcpt_pbct_date)?;
+    let cis_stamp = Stamp::parse(cis_datetime)?;
     let label = format!("{}{}", sales_ty.wire(), rcpt_ty.wire());
 
     // Training and proforma receipts carry no digital signature (CIS sections
@@ -257,6 +264,10 @@ pub fn try_compose(input: ReceiptInput<'_>) -> Result<Vec<u8>, ReceiptError> {
     // The CIS's own numbering and the machine registration code.
     e = e
         .line(&pair("RECEIPT NUMBER:", &invc_no.to_string()))
+        .line(&pair(
+            &format!("DATE: {}", cis_stamp.date_printed()),
+            &format!("TIME: {}", cis_stamp.time_printed()),
+        ))
         .line(&pair("MRC:", &clean(mrc)))
         .line(&rule())
         .align(Align::Centre)
@@ -501,12 +512,13 @@ mod tests {
                 tenders: &self.tenders,
                 settled: &self.settled,
                 invc_no: 152,
+                cis_datetime: "20120525110932",
                 vsdc: &self.vsdc,
             }
         }
 
         fn normal(&self) -> Vec<u8> {
-            compose(self.input(SalesTyCd::Normal, RcptTyCd::Sale))
+            compose(self.input(SalesTyCd::Normal, RcptTyCd::Sale)).unwrap()
         }
     }
 
@@ -606,6 +618,8 @@ mod tests {
             "TE68-SLA2-34J5-EAV3-N569-88LJ-Q7",
             "Receipt Signature:",
             "V249-J39C-FJ48-HE2W",
+            "DATE: 25/5/2012",
+            "TIME: 11:09:32",
             "MRC:",
             "AAACC123456",
             "TIN: 123456789",
@@ -667,7 +681,7 @@ mod tests {
             (SalesTyCd::Training, "TRAINING", "TS"),
             (SalesTyCd::Proforma, "PROFORMA", "PS"),
         ] {
-            let bytes = compose(f.input(ty, RcptTyCd::Sale));
+            let bytes = compose(f.input(ty, RcptTyCd::Sale)).unwrap();
             let t = text(&bytes);
             assert!(t.contains(banner), "{banner}");
             assert!(t.contains("THIS IS NOT AN OFFICIAL RECEIPT"));
@@ -690,10 +704,10 @@ mod tests {
     fn training_and_proforma_carry_no_signature_or_qr_but_copy_does() {
         let f = mixed();
         for ty in [SalesTyCd::Training, SalesTyCd::Proforma] {
-            let (t, qrs) = decode(&compose(f.input(ty, RcptTyCd::Sale)));
+            let (t, qrs) = decode(&compose(f.input(ty, RcptTyCd::Sale)).unwrap());
             assert!(qrs.is_empty() && !t.contains("Internal Data:"));
         }
-        let (t, qrs) = decode(&compose(f.input(SalesTyCd::Copy, RcptTyCd::Sale)));
+        let (t, qrs) = decode(&compose(f.input(SalesTyCd::Copy, RcptTyCd::Sale)).unwrap());
         assert_eq!(qrs.len(), 1);
         assert!(t.contains("Receipt Signature:"));
     }
@@ -712,7 +726,7 @@ mod tests {
             let mut f = mixed();
             edit(&mut f.vsdc);
             assert_eq!(
-                try_compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
+                compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
                 Err(ReceiptError::BadQrField(field))
             );
         }
@@ -725,7 +739,7 @@ mod tests {
             f.vsdc.vsdc_rcpt_pbct_date = bad.into();
             assert!(
                 matches!(
-                    try_compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
+                    compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
                     Err(ReceiptError::BadTimestamp(_))
                 ),
                 "{bad:?}"
@@ -734,10 +748,18 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_cis_datetime_is_refused() {
+        let f = mixed();
+        let mut input = f.input(SalesTyCd::Normal, RcptTyCd::Sale);
+        input.cis_datetime = "nonsense";
+        assert!(matches!(compose(input), Err(ReceiptError::BadTimestamp(_))));
+    }
+
+    #[test]
     fn a_refund_is_refused_until_it_can_name_the_receipt_it_refunds() {
         let f = mixed();
         assert_eq!(
-            try_compose(f.input(SalesTyCd::Normal, RcptTyCd::Refund)),
+            compose(f.input(SalesTyCd::Normal, RcptTyCd::Refund)),
             Err(ReceiptError::RefundReferenceMissing)
         );
     }
@@ -747,7 +769,7 @@ mod tests {
         let mut f = mixed();
         f.lines.pop();
         assert!(matches!(
-            try_compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
+            compose(f.input(SalesTyCd::Normal, RcptTyCd::Sale)),
             Err(ReceiptError::ItemCountMismatch { .. })
         ));
     }
@@ -761,7 +783,7 @@ mod tests {
     #[test]
     fn printer_state_is_reset_immediately_before_the_cut() {
         for ty in [SalesTyCd::Normal, SalesTyCd::Proforma] {
-            let b = compose(mixed().input(ty, RcptTyCd::Sale));
+            let b = compose(mixed().input(ty, RcptTyCd::Sale)).unwrap();
             let tail = [
                 &[0x1B, 0x45, 0x00][..], // bold off
                 &[0x1D, 0x21, 0x00],     // size normal
