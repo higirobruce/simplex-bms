@@ -15,7 +15,9 @@
 //! crosses between them is [`Money::checked_times_qty`].
 
 pub mod codes;
+pub mod line;
 pub mod money;
 pub mod tax;
 
+pub use line::{BasketLine, LineAmounts, LineDiscount, LineError};
 pub use money::{Money, MoneyError, Qty, round_half_up};
