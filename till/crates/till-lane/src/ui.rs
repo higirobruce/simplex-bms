@@ -982,6 +982,10 @@ mod tests {
             let state = rt.block_on(async {
                 let store = Store::open_in_memory().await.unwrap();
                 store.sync_catalogue(&demo::products()).await.unwrap();
+                store
+                    .open_shift(&demo::config().dvc_srl_no, "cashier", Money::zero())
+                    .await
+                    .unwrap();
                 LaneState::new(store, demo::config()).await.unwrap()
             });
             let ctx = Context::default();

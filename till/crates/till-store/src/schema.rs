@@ -102,6 +102,15 @@ pub enum StoreError {
     /// schema, and guessing between them would price the wrong goods.
     #[error("PLU {plu} belongs to more than one cached product")]
     AmbiguousPlu { plu: String },
+    /// This device already has an open shift; close it before opening another.
+    #[error("device {dvc_srl_no} already has an open shift")]
+    ShiftAlreadyOpen { dvc_srl_no: String },
+    /// A sale needs an open shift on the device and there is none.
+    #[error("device {dvc_srl_no} has no open shift")]
+    NoOpenShift { dvc_srl_no: String },
+    /// An opening float below zero is a data-entry error, not a float.
+    #[error("the opening float cannot be negative")]
+    NegativeOpeningFloat,
     #[error("cloud payload could not be serialised: {0}")]
     Payload(#[from] serde_json::Error),
 }

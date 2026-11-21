@@ -101,6 +101,11 @@ impl Store {
             let id: String = sqlx::query_scalar("select lower(hex(randomblob(16)))")
                 .fetch_one(&mut *conn)
                 .await?;
+            // STOPGAP: the sale joins the device's open shift. A later task
+            // replaces this subselect with an explicit `NewSale.shift_id`
+            // (checked BEFORE the invoice number is allocated, so a refusal
+            // spends none). With no open shift the subselect is NULL and the
+            // NOT NULL constraint refuses the sale.
             sqlx::query(&format!(
                 "insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, \
                  tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, created_at) \

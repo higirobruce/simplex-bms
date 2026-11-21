@@ -994,6 +994,11 @@ mod tests {
     async fn lane_with(products: &[CachedProduct], embedded: EmbeddedMode) -> LaneState {
         let store = Store::open_in_memory().await.unwrap();
         store.sync_catalogue(products).await.unwrap();
+        // every sale belongs to an open shift
+        store
+            .open_shift("DVC1", "cashier", Money::zero())
+            .await
+            .unwrap();
         LaneState::new(
             store,
             LaneConfig {

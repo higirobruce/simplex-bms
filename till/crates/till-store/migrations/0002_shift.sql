@@ -15,8 +15,12 @@ CREATE TABLE shift (
     opening_float  TEXT NOT NULL,
     declared_cash  TEXT
 );
--- "Is there an open shift on this device?" must not scan shift history.
-CREATE INDEX shift_open ON shift (dvc_srl_no) WHERE closed_at IS NULL;
+-- At most one open shift per device (two lanes trade at once, each on its own
+-- device, so the constraint is per device, not global). An application check
+-- alone can be passed by two racing connections; this index is what makes it
+-- true. It also answers "is there an open shift on this device?" without
+-- scanning shift history.
+CREATE UNIQUE INDEX shift_one_open_per_device ON shift (dvc_srl_no) WHERE closed_at IS NULL;
 
 -- Rows that predate shifts need a shift to belong to. Created ONLY when sales
 -- exist: an empty database must not gain a phantom closed shift.

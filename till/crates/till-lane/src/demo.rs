@@ -160,6 +160,10 @@ mod tests {
         rt.block_on(async {
             let store = Store::open_in_memory().await.unwrap();
             store.sync_catalogue(&products()).await.unwrap();
+            store
+                .open_shift(&config().dvc_srl_no, "cashier", Money::zero())
+                .await
+                .unwrap();
             let mut lane = LaneState::new(store, config()).await.unwrap();
             let mut codes: Vec<String> = products()
                 .iter()

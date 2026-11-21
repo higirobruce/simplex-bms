@@ -64,6 +64,12 @@ async fn start(demo: bool) -> Result<LaneApp, String> {
         .sync_catalogue(&demo::products())
         .await
         .map_err(|e| format!("The demo catalogue could not be loaded ({e})."))?;
+    // Until the shift screens exist, the demo opens a shift itself: a sale
+    // cannot be recorded without one.
+    store
+        .open_shift(&demo::config().dvc_srl_no, "demo", till_core::Money::zero())
+        .await
+        .map_err(|e| format!("The demo shift could not be opened ({e})."))?;
     let state = LaneState::new(store, demo::config())
         .await
         .map_err(|e| e.to_string())?;
