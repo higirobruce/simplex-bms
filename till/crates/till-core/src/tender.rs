@@ -23,6 +23,9 @@ pub enum TenderError {
     /// money the till never received, not change.
     #[error("overpayment cannot be returned as change against a non-cash tender")]
     OverTenderOnNonCash,
+    /// A negative amount due is a refund, which is not a settlement.
+    #[error("amount due {0} is negative; a refund is not settled as a sale")]
+    NegativeDue(Money),
     /// The 12-digit bound on [`Money`] was exceeded while summing.
     #[error("tender total exceeds the supported range")]
     OutOfRange,
@@ -55,12 +58,11 @@ impl TenderSet {
         &self.0
     }
 
-    /// Sum of every entry, as the brief's signature requires. An empty set is
-    /// zero, and so, deliberately, is a sum past the 12-digit bound: never a
-    /// wrapped or clamped figure. Nothing should decide money from this
-    /// alone; [`TenderSet::settle`] reports the overflow as `OutOfRange`.
-    pub fn total(&self) -> Money {
-        self.checked_total().unwrap_or_else(Money::zero)
+    /// Sum of every entry. `None` if the sum passes the 12-digit bound, so an
+    /// unrepresentable total is never mistaken for a plausible one. An empty
+    /// set sums to zero.
+    pub fn total(&self) -> Option<Money> {
+        self.checked_total()
     }
 
     fn checked_total(&self) -> Option<Money> {
@@ -72,7 +74,7 @@ impl TenderSet {
     /// Settles a basket whose amount due is `due` (from `BasketTotals::tot_amt`).
     ///
     /// Checks run in a fixed order so the same input always gives the same
-    /// error: empty, non-positive entry, out-of-range sum, shortfall, then
+    /// error: empty, non-positive entry, negative due, out-of-range sum, shortfall, then
     /// change against non-cash.
     pub fn settle(&self, due: Money) -> Result<Settled, TenderError> {
         if self.0.is_empty() {
@@ -80,6 +82,9 @@ impl TenderSet {
         }
         if self.0.iter().any(|e| e.amount <= Money::zero()) {
             return Err(TenderError::NonPositiveAmount);
+        }
+        if due < Money::zero() {
+            return Err(TenderError::NegativeDue(due));
         }
         let taken = self.checked_total().ok_or(TenderError::OutOfRange)?;
         if taken < due {
@@ -99,26 +104,40 @@ impl TenderSet {
                 return Err(TenderError::OverTenderOnNonCash);
             }
         }
-        let header_pmt_ty_cd = self.header_code().ok_or(TenderError::Empty)?;
+        let header_pmt_ty_cd = self.header_code()?.ok_or(TenderError::Empty)?;
         Ok(Settled {
             change,
             header_pmt_ty_cd,
         })
     }
 
-    /// The single code RRA's header can carry: the largest entry's, ties to
-    /// the lower code number. Ordering by (amount descending, wire code
-    /// ascending) is total, so equal amounts, equal codes and a single entry
-    /// all resolve the same way every time.
-    fn header_code(&self) -> Option<PmtTyCd> {
-        self.0
-            .iter()
-            .min_by(|a, b| {
-                b.amount
-                    .cmp(&a.amount)
-                    .then_with(|| a.pmt_ty_cd.wire().cmp(b.pmt_ty_cd.wire()))
-            })
-            .map(|e| e.pmt_ty_cd)
+    /// The single code RRA's header can carry: how the sale was mostly paid.
+    /// Amounts are summed per code first, then the largest total wins, ties to
+    /// the lower wire code. Choosing the largest single entry instead would
+    /// let Cash 600 + Cash 600 + Card 700 report Card although 1200 was cash.
+    /// (total desc, wire code asc) is a total order over distinct codes, so
+    /// the result never depends on entry order.
+    fn header_code(&self) -> Result<Option<PmtTyCd>, TenderError> {
+        let mut best: Option<(PmtTyCd, Money)> = None;
+        for &code in PmtTyCd::ALL.iter() {
+            let sum = self
+                .0
+                .iter()
+                .filter(|e| e.pmt_ty_cd == code)
+                .try_fold(Money::zero(), |acc, e| acc.checked_add(e.amount))
+                .ok_or(TenderError::OutOfRange)?;
+            if sum == Money::zero() {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((bc, bs)) => sum > bs || (sum == bs && code.wire() < bc.wire()),
+            };
+            if better {
+                best = Some((code, sum));
+            }
+        }
+        Ok(best.map(|(c, _)| c))
     }
 }
 
@@ -258,6 +277,45 @@ mod tests {
     #[test]
     fn total_sums_entries() {
         let t = set(&[e(PmtTyCd::Cash, "1000"), e(PmtTyCd::Card, "1380")]);
-        assert_eq!(t.total().to_string(), "2380.00");
+        assert_eq!(t.total().unwrap().to_string(), "2380.00");
+    }
+    #[test]
+    fn total_is_none_past_the_bound() {
+        let big = "9999999999.99";
+        let t = set(&[e(PmtTyCd::Cash, big), e(PmtTyCd::Card, big)]);
+        assert_eq!(t.total(), None);
+        assert_eq!(TenderSet::default().total(), Some(Money::zero()));
+    }
+    #[test]
+    fn the_header_is_chosen_on_per_code_totals_not_single_entries() {
+        // Per-entry selection would say Card (700 is the biggest keystroke);
+        // the customer actually paid 1200 in cash, so the header is 01.
+        let s = set(&[
+            e(PmtTyCd::Cash, "600"),
+            e(PmtTyCd::Cash, "600"),
+            e(PmtTyCd::Card, "700"),
+        ])
+        .settle(m("1900"))
+        .unwrap();
+        assert_eq!(s.header_pmt_ty_cd, PmtTyCd::Cash);
+        assert_eq!(s.header_pmt_ty_cd.wire(), "01");
+    }
+    #[test]
+    fn per_code_totals_tie_to_the_lower_code() {
+        let s = set(&[
+            e(PmtTyCd::Card, "500"),
+            e(PmtTyCd::Card, "500"),
+            e(PmtTyCd::Cash, "1000"),
+        ])
+        .settle(m("2000"))
+        .unwrap();
+        assert_eq!(s.header_pmt_ty_cd, PmtTyCd::Cash);
+    }
+    #[test]
+    fn a_negative_due_is_refused() {
+        assert!(matches!(
+            set(&[e(PmtTyCd::Cash, "100")]).settle(m("-1")),
+            Err(TenderError::NegativeDue(_))
+        ));
     }
 }
