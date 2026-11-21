@@ -77,6 +77,13 @@ impl TenderSet {
         Ok(())
     }
 
+    /// The entries in the order they were taken, read-only. The store writes
+    /// one `sale_tender` row per entry; the list stays private so every entry
+    /// in a set still arrives through [`TenderSet::push`]'s checks.
+    pub fn entries(&self) -> &[TenderEntry] {
+        &self.0
+    }
+
     /// Sum of every entry. `None` if the sum passes the 12-digit bound, so an
     /// unrepresentable total is never mistaken for a plausible one. An empty
     /// set sums to zero.

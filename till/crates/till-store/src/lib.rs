@@ -6,8 +6,10 @@
 //! is used (the `macros` feature is deliberately not enabled), so a build
 //! never needs a live database.
 
+pub mod sale;
 pub mod schema;
 pub mod sequence;
 
+pub use sale::{NewSale, SaleHandle, VsdcReceipt};
 pub use schema::{Store, StoreError, decode_money, decode_pmt_ty, decode_qty, decode_tax_ty};
 pub use sequence::PendingSale;

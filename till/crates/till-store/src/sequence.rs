@@ -45,8 +45,6 @@ impl ImmediateTx {
         Ok(self.0.commit().await?)
     }
 
-    // Used by tests now and by the sale transaction (Task 12) next.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn rollback(self) -> Result<(), StoreError> {
         Ok(self.0.rollback().await?)
     }

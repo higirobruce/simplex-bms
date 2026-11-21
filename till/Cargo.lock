@@ -1394,6 +1394,7 @@ dependencies = [
 name = "till-store"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "sqlx",
  "thiserror",
  "till-core",

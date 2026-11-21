@@ -28,7 +28,28 @@ pub struct CodeError {
 
 /// Declares a code table: the enum, `wire`, `ALL` and `FromStr` all come from
 /// the one variant list, so they cannot drift apart.
+///
+/// A table that also crosses the cloud boundary lists a second label per
+/// variant (`Variant => "01" / "CASH"`); that form expands to the plain one and
+/// adds `cloud_label`, so both representations come from one variant list.
 macro_rules! code_table {
+    ($(#[$meta:meta])* $name:ident, $table:literal, { $($(#[$vmeta:meta])* $variant:ident => $code:literal / $cloud:literal),+ $(,)? }) => {
+        code_table! {
+            $(#[$meta])* $name, $table, { $($(#[$vmeta])* $variant => $code),+ }
+        }
+
+        impl $name {
+            /// The label the CLOUD's Postgres enum uses for this variant. It
+            /// is not the RRA code and is deliberately not what `Serialize`
+            /// emits: the fiscal side owns the derive, and a payload bound for
+            /// the cloud must name this method explicitly.
+            pub fn cloud_label(self) -> &'static str {
+                match self {
+                    $($name::$variant => $cloud),+
+                }
+            }
+        }
+    };
     ($(#[$meta:meta])* $name:ident, $table:literal, { $($(#[$vmeta:meta])* $variant:ident => $code:literal),+ $(,)? }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -81,13 +102,13 @@ impl TaxType {
 code_table! {
     /// Payment method (VSDC 4.10).
     PmtTyCd, "payment method", {
-        Cash => "01",
-        Credit => "02",
-        CashCredit => "03",
-        BankCheck => "04",
-        Card => "05",
-        MobileMoney => "06",
-        Other => "07",
+        Cash => "01" / "CASH",
+        Credit => "02" / "CREDIT",
+        CashCredit => "03" / "CASH_CREDIT",
+        BankCheck => "04" / "BANK_CHECK",
+        Card => "05" / "CARD",
+        MobileMoney => "06" / "MOBILE_MONEY",
+        Other => "07" / "OTHER",
     }
 }
 
@@ -236,6 +257,29 @@ mod tests {
         check(SalesTyCd::ALL, SalesTyCd::wire);
         check(RcptTyCd::ALL, RcptTyCd::wire);
         check(SalesSttsCd::ALL, SalesSttsCd::wire);
+    }
+
+    #[test]
+    fn cloud_labels_are_the_postgres_enum_labels_and_not_the_rra_codes() {
+        let want = [
+            "CASH",
+            "CREDIT",
+            "CASH_CREDIT",
+            "BANK_CHECK",
+            "CARD",
+            "MOBILE_MONEY",
+            "OTHER",
+        ];
+        assert_eq!(PmtTyCd::ALL.len(), want.len());
+        for (v, label) in PmtTyCd::ALL.iter().zip(want) {
+            assert_eq!(v.cloud_label(), label);
+            assert_ne!(v.cloud_label(), v.wire());
+            // Serialize stays on the fiscal code
+            assert_eq!(
+                serde_json::to_string(v).unwrap(),
+                format!("\"{}\"", v.wire())
+            );
+        }
     }
 
     #[test]

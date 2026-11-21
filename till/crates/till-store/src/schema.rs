@@ -29,6 +29,30 @@ pub enum StoreError {
     /// sale with the same number, not allocate another.
     #[error("invoice number {invc_no} is still awaiting the VSDC; resolve it first")]
     SequenceBlocked { invc_no: i64 },
+    /// A sale with no lines is a programming error, not a sale. SQLite has no
+    /// deferred constraints, so the schema cannot enforce "a sale has lines";
+    /// the sale transaction does.
+    #[error("a sale must have at least one line")]
+    EmptySale,
+    #[error(transparent)]
+    Basket(#[from] till_core::BasketError),
+    #[error(transparent)]
+    Tender(#[from] till_core::TenderError),
+    /// The `Settled` handed to `begin_sale` is not what the tenders settle to
+    /// for this basket, so the header payment type or change would be wrong.
+    #[error("the settlement does not match the basket and tenders")]
+    SettlementMismatch,
+    #[error("no sale with id {id} and invoice number {invc_no}")]
+    SaleNotFound { id: String, invc_no: i64 },
+    /// The operation needs an `AwaitingVsdc` sale and this one is `state`.
+    #[error("sale {id} is {state}, not AwaitingVsdc")]
+    SaleNotAwaiting { id: String, state: String },
+    /// The sale is already `Confirmed` with a DIFFERENT receipt. Two receipts
+    /// for one invoice number is never acceptable; nothing is overwritten.
+    #[error("sale {id} is already confirmed with a different receipt")]
+    ReceiptConflict { id: String },
+    #[error("cloud payload could not be serialised: {0}")]
+    Payload(#[from] serde_json::Error),
 }
 
 /// The migrations, compiled into the binary so a till needs no files beside
