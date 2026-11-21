@@ -275,9 +275,15 @@ mod tests {
     const SALE: Counter = Counter::SaleInvc;
 
     async fn insert_awaiting(s: &Store, id: &str, dvc: &str, counter: Counter, no: i64) {
+        sqlx::query("insert or ignore into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh-' || ?1, ?1, 'cashier', ?2, '0.00')")
+            .bind(dvc)
+            .bind(NOW)
+            .execute(s.pool())
+            .await
+            .unwrap();
         sqlx::query(
-            "insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
-             values (?, ?, ?, '00', ?, 'AwaitingVsdc','0','0','0','01',?)",
+            "insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
+             values (?1, 'sh-' || ?2, ?2, ?3, '00', ?4, 'AwaitingVsdc','0','0','0','01',?5)",
         )
         .bind(id)
         .bind(dvc)

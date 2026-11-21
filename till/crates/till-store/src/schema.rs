@@ -141,13 +141,22 @@ impl From<sqlx::Error> for StoreError {
 /// `include_str!`; a test checks it covers every file in `migrations/`.
 fn migrator() -> Migrator {
     let mut m = Migrator::DEFAULT;
-    m.migrations = Cow::Owned(vec![Migration::new(
-        1,
-        Cow::Borrowed("init"),
-        MigrationType::Simple,
-        Cow::Borrowed(include_str!("../migrations/0001_init.sql")),
-        false,
-    )]);
+    m.migrations = Cow::Owned(vec![
+        Migration::new(
+            1,
+            Cow::Borrowed("init"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0001_init.sql")),
+            false,
+        ),
+        Migration::new(
+            2,
+            Cow::Borrowed("shift"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0002_shift.sql")),
+            false,
+        ),
+    ]);
     m
 }
 
@@ -285,13 +294,25 @@ mod tests {
         .unwrap();
     }
 
+    /// Every sale belongs to a shift; tests share one open shift, `sh1`.
+    async fn seed_shift(s: &Store) {
+        sqlx::query(
+            "insert or ignore into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh1', 'd1', 'cashier', ?, '0.00')",
+        )
+        .bind(NOW)
+        .execute(s.pool())
+        .await
+        .unwrap();
+    }
+
     /// Inserts a sale for a device whose series already has a sequence row.
     /// Every sale here is on branch "00": lanes of one shop share it.
     async fn insert_sale(s: &Store, id: &str, dvc: &str, no: i64) -> Result<(), sqlx::Error> {
         seed_seq(s, dvc).await;
+        seed_shift(s).await;
         sqlx::query(
-            "insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
-             values (?, ?, 'SaleInvc', '00', ?, 'AwaitingVsdc','0','0','0','01',?)",
+            "insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) \
+             values (?, 'sh1', ?, 'SaleInvc', '00', ?, 'AwaitingVsdc','0','0','0','01',?)",
         )
         .bind(id)
         .bind(dvc)
@@ -312,6 +333,7 @@ mod tests {
             "sale_line",
             "sale_tender",
             "outbound",
+            "shift",
         ] {
             let n: i64 = sqlx::query_scalar(
                 "select count(*) from sqlite_master where type='table' and name=?",
@@ -393,14 +415,14 @@ mod tests {
             .execute(s.pool())
             .await
             .unwrap();
-        sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s4','d1','TrainInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
+        sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s4','sh1','d1','TrainInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await.unwrap();
     }
 
     #[tokio::test]
     async fn a_sale_in_a_series_with_no_sequence_row_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
-        let r = sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','d1','SaleInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
+        let r = sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','sh1','d1','SaleInvc','00',1,'AwaitingVsdc','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
         assert!(r.is_err(), "no invc_seq row for the series");
         seed_seq(&s, "d1").await;
@@ -411,7 +433,7 @@ mod tests {
     async fn an_unknown_sale_state_is_refused() {
         let s = Store::open_in_memory().await.unwrap();
         seed_seq(&s, "d1").await; // so the refusal is the CHECK, not the series foreign key
-        let r = sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','d1','SaleInvc','00',1,'Bogus','0','0','0','01',?)")
+        let r = sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s','sh1','d1','SaleInvc','00',1,'Bogus','0','0','0','01',?)")
             .bind(NOW).execute(s.pool()).await;
         assert!(r.is_err());
     }
@@ -536,6 +558,255 @@ mod tests {
         assert_eq!(ms(&s).await, 2000);
         drop(s);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_sale_cannot_exist_without_a_shift() {
+        // Foreign keys are per-connection and default OFF, so first prove this
+        // very connection has them on, then show the refusal is the shift FK
+        // (not the series FK or a CHECK) by making the same insert succeed once
+        // the shift exists.
+        let s = Store::open_in_memory().await.unwrap();
+        let fk: i64 = sqlx::query_scalar("pragma foreign_keys")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(fk, 1);
+        seed_seq(&s, "d1").await;
+        let insert = "insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s', 'ghost', 'd1', 'SaleInvc', '00', 1, 'AwaitingVsdc', '0', '0', '0', '01', ?)";
+        let refused = sqlx::query(insert).bind(NOW).execute(s.pool()).await;
+        let msg = refused.unwrap_err().to_string();
+        assert!(msg.contains("FOREIGN KEY"), "unexpected refusal: {msg}");
+        // NULL is refused too: the column is NOT NULL, not merely a nullable FK.
+        let null = sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values ('s', NULL, 'd1', 'SaleInvc', '00', 1, 'AwaitingVsdc', '0', '0', '0', '01', ?)")
+            .bind(NOW)
+            .execute(s.pool())
+            .await;
+        assert!(null.unwrap_err().to_string().contains("NOT NULL"));
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('ghost', 'd1', 'c', ?, '0.00')")
+            .bind(NOW)
+            .execute(s.pool())
+            .await
+            .unwrap();
+        sqlx::query(insert)
+            .bind(NOW)
+            .execute(s.pool())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_open_shift_has_no_closed_at() {
+        let s = Store::open_in_memory().await.unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('a', 'd1', 'c', ?, '1000.00')")
+            .bind(NOW)
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let (closed, declared, float, ty): (Option<String>, Option<String>, String, String) =
+            sqlx::query_as(
+                "select closed_at, declared_cash, opening_float, typeof(opening_float) from shift where id = 'a'",
+            )
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!((closed, declared), (None, None));
+        assert_eq!((float.as_str(), ty.as_str()), ("1000.00", "text"));
+    }
+
+    /// Migrator limited to the first `n` migrations.
+    fn migrator_upto(n: usize) -> Migrator {
+        let mut m = migrator();
+        m.migrations = Cow::Owned(m.migrations.iter().take(n).cloned().collect());
+        m
+    }
+
+    async fn raw_pool() -> SqlitePool {
+        let opts = SqliteConnectOptions::new()
+            .in_memory(true)
+            .foreign_keys(true);
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .connect_with(opts)
+            .await
+            .unwrap()
+    }
+
+    /// Column name, type, notnull, default, pk of a table.
+    async fn columns(p: &SqlitePool, t: &str) -> Vec<(String, String, i64, Option<String>, i64)> {
+        sqlx::query_as(&format!(
+            "select name, type, \"notnull\", dflt_value, pk from pragma_table_info('{t}') order by name"
+        ))
+        .fetch_all(p)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn migrating_an_empty_database_creates_no_shift() {
+        let p = raw_pool().await;
+        migrator().run(&p).await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from shift")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn migration_0002_keeps_every_sale_and_child_row_and_the_sale_shape() {
+        let p = raw_pool().await;
+        migrator_upto(1).run(&p).await.unwrap();
+        let before = columns(&p, "sale").await;
+        let idx_before: Vec<(String, i64)> = sqlx::query_as(
+            "select name, \"unique\" from pragma_index_list('sale') where origin = 'c' or origin = 'u' order by name",
+        )
+        .fetch_all(&p)
+        .await
+        .unwrap();
+        let sql_before: String =
+            sqlx::query_scalar("select sql from sqlite_master where name='sale_open_state'")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 2)")
+            .execute(&p)
+            .await
+            .unwrap();
+        for (id, n, st) in [("s1", 1, "Confirmed"), ("s2", 2, "AwaitingVsdc")] {
+            sqlx::query("insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, rcpt_no, intrl_data, rcpt_sign, sdc_id, mrc_no, vsdc_rcpt_pbct_date, tot_rcpt_no, created_at, confirmed_at, attempts, last_error) values (?, 'd1', 'SaleInvc', '00', ?, ?, '118.00', '100.00', '18.00', '01', '123456789', 9, 'i', 'r', 'sdc', 'mrc', '20261121103000', 4, '2026-11-20T08:00:00Z', '2026-11-20T08:01:00Z', 3, 'e')")
+                .bind(id).bind(n).bind(st).execute(&p).await.unwrap();
+        }
+        sqlx::query("insert into sale_line (sale_id, item_seq, item_nm, qty, prc, sply_amt, dc_rt, dc_amt, taxbl_amt, tax_amt, tax_ty_cd) values ('s1',1,'x','1','1','1','0','0','1','0','B')").execute(&p).await.unwrap();
+        sqlx::query(
+            "insert into sale_tender (sale_id, seq, pmt_ty_cd, amount) values ('s1',1,'01','1')",
+        )
+        .execute(&p)
+        .await
+        .unwrap();
+        sqlx::query("insert into outbound (kind, sale_id, payload, created_at) values ('sale','s1','{}','2026-11-20T08:01:00Z')").execute(&p).await.unwrap();
+        let old_rows: Vec<(String,)> = sqlx::query_as(
+            "select id || tot_amt || buyer_tin || rcpt_no || intrl_data || rcpt_sign || sdc_id || mrc_no || vsdc_rcpt_pbct_date || tot_rcpt_no || created_at || confirmed_at || attempts || last_error || state || invc_no from sale order by id",
+        ).fetch_all(&p).await.unwrap();
+
+        // outbound's AUTOINCREMENT mark above its max id (rows were deleted)
+        sqlx::query("update sqlite_sequence set seq = 5 where name = 'outbound'")
+            .execute(&p)
+            .await
+            .unwrap();
+        let master_before: Vec<(String, String)> = sqlx::query_as(
+            "select name, sql from sqlite_master where name in ('sale_line','sale_tender','outbound','outbound_unsent','outbound_sale') order by name",
+        ).fetch_all(&p).await.unwrap();
+
+        migrator().run(&p).await.unwrap();
+        let fk: i64 = sqlx::query_scalar("pragma foreign_keys")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+        assert_eq!(fk, 1, "the migration must leave foreign keys on");
+        let seq_after: Vec<(i64,)> =
+            sqlx::query_as("select seq from sqlite_sequence where name = 'outbound'")
+                .fetch_all(&p)
+                .await
+                .unwrap();
+        assert_eq!(seq_after, vec![(5,)], "AUTOINCREMENT high-water mark kept");
+        let master_after: Vec<(String, String)> = sqlx::query_as(
+            "select name, sql from sqlite_master where name in ('sale_line','sale_tender','outbound','outbound_unsent','outbound_sale') order by name",
+        ).fetch_all(&p).await.unwrap();
+        assert_eq!(
+            master_before, master_after,
+            "children are definition-identical"
+        );
+
+        // every row, every value, now on the one synthetic closed shift
+        let new_rows: Vec<(String,)> = sqlx::query_as(
+            "select id || tot_amt || buyer_tin || rcpt_no || intrl_data || rcpt_sign || sdc_id || mrc_no || vsdc_rcpt_pbct_date || tot_rcpt_no || created_at || confirmed_at || attempts || last_error || state || invc_no from sale order by id",
+        ).fetch_all(&p).await.unwrap();
+        assert_eq!(old_rows, new_rows);
+        let shifts: Vec<(String, String, String, String, Option<String>, String)> = sqlx::query_as(
+            "select id, dvc_srl_no, opened_by, opening_float, declared_cash, typeof(closed_at) from shift",
+        ).fetch_all(&p).await.unwrap();
+        assert_eq!(shifts.len(), 1);
+        assert_eq!(shifts[0].2, "migration");
+        assert_eq!(shifts[0].3, "0.00");
+        assert_eq!(shifts[0].5, "text", "the synthetic shift is closed");
+        let on_shift: i64 =
+            sqlx::query_scalar("select count(*) from sale where shift_id = (select id from shift)")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert_eq!(on_shift, 2);
+        for (t, n) in [("sale_line", 1), ("sale_tender", 1), ("outbound", 1)] {
+            let c: i64 = sqlx::query_scalar(&format!("select count(*) from {t}"))
+                .fetch_one(&p)
+                .await
+                .unwrap();
+            assert_eq!(c, n, "{t} rows survive the rebuild");
+        }
+
+        // shape: the old columns are all still there, unchanged, plus shift_id
+        let mut after = columns(&p, "sale").await;
+        let added = after
+            .iter()
+            .position(|c| c.0 == "shift_id")
+            .expect("shift_id");
+        assert_eq!(
+            after.remove(added),
+            ("shift_id".into(), "TEXT".into(), 1, None, 0)
+        );
+        assert_eq!(before, after);
+        // indexes and unique constraints
+        let idx_after: Vec<(String, i64)> = sqlx::query_as(
+            "select name, \"unique\" from pragma_index_list('sale') where origin = 'c' or origin = 'u' order by name",
+        ).fetch_all(&p).await.unwrap();
+        for old in &idx_before {
+            if old.0.starts_with("sqlite_autoindex") {
+                continue; // auto-named; the UNIQUE is checked below
+            }
+            assert!(idx_after.contains(old), "lost index {old:?}");
+        }
+        let sql_after: String =
+            sqlx::query_scalar("select sql from sqlite_master where name='sale_open_state'")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert_eq!(sql_before, sql_after, "partial index definition");
+        let table_sql: String =
+            sqlx::query_scalar("select sql from sqlite_master where name='sale'")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert!(table_sql.contains("UNIQUE (dvc_srl_no, counter, invc_no)"));
+        assert!(table_sql.contains("CHECK (invc_no >= 1)"));
+        assert!(table_sql.contains("'AwaitingVsdc', 'Confirmed', 'Failed', 'Voided'"));
+        // foreign keys: series, shift, and the three children still point at sale
+        let fks: Vec<(String, String)> = sqlx::query_as(
+            "select \"table\", \"from\" from pragma_foreign_key_list('sale') order by \"from\"",
+        )
+        .fetch_all(&p)
+        .await
+        .unwrap();
+        assert!(fks.contains(&("invc_seq".into(), "dvc_srl_no".into())));
+        assert!(fks.contains(&("invc_seq".into(), "counter".into())));
+        assert!(fks.contains(&("shift".into(), "shift_id".into())));
+        for child in ["sale_line", "sale_tender", "outbound"] {
+            let to: Vec<(String,)> = sqlx::query_as(&format!(
+                "select \"table\" from pragma_foreign_key_list('{child}')"
+            ))
+            .fetch_all(&p)
+            .await
+            .unwrap();
+            assert_eq!(to, vec![("sale".to_string(),)]);
+        }
+        let violations: Vec<(String,)> =
+            sqlx::query_as("select \"table\" from pragma_foreign_key_check")
+                .fetch_all(&p)
+                .await
+                .unwrap();
+        assert!(violations.is_empty());
     }
 
     #[test]
