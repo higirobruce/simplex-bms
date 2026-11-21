@@ -10,3 +10,6 @@ rust_decimal.workspace = true
 thiserror.workspace = true
 till-core = { path = "../till-core" }
 till-store = { path = "../till-store" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

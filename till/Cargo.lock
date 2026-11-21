@@ -3616,6 +3616,7 @@ dependencies = [
  "thiserror 2.0.21",
  "till-core",
  "till-store",
+ "tokio",
 ]
 
 [[package]]

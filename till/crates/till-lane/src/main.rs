@@ -23,6 +23,10 @@ mod receipt;
 #[allow(dead_code)]
 mod fiscal;
 
+// Task 7: the sale itself. Task 8+ wires it to the UI.
+#[allow(dead_code)]
+mod lane;
+
 use eframe::egui;
 
 struct LaneApp;
