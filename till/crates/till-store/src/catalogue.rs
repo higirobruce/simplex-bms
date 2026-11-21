@@ -174,6 +174,18 @@ async fn upsert_all(
     conn: &mut SqliteConnection,
     products: &[CachedProduct],
 ) -> Result<SyncReport, StoreError> {
+    // Phase 1: release every barcode the batch's products hold. `barcode` is
+    // UNIQUE and rows are checked one statement at a time, so two products
+    // exchanging barcodes (or a longer rotation) would otherwise collide
+    // mid-batch, and no retry could ever succeed. A collision with a product
+    // OUTSIDE the batch is still refused in phase 2. A later failure rolls
+    // this clear back with everything else.
+    for p in products {
+        sqlx::query("update product set barcode = null where id = ?")
+            .bind(&p.id)
+            .execute(&mut *conn)
+            .await?;
+    }
     let (mut inserted, mut updated) = (0usize, 0usize);
     for p in products {
         let existed: i64 = sqlx::query_scalar("select count(*) from product where id = ?")
@@ -483,6 +495,114 @@ mod tests {
             s.lookup(&Scanned::Plu("4011".into())).await,
             Err(StoreError::AmbiguousPlu { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn two_products_can_exchange_barcodes_in_one_sync() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[
+            prod("a", Some("4006381333931"), None, "100", TaxType::B),
+            prod("b", Some("96385074"), None, "200", TaxType::B),
+        ])
+        .await
+        .unwrap();
+        let r = s
+            .sync_catalogue(&[
+                prod("a", Some("96385074"), None, "100", TaxType::B),
+                prod("b", Some("4006381333931"), None, "200", TaxType::B),
+            ])
+            .await
+            .unwrap();
+        assert_eq!((r.inserted, r.updated), (0, 2));
+        let a = s
+            .lookup(&Scanned::Barcode("96385074".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        let b = s
+            .lookup(&Scanned::Barcode("4006381333931".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((a.id.as_str(), b.id.as_str()), ("a", "b"));
+    }
+
+    #[tokio::test]
+    async fn a_three_way_barcode_rotation_succeeds() {
+        let s = Store::open_in_memory().await.unwrap();
+        let codes = ["4006381333931", "96385074", "5901234123457"];
+        let ids = ["a", "b", "c"];
+        let at = |shift: usize| -> Vec<CachedProduct> {
+            (0..3)
+                .map(|i| prod(ids[i], Some(codes[(i + shift) % 3]), None, "1", TaxType::B))
+                .collect()
+        };
+        s.sync_catalogue(&at(0)).await.unwrap();
+        s.sync_catalogue(&at(1)).await.unwrap();
+        for i in 0..3 {
+            let got = s
+                .lookup(&Scanned::Barcode(codes[(i + 1) % 3].into()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(got.id, ids[i]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_after_the_barcode_clear_restores_the_original_barcodes() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[
+            prod("a", Some("4006381333931"), None, "100", TaxType::B),
+            prod("b", Some("96385074"), None, "200", TaxType::B),
+        ])
+        .await
+        .unwrap();
+        // swap (clears both barcodes first), then an invalid late product:
+        // two products claiming one PLU fails at the end-of-sync check
+        let batch = [
+            prod("a", Some("96385074"), Some("4011"), "999", TaxType::B),
+            prod("b", Some("4006381333931"), Some("4011"), "999", TaxType::B),
+        ];
+        assert!(matches!(
+            s.sync_catalogue(&batch).await,
+            Err(StoreError::AmbiguousPlu { .. })
+        ));
+        let a = s
+            .lookup(&Scanned::Barcode("4006381333931".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        let b = s
+            .lookup(&Scanned::Barcode("96385074".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (a.id.as_str(), a.unit_price.to_string().as_str()),
+            ("a", "100.00")
+        );
+        assert_eq!(
+            (b.id.as_str(), b.unit_price.to_string().as_str()),
+            ("b", "200.00")
+        );
+        let nulls: i64 = sqlx::query_scalar("select count(*) from product where barcode is null")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(nulls, 0);
+    }
+
+    #[tokio::test]
+    async fn a_barcode_held_by_a_product_outside_the_batch_is_still_refused() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[prod("a", Some("4006381333931"), None, "100", TaxType::B)])
+            .await
+            .unwrap();
+        let r = s
+            .sync_catalogue(&[prod("z", Some("4006381333931"), None, "1", TaxType::B)])
+            .await;
+        assert!(matches!(r, Err(StoreError::Sqlx(_))));
     }
 
     #[tokio::test]
