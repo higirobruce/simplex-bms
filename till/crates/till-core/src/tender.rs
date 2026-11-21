@@ -1,8 +1,10 @@
 //! Tender settlement: how a basket is paid for and what change is due.
 //!
-//! Every amount here is whole RWF by the time it arrives (RWF has no
-//! circulating subunit), so change is whole too and nothing in this module
-//! rounds.
+//! RWF has no circulating subunit, so this module refuses fractional amounts
+//! rather than assuming they never arrive: [`TenderSet::push`] rejects a
+//! non-whole tender and [`TenderSet::settle`] rejects a non-whole amount due.
+//! Every figure that gets through is whole, so change is whole too and nothing
+//! here rounds.
 
 use thiserror::Error;
 
@@ -23,6 +25,12 @@ pub enum TenderError {
     /// money the till never received, not change.
     #[error("overpayment cannot be returned as change against a non-cash tender")]
     OverTenderOnNonCash,
+    /// A tender with a fractional part; RWF cannot be handed over in subunits.
+    #[error("tender {0} is not a whole number of francs")]
+    FractionalAmount(Money),
+    /// The amount due has a fractional part; it was not rounded to whole francs.
+    #[error("amount due {0} is not a whole number of francs")]
+    FractionalDue(Money),
     /// A negative amount due is a refund, which is not a settlement.
     #[error("amount due {0} is negative; a refund is not settled as a sale")]
     NegativeDue(Money),
@@ -50,64 +58,78 @@ pub struct Settled {
 pub struct TenderSet(Vec<TenderEntry>);
 
 impl TenderSet {
-    pub fn push(&mut self, entry: TenderEntry) {
+    /// Adds a tender, refusing anything that could not be handed over or
+    /// settled. This is the entry gate: it fails at the keystroke, so a cashier
+    /// sees it when keying rather than at settlement. Because the inner list is
+    /// private, every entry in a set has passed it, and `settle` relies on that:
+    /// every amount is positive and whole.
+    ///
+    /// RWF has no circulating subunit, so a fractional tender (`100.50`) would
+    /// produce change that cannot be paid out.
+    pub fn push(&mut self, entry: TenderEntry) -> Result<(), TenderError> {
+        if entry.amount <= Money::zero() {
+            return Err(TenderError::NonPositiveAmount);
+        }
+        if !is_whole(entry.amount) {
+            return Err(TenderError::FractionalAmount(entry.amount));
+        }
         self.0.push(entry);
-    }
-
-    pub fn entries(&self) -> &[TenderEntry] {
-        &self.0
+        Ok(())
     }
 
     /// Sum of every entry. `None` if the sum passes the 12-digit bound, so an
     /// unrepresentable total is never mistaken for a plausible one. An empty
     /// set sums to zero.
     pub fn total(&self) -> Option<Money> {
-        self.checked_total()
-    }
-
-    fn checked_total(&self) -> Option<Money> {
         self.0
             .iter()
             .try_fold(Money::zero(), |acc, e| acc.checked_add(e.amount))
     }
 
+    /// Sum of the entries carrying `code`. Every entry is positive, so this is
+    /// a part of [`TenderSet::total`] and fits whenever the total does.
+    fn code_total(&self, code: PmtTyCd) -> Option<Money> {
+        self.0
+            .iter()
+            .filter(|e| e.pmt_ty_cd == code)
+            .try_fold(Money::zero(), |acc, e| acc.checked_add(e.amount))
+    }
+
     /// Settles a basket whose amount due is `due` (from `BasketTotals::tot_amt`).
     ///
+    /// `due` is checked rather than trusted: today it is whole and non-negative
+    /// by construction, but a refund path will pass amounts from elsewhere.
+    ///
     /// Checks run in a fixed order so the same input always gives the same
-    /// error: empty, non-positive entry, negative due, out-of-range sum, shortfall, then
-    /// change against non-cash.
+    /// error: empty, negative due, fractional due, out-of-range sum, shortfall,
+    /// then change against non-cash.
     pub fn settle(&self, due: Money) -> Result<Settled, TenderError> {
-        if self.0.is_empty() {
+        let Some(first) = self.0.first() else {
             return Err(TenderError::Empty);
-        }
-        if self.0.iter().any(|e| e.amount <= Money::zero()) {
-            return Err(TenderError::NonPositiveAmount);
-        }
+        };
         if due < Money::zero() {
             return Err(TenderError::NegativeDue(due));
         }
-        let taken = self.checked_total().ok_or(TenderError::OutOfRange)?;
+        if !is_whole(due) {
+            return Err(TenderError::FractionalDue(due));
+        }
+        let taken = self.total().ok_or(TenderError::OutOfRange)?;
         if taken < due {
             return Err(TenderError::Insufficient { due, taken });
         }
         let change = taken.checked_sub(due).ok_or(TenderError::OutOfRange)?;
         if change > Money::zero() {
             // Change is paid out of the drawer, so it can be at most the cash
-            // actually handed over.
-            let cash = self
-                .0
-                .iter()
-                .filter(|e| e.pmt_ty_cd == PmtTyCd::Cash)
-                .try_fold(Money::zero(), |acc, e| acc.checked_add(e.amount))
-                .ok_or(TenderError::OutOfRange)?;
+            // actually handed over. The sum is a part of `taken`, which fit;
+            // the zero fallback is unreachable and fails safe (a refusal).
+            let cash = self.code_total(PmtTyCd::Cash).unwrap_or_else(Money::zero);
             if change > cash {
                 return Err(TenderError::OverTenderOnNonCash);
             }
         }
-        let header_pmt_ty_cd = self.header_code()?.ok_or(TenderError::Empty)?;
         Ok(Settled {
             change,
-            header_pmt_ty_cd,
+            header_pmt_ty_cd: self.header_code(first.pmt_ty_cd),
         })
     }
 
@@ -116,29 +138,27 @@ impl TenderSet {
     /// the lower wire code. Choosing the largest single entry instead would
     /// let Cash 600 + Cash 600 + Card 700 report Card although 1200 was cash.
     /// (total desc, wire code asc) is a total order over distinct codes, so
-    /// the result never depends on entry order.
-    fn header_code(&self) -> Result<Option<PmtTyCd>, TenderError> {
-        let mut best: Option<(PmtTyCd, Money)> = None;
+    /// the result never depends on entry order. `seed` is any code present in
+    /// the set, so the result is always a code that was actually tendered.
+    fn header_code(&self, seed: PmtTyCd) -> PmtTyCd {
+        let mut best = (seed, self.code_total(seed).unwrap_or_else(Money::zero));
         for &code in PmtTyCd::ALL.iter() {
-            let sum = self
-                .0
-                .iter()
-                .filter(|e| e.pmt_ty_cd == code)
-                .try_fold(Money::zero(), |acc, e| acc.checked_add(e.amount))
-                .ok_or(TenderError::OutOfRange)?;
-            if sum == Money::zero() {
+            // Absent codes sum to zero and can never beat a positive seed
+            // total; a sum past the bound is unreachable (see `code_total`).
+            let Some(sum) = self.code_total(code) else {
                 continue;
-            }
-            let better = match best {
-                None => true,
-                Some((bc, bs)) => sum > bs || (sum == bs && code.wire() < bc.wire()),
             };
-            if better {
-                best = Some((code, sum));
+            if sum > best.1 || (sum == best.1 && code.wire() < best.0.wire()) {
+                best = (code, sum);
             }
         }
-        Ok(best.map(|(c, _)| c))
+        best.0
     }
+}
+
+/// True when `m` has no fractional part.
+fn is_whole(m: Money) -> bool {
+    m.amount().fract().is_zero()
 }
 
 #[cfg(test)]
@@ -157,7 +177,7 @@ mod tests {
     fn set(es: &[TenderEntry]) -> TenderSet {
         let mut t = TenderSet::default();
         for x in es {
-            t.push(*x);
+            t.push(*x).unwrap();
         }
         t
     }
@@ -251,14 +271,101 @@ mod tests {
         ));
     }
     #[test]
-    fn a_zero_or_negative_tender_is_refused() {
+    fn a_zero_or_negative_tender_is_refused_at_push() {
+        let mut t = TenderSet::default();
+        for amt in ["0", "-1"] {
+            assert_eq!(
+                t.push(e(PmtTyCd::Cash, amt)),
+                Err(TenderError::NonPositiveAmount)
+            );
+        }
+        assert!(matches!(t.settle(m("1")), Err(TenderError::Empty)));
+    }
+    #[test]
+    fn a_fractional_tender_is_refused_at_push() {
+        let mut t = TenderSet::default();
+        assert_eq!(
+            t.push(e(PmtTyCd::Cash, "100.50")),
+            Err(TenderError::FractionalAmount(m("100.50")))
+        );
+        // a trailing .00 is whole
+        assert!(t.push(e(PmtTyCd::Cash, "100.00")).is_ok());
+    }
+    #[test]
+    fn a_fractional_due_is_refused_at_settle() {
+        let t = set(&[e(PmtTyCd::Cash, "100")]);
+        assert_eq!(
+            t.settle(m("99.50")),
+            Err(TenderError::FractionalDue(m("99.50")))
+        );
+    }
+    #[test]
+    fn whole_tender_and_whole_due_still_settle() {
+        let s = set(&[e(PmtTyCd::Cash, "100.00")]).settle(m("99")).unwrap();
+        assert_eq!(s.change.to_string(), "1.00");
+    }
+    #[test]
+    fn credit_cash_is_not_cash_for_change() {
+        // 03 is a split credit arrangement, not physical money: no change
         assert!(matches!(
-            set(&[e(PmtTyCd::Cash, "0")]).settle(m("1")),
-            Err(TenderError::NonPositiveAmount)
+            set(&[e(PmtTyCd::CashCredit, "5000")]).settle(m("2380")),
+            Err(TenderError::OverTenderOnNonCash)
         ));
+        // and it does not top up the cash available for change
         assert!(matches!(
-            set(&[e(PmtTyCd::Cash, "5000"), e(PmtTyCd::Card, "-1")]).settle(m("1")),
-            Err(TenderError::NonPositiveAmount)
+            set(&[e(PmtTyCd::Cash, "100"), e(PmtTyCd::CashCredit, "5000")]).settle(m("2380")),
+            Err(TenderError::OverTenderOnNonCash)
+        ));
+    }
+    #[test]
+    fn all_seven_codes_in_one_tender_pick_the_largest_total() {
+        let codes = PmtTyCd::ALL;
+        // 100, 200, ... 700: the highest code holds the largest total
+        let es: Vec<TenderEntry> = codes
+            .iter()
+            .enumerate()
+            .map(|(i, c)| TenderEntry {
+                pmt_ty_cd: *c,
+                amount: Money::try_from_minor((i as i64 + 1) * 10_000).unwrap(),
+            })
+            .collect();
+        let s = set(&es).settle(m("2800")).unwrap();
+        assert_eq!(s.header_pmt_ty_cd, PmtTyCd::Other);
+        assert_eq!(s.change, Money::zero());
+        // all seven equal: the lowest code wins
+        let eq: Vec<TenderEntry> = codes
+            .iter()
+            .map(|c| TenderEntry {
+                pmt_ty_cd: *c,
+                amount: m("100"),
+            })
+            .collect();
+        assert_eq!(
+            set(&eq).settle(m("700")).unwrap().header_pmt_ty_cd,
+            PmtTyCd::Cash
+        );
+    }
+    #[test]
+    fn check_order_negative_due_against_other_errors() {
+        // empty beats negative due
+        assert!(matches!(
+            TenderSet::default().settle(m("-1")),
+            Err(TenderError::Empty)
+        ));
+        // negative due beats fractional (-0.5 is both)
+        assert!(matches!(
+            set(&[e(PmtTyCd::Cash, "100")]).settle(m("-0.50")),
+            Err(TenderError::NegativeDue(_))
+        ));
+        // negative due beats an out-of-range sum
+        let t = set(&[
+            e(PmtTyCd::Cash, "9999999999"),
+            e(PmtTyCd::Card, "9999999999"),
+        ]);
+        assert!(t.total().is_none());
+        assert!(matches!(
+            t.settle(m("-1")),
+            Err(TenderError::NegativeDue(_))
         ));
     }
     #[test]
@@ -270,7 +377,7 @@ mod tests {
     }
     #[test]
     fn a_sum_beyond_twelve_digits_is_an_error_not_a_wrap() {
-        let big = "9999999999.99";
+        let big = "9999999999";
         let t = set(&[e(PmtTyCd::Cash, big), e(PmtTyCd::Cash, big)]);
         assert!(matches!(t.settle(m("1")), Err(TenderError::OutOfRange)));
     }
@@ -281,7 +388,7 @@ mod tests {
     }
     #[test]
     fn total_is_none_past_the_bound() {
-        let big = "9999999999.99";
+        let big = "9999999999";
         let t = set(&[e(PmtTyCd::Cash, big), e(PmtTyCd::Card, big)]);
         assert_eq!(t.total(), None);
         assert_eq!(TenderSet::default().total(), Some(Money::zero()));
