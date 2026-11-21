@@ -23,6 +23,11 @@ pub enum StoreError {
     /// A stored column that will not parse back into its `till-core` type.
     #[error("undecodable stored value: {0}")]
     Decode(String),
+    /// A new invoice number was requested while an `AwaitingVsdc` sale still
+    /// holds `invc_no` on that branch (Ruling R38). The caller must retry that
+    /// sale with the same number, not allocate another.
+    #[error("invoice number {invc_no} is still awaiting the VSDC; resolve it first")]
+    SequenceBlocked { invc_no: i64 },
 }
 
 /// The migrations, compiled into the binary so a till needs no files beside

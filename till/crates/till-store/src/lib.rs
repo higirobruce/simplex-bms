@@ -7,5 +7,7 @@
 //! never needs a live database.
 
 pub mod schema;
+pub mod sequence;
 
 pub use schema::{Store, StoreError, decode_money, decode_pmt_ty, decode_qty, decode_tax_ty};
+pub use sequence::PendingSale;
