@@ -19,6 +19,10 @@ mod escpos;
 #[allow(dead_code)]
 mod receipt;
 
+// Task 6: fiscal port trait and simulated VSDC. Phase 3 will write the real client.
+#[allow(dead_code)]
+mod fiscal;
+
 use eframe::egui;
 
 struct LaneApp;
