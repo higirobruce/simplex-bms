@@ -163,6 +163,52 @@ impl Store {
         totals_on(&mut conn, shift_id).await
     }
 
+    /// The device's most recently closed shift, recomposed from the store: the
+    /// same [`ShiftClose`] that `close_shift` returned when it closed, so a Z
+    /// lost to a jam and a restart can still be produced. Nothing is written.
+    /// `None` if the device has never closed a shift.
+    pub async fn last_closed_shift(
+        &self,
+        dvc_srl_no: &str,
+    ) -> Result<Option<ClosedShift>, StoreError> {
+        let mut conn = self.pool().acquire().await?;
+        let row: Option<(String, String)> = sqlx::query_as(
+            "select id, declared_cash from shift \
+             where dvc_srl_no = ? and closed_at is not null and declared_cash is not null \
+             order by closed_at desc, rowid desc limit 1",
+        )
+        .bind(dvc_srl_no)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some((id, declared)) = row else {
+            return Ok(None);
+        };
+        let declared_cash = decode_money("declared_cash", &declared)?;
+        let totals = totals_on(&mut conn, &id).await?;
+        let variance = sub(declared_cash, totals.expected_cash, "variance")?;
+        Ok(Some(ClosedShift {
+            id,
+            close: ShiftClose {
+                totals,
+                declared_cash,
+                variance,
+            },
+        }))
+    }
+
+    /// The MRC the VSDC reported on any confirmed sale of the shift, if there
+    /// is one. A shift with no confirmed sale has none.
+    pub async fn shift_mrc(&self, shift_id: &str) -> Result<Option<String>, StoreError> {
+        let mrc: Option<(String,)> = sqlx::query_as(
+            "select mrc_no from sale where shift_id = ? and mrc_no is not null \
+             order by invc_no desc limit 1",
+        )
+        .bind(shift_id)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(mrc.map(|m| m.0))
+    }
+
     /// Closes a shift: the cashier has counted the drawer and declares
     /// `declared_cash`. The variance is `declared - expected` and is NEVER
     /// refused: a short till (negative) closes like any other, because a till
@@ -274,6 +320,13 @@ async fn queue_shift(conn: &mut SqliteConnection, payload: String) -> Result<(),
     .execute(conn)
     .await?;
     Ok(())
+}
+
+/// A closed shift and what closing it recorded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedShift {
+    pub id: String,
+    pub close: ShiftClose,
 }
 
 /// What closing a shift recorded.
@@ -435,6 +488,27 @@ mod tests {
             rows[0].1.get("closedAt").is_none(),
             "the open row is untouched"
         );
+    }
+
+    #[tokio::test]
+    async fn the_last_closed_shift_is_recomposed_exactly_as_it_closed() {
+        let s = Store::open_in_memory().await.unwrap();
+        assert_eq!(s.last_closed_shift("d1").await.unwrap(), None);
+        let first = s.open_shift("d1", "alice", m("5000.00")).await.unwrap();
+        s.close_shift(&first.id, m("5000")).await.unwrap();
+        let second = s.open_shift("d1", "bob", m("1000.00")).await.unwrap();
+        // An open shift is not a closed one.
+        assert_eq!(
+            s.last_closed_shift("d1").await.unwrap().unwrap().id,
+            first.id
+        );
+        let closed = s.close_shift(&second.id, m("900")).await.unwrap();
+        let again = s.last_closed_shift("d1").await.unwrap().unwrap();
+        assert_eq!(again.id, second.id);
+        assert_eq!(again.close, closed);
+        assert_eq!(again.close.variance, m("-100"));
+        assert_eq!(s.last_closed_shift("other").await.unwrap(), None);
+        assert_eq!(s.shift_mrc(&second.id).await.unwrap(), None);
     }
 
     #[tokio::test]

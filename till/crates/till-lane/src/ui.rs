@@ -28,7 +28,6 @@ use till_core::{Money, TenderError};
 pub struct Session {
     pub lane: String,
     pub cashier: String,
-    pub shift: String,
 }
 
 impl Default for Session {
@@ -36,7 +35,6 @@ impl Default for Session {
         Session {
             lane: "LANE".into(),
             cashier: "NO CASHIER".into(),
-            shift: "NO SHIFT".into(),
         }
     }
 }
@@ -103,7 +101,7 @@ const FKEYS: [(egui::Key, &str, &str, Action); 11] = [
         "Buyer TIN",
         Action::NotBuilt("Buyer TIN"),
     ),
-    (egui::Key::F7, "F7", "X report", Action::ReportX),
+    (egui::Key::F7, "F7", "Shift report", Action::ReportX),
     (
         egui::Key::F8,
         "F8 · Ctrl 1",
@@ -149,8 +147,8 @@ const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
 /// harmless X: a chord because a Z closes the shift, and Shift rather than Ctrl
 /// because the operating system reserves Ctrl+F-key chords on some machines.
 const SHIFT_KEYS: [(egui::Key, &str, Action); 2] = [
-    (egui::Key::F7, "Z close shift", Action::ReportZ),
-    (egui::Key::F9, "Reprint Z", Action::ReprintZ),
+    (egui::Key::F7, "Close shift", Action::ReportZ),
+    (egui::Key::F9, "Reprint close report", Action::ReprintZ),
 ];
 
 fn shift_cap(key: egui::Key) -> String {
@@ -260,7 +258,7 @@ fn apply(
         Action::Reprint => state.reprint(devices.printer.as_mut()),
         Action::ReportX => block_on(state.print_x(devices.printer.as_mut())),
         Action::ReportZ => close_with_z(state, local, devices),
-        Action::ReprintZ => state.reprint_z(devices.printer.as_mut()),
+        Action::ReprintZ => block_on(state.reprint_z(devices.printer.as_mut())),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
         Action::NotBuilt(name) => {
@@ -460,6 +458,18 @@ fn chip(ui: &mut Ui, label: &str, fill: Color32, ink: Color32) {
         });
 }
 
+/// What the status bar says about the shift: the real opening time (Kigali
+/// clock) and who opened it, read from the open shift itself.
+fn shift_label(shift: Option<&till_store::OpenShift>) -> String {
+    match shift {
+        Some(s) => {
+            let at = crate::lane::kigali_hhmm(&s.opened_at).unwrap_or_else(|| s.opened_at.clone());
+            format!("Shift open {at} · {}", s.opened_by).to_uppercase()
+        }
+        None => "NO SHIFT".to_string(),
+    }
+}
+
 fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
     egui::TopBottomPanel::top("status")
         .frame(
@@ -501,11 +511,7 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
                         }
                     }
                     ui.label(text(clock(), mono(14.0), TOKENS.line));
-                    let shift = if state.shift().is_some() {
-                        session.shift.to_uppercase()
-                    } else {
-                        "NO SHIFT".to_string()
-                    };
+                    let shift = shift_label(state.shift());
                     ui.label(text(shift, sans(14.0), TOKENS.line));
                 });
             });
@@ -1196,8 +1202,17 @@ fn no_shift(ctx: &Context, state: &LaneState, local: &Local, session: &Session) 
                 };
                 ui.label(text(buffer, mono(28.0), TOKENS.canvas));
                 ui.add_space(12.0);
-                if let Notice::Problem(m) = state.notice() {
-                    ui.label(text(m, sans(16.0), TOKENS.hi_vis));
+                // A problem and a confirmation must look different on this dark
+                // ground: the closing figures appear here, because closing the
+                // shift is what puts the lane on this screen.
+                match state.notice() {
+                    Notice::Problem(m) => {
+                        ui.label(text(m, sans(16.0), TOKENS.hi_vis));
+                    }
+                    Notice::Info(m) => {
+                        ui.label(text(m, sans_bold(18.0), TOKENS.canvas));
+                    }
+                    Notice::None => {}
                 }
                 if let Some(n) = &local.note {
                     ui.label(text(n, sans(16.0), TOKENS.hi_vis));
@@ -1385,7 +1400,6 @@ mod tests {
             Session {
                 lane: "Lane 02".into(),
                 cashier: "M. Uwase".into(),
-                shift: "Shift 3".into(),
             },
         );
         r.frame(vec![]); // the no-shift screen renders
@@ -1838,7 +1852,7 @@ mod tests {
         assert!(r.state.shift().is_some());
         assert_eq!(*r.state.screen(), Screen::Selling);
         match r.state.notice() {
-            Notice::Info(m) => assert!(m.contains("X report printed"), "{m}"),
+            Notice::Info(m) => assert!(m.contains("Shift report printed"), "{m}"),
             n => panic!("{n:?}"),
         }
     }
@@ -1864,16 +1878,19 @@ mod tests {
     fn shift_f7_with_a_counted_amount_closes_the_shift() {
         let mut r = Rig::new();
         r.frame(type_text("1000"));
-        r.frame(tap_shift_f7());
+        let painted = r.frame(tap_shift_f7());
         assert!(r.state.shift().is_none());
         assert_eq!(*r.state.screen(), Screen::NoShift);
-        match r.state.notice() {
-            Notice::Info(m) => assert!(
-                m.contains("Z report printed") && m.contains("variance +1,000"),
-                "{m}"
-            ),
-            n => panic!("{n:?}"),
-        }
+        // What the cashier is shown, not what the state holds: the closing
+        // figures are on the frame that follows a successful close.
+        assert!(
+            painted.contains("Close report printed") && painted.contains("variance +1,000"),
+            "{painted}"
+        );
+        assert!(
+            r.frame(vec![]).contains("variance +1,000"),
+            "and they stay painted"
+        );
     }
 
     #[test]
@@ -1883,8 +1900,22 @@ mod tests {
         for (_, key, ..) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
             assert!(shown.contains(&ctrl_cap(*key)), "{key:?} cap in {shown}");
         }
-        assert!(shown.contains(&shift_cap(Key::F7)) && shown.contains("Z close shift"));
-        assert!(shown.contains("Shift F9") && shown.contains("Reprint Z"));
-        assert!(shown.contains("X report"));
+        assert!(shown.contains(&shift_cap(Key::F7)) && shown.contains("Close shift"));
+        assert!(shown.contains("Shift F9") && shown.contains("Reprint close report"));
+        assert!(shown.contains("Shift report"));
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_real_shift_not_a_placeholder() {
+        let mut r = Rig::new();
+        let shown = r.frame(vec![]);
+        let opened = r.state.shift().unwrap().clone();
+        let at = crate::lane::kigali_hhmm(&opened.opened_at).unwrap();
+        let want = format!("SHIFT OPEN {at} · {}", opened.opened_by.to_uppercase());
+        assert!(shown.contains(&want), "{want} in {shown}");
+        assert!(
+            !shown.contains("06:58") || at == "06:58",
+            "no hardcoded time"
+        );
     }
 }

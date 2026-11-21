@@ -55,7 +55,7 @@ use crate::fiscal::{FiscalError, FiscalPort, SalePayload};
 use crate::fmt;
 use crate::latency::{Timer, Timings};
 use crate::receipt::{ReceiptInput, compose};
-use crate::report::{self, x_report, z_report, z_report_copy};
+use crate::report::{self, shift_close_report, shift_close_report_copy, shift_report};
 use thiserror::Error;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
 use till_core::scan::{EmbeddedMode, ScanError, Scanned, classify};
@@ -152,7 +152,7 @@ pub enum LaneError {
     Tender(#[from] TenderError),
     #[error("There is no receipt to reprint.")]
     NothingToReprint,
-    #[error("No shift has been closed on this till, so there is no Z report to reprint.")]
+    #[error("No shift has been closed on this till, so there is no close report to reprint.")]
     NoZToReprint,
     #[error("There is nothing to pay for. Scan an item first.")]
     EmptyBasket,
@@ -213,8 +213,10 @@ pub enum StoreOp {
     OpenShift,
     /// Closing the shift and recording the declared cash.
     CloseShift,
-    /// Reading the shift's totals for an X report.
+    /// Reading the shift's totals for a shift report.
     ShiftTotals,
+    /// Recomposing a closed shift's report from the store.
+    ClosedShift,
     /// Looking a scanned code up in the catalogue.
     Scan,
     /// Allocating the invoice number, before the VSDC is asked anything.
@@ -254,6 +256,9 @@ impl StoreOp {
             ),
             StoreOp::ShiftTotals => format!(
                 "The shift's figures could not be read ({e}). Nothing was printed and nothing was changed. Try again; if it repeats, call support."
+            ),
+            StoreOp::ClosedShift => format!(
+                "The closed shift's figures could not be read ({e}). Nothing was printed and nothing was changed. Try again; if it repeats, call support."
             ),
             StoreOp::Scan => format!(
                 "The catalogue could not be read ({e}). Try the scan again; if it repeats, call support."
@@ -352,6 +357,7 @@ struct Pending {
 /// What a closed shift recorded, and whether its Z has reached paper.
 struct LastZ {
     close: ShiftClose,
+    mrc: Option<String>,
     at: String,
     printed: bool,
 }
@@ -370,8 +376,9 @@ pub struct LaneState {
     shift: Option<OpenShift>,
     /// The last confirmed sale, kept so a reprint can be recomposed as a COPY.
     last_sale: Option<LastSale>,
-    /// The last Z closed on this till, kept so a jam is a stationery problem:
-    /// the shift stays closed and its Z can be printed again.
+    /// The last close report of this till, kept so a jam is a stationery problem:
+    /// the shift stays closed and its report can be printed again. The fast
+    /// path only: after a restart it is recomposed from the store.
     last_z: Option<LastZ>,
     /// What the VSDC last told us (see [`VsdcOutcome`]).
     vsdc_outcome: VsdcOutcome,
@@ -1101,11 +1108,17 @@ impl LaneState {
                 return self.refuse_keeping_buffer(LaneError::store(StoreOp::ShiftTotals, e));
             }
         };
-        let bytes = x_report(&totals, &self.cfg, &kigali_now());
+        let mrc = match self.store.shift_mrc(&shift.id).await {
+            Ok(m) => m,
+            Err(e) => {
+                return self.refuse_keeping_buffer(LaneError::store(StoreOp::ShiftTotals, e));
+            }
+        };
+        let bytes = shift_report(&totals, &self.cfg, mrc.as_deref(), &kigali_now());
         self.notice = match printer.write(&bytes) {
-            Ok(()) => Notice::Info("X report printed. The shift is still open.".into()),
+            Ok(()) => Notice::Info("Shift report printed. The shift is still open.".into()),
             Err(e) => Notice::Problem(format!(
-                "The X report did not print ({e}). Check the printer and try again; nothing was changed."
+                "The shift report did not print ({e}). Check the printer and try again; nothing was changed."
             )),
         };
         Ok(())
@@ -1125,12 +1138,21 @@ impl LaneState {
         declared_cash: Money,
         printer: &mut dyn Printer,
     ) -> Result<(), LaneError> {
+        // Read before closing: a failure here changes nothing, whereas after the
+        // close the shift is gone from `self`.
+        let mrc = match self.shift.as_ref() {
+            Some(shift) => match self.store.shift_mrc(&shift.id).await {
+                Ok(m) => m,
+                Err(e) => return self.refuse(LaneError::store(StoreOp::ShiftTotals, e)),
+            },
+            None => None,
+        };
         let Some(closed) = self.close_shift(declared_cash).await? else {
             return Ok(()); // refused: close_shift left the Problem notice
         };
         // Retained before anything prints: the close is the truth, paper follows.
         let at = kigali_now();
-        let bytes = z_report(&closed, &self.cfg, &at);
+        let bytes = shift_close_report(&closed, &self.cfg, mrc.as_deref(), &at);
         let figures = format!(
             "Expected {}, declared {}, variance {}.",
             fmt::rwf(closed.totals.expected_cash),
@@ -1139,45 +1161,71 @@ impl LaneState {
         );
         let last = self.last_z.insert(LastZ {
             close: closed,
+            mrc,
             at,
             printed: false,
         });
         self.notice = match printer.write(&bytes) {
             Ok(()) => {
                 last.printed = true;
-                Notice::Info(format!("Shift closed. Z report printed. {figures}"))
+                Notice::Info(format!("Shift closed. Close report printed. {figures}"))
             }
             Err(e) => Notice::Problem(format!(
-                "The shift is closed and its figures are final, but the Z report did not print ({e}). {figures} Check the printer and reprint the Z."
+                "The shift is closed and its figures are final, but the close report did not print ({e}). {figures} Check the printer and reprint it."
             )),
         };
         Ok(())
     }
 
-    /// Prints the last Z again. The first time it reaches paper it is the
-    /// original; any later one is marked COPY. Nothing in the store is touched.
-    pub fn reprint_z(&mut self, printer: &mut dyn Printer) -> Result<(), LaneError> {
+    /// Prints the last close report again. The first time it reaches paper it is
+    /// the original; any later one is marked COPY. Nothing in the store is
+    /// written. Normally from memory; after a restart (a jam, then a quit) it is
+    /// recomposed from the store's last closed shift on this device, and since
+    /// nothing says whether the first attempt reached paper, that one is marked
+    /// COPY too.
+    pub async fn reprint_z(&mut self, printer: &mut dyn Printer) -> Result<(), LaneError> {
         self.buffer.clear();
+        if self.last_z.is_none() {
+            let dvc = self.cfg.dvc_srl_no.clone();
+            let closed = match self.store.last_closed_shift(&dvc).await {
+                Ok(c) => c,
+                Err(e) => return self.refuse(LaneError::store(StoreOp::ClosedShift, e)),
+            };
+            let Some(closed) = closed else {
+                return self.refuse(LaneError::NoZToReprint);
+            };
+            let mrc = match self.store.shift_mrc(&closed.id).await {
+                Ok(m) => m,
+                Err(e) => return self.refuse(LaneError::store(StoreOp::ClosedShift, e)),
+            };
+            self.last_z = Some(LastZ {
+                close: closed.close,
+                mrc,
+                at: kigali_now(),
+                printed: true,
+            });
+        }
         let Some(last) = self.last_z.as_mut() else {
             return self.refuse(LaneError::NoZToReprint);
         };
+        let mrc = last.mrc.as_deref();
         let bytes = if last.printed {
-            z_report_copy(&last.close, &self.cfg, &last.at)
+            shift_close_report_copy(&last.close, &self.cfg, mrc, &last.at)
         } else {
-            z_report(&last.close, &self.cfg, &last.at)
+            shift_close_report(&last.close, &self.cfg, mrc, &last.at)
         };
         self.notice = match printer.write(&bytes) {
             Ok(()) => {
                 let msg = if last.printed {
-                    "Z report reprinted (marked COPY)."
+                    "Close report reprinted (marked COPY)."
                 } else {
-                    "Z report printed."
+                    "Close report printed."
                 };
                 last.printed = true;
                 Notice::Info(msg.into())
             }
             Err(e) => Notice::Problem(format!(
-                "The Z report did not print ({e}). Check the printer and try again; the shift is closed and its figures are safe."
+                "The close report did not print ({e}). Check the printer and try again; the shift is closed and its figures are safe."
             )),
         };
         Ok(())
@@ -1258,6 +1306,17 @@ fn rebuild(entries: &[TenderEntry]) -> Result<TenderSet, LaneError> {
         set.push(*e)?;
     }
     Ok(set)
+}
+
+/// The Kigali clock time (`HH:MM`) of a store timestamp (`2026-11-21T04:58:00Z`,
+/// UTC). `None` if it is not in that shape.
+pub fn kigali_hhmm(utc: &str) -> Option<String> {
+    let t = utc.split('T').nth(1)?;
+    let (h, rest) = t.split_once(':')?;
+    let m = rest.get(..2)?;
+    let h: u32 = h.parse().ok().filter(|h| *h < 24)?;
+    let m: u32 = m.parse().ok().filter(|m| *m < 60)?;
+    Some(format!("{:02}:{:02}", (h + 2) % 24, m))
 }
 
 fn kigali_now() -> String {
@@ -1649,7 +1708,7 @@ mod tests {
         // Two reports, identical, because nothing moved between them.
         // (Minus the PRINTED clock line, which may tick between the two.)
         let both = printed(&p);
-        assert!(both.contains("X REPORT"));
+        assert!(both.contains("SHIFT REPORT"));
         let figures = |t: &str| {
             t.lines()
                 .filter(|l| !l.starts_with("PRINTED"))
@@ -1695,7 +1754,7 @@ mod tests {
         sell_one(&mut l, PmtTyCd::Cash).await;
         let (mut p, _) = devices();
         l.print_z(rwf("1250"), &mut p).await.unwrap();
-        assert!(printed(&p).contains("Z REPORT"));
+        assert!(printed(&p).contains("SHIFT CLOSE REPORT"));
         assert_eq!(l.screen(), &Screen::NoShift);
         assert!(l.shift().is_none());
         assert!(l.store.current_shift("DVC1").await.unwrap().is_none());
@@ -1743,16 +1802,17 @@ mod tests {
         assert!(l.store.current_shift("DVC1").await.unwrap().is_none());
         // The Z is not lost: a reprint emits the very bytes the first attempt
         // would have (it never reached paper, so it is the original).
-        let wanted = z_report(
+        let wanted = shift_close_report(
             &l.last_z.as_ref().unwrap().close,
             &l.cfg,
+            l.last_z.as_ref().unwrap().mrc.as_deref(),
             &l.last_z.as_ref().unwrap().at,
         );
-        l.reprint_z(&mut p).unwrap();
+        l.reprint_z(&mut p).await.unwrap();
         assert_eq!(p.written, wanted);
         assert!(matches!(l.notice(), Notice::Info(_)));
         // Once on paper, a further one is a marked COPY, and the shift stays closed.
-        l.reprint_z(&mut p).unwrap();
+        l.reprint_z(&mut p).await.unwrap();
         assert!(printed(&p).contains("COPY - SHIFT CLOSED"));
         assert!(l.shift().is_none());
         // A second close is still refused.
@@ -1762,10 +1822,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_jammed_close_report_survives_a_restart() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        sell_one(&mut l, PmtTyCd::Cash).await;
+        let (mut p, _) = devices();
+        p.fail_next = true;
+        l.print_z(rwf("1000"), &mut p).await.unwrap();
+        assert!(p.written.is_empty());
+        // Quit and start again: nothing is held in memory, only the store.
+        let mut again = LaneState::new(l.store.clone(), l.cfg.clone())
+            .await
+            .unwrap();
+        assert!(again.last_z.is_none() && again.shift().is_none());
+        let (mut q, _) = devices();
+        again.reprint_z(&mut q).await.unwrap();
+        let t = printed(&q);
+        assert!(
+            t.contains("SHIFT CLOSE REPORT") && t.contains("COPY - SHIFT CLOSED"),
+            "{t}"
+        );
+        assert!(t.contains("VARIANCE (SHORT)") && t.contains("-250"), "{t}");
+        assert!(t.contains("DECLARED CASH") && t.contains("1,000"), "{t}");
+        assert!(
+            !t.contains("NONE YET"),
+            "the shift had a confirmed sale: {t}"
+        );
+        assert!(matches!(again.notice(), Notice::Info(_)));
+    }
+
+    /// Records, rather than guards, that rebuilding the tenders in another order
+    /// cannot misreport the payment method to RRA: `header_code` sums per code
+    /// and breaks ties on the lower wire code, so it is order-independent.
+    #[test]
+    fn the_header_payment_code_does_not_depend_on_tender_order() {
+        use till_core::tender::{TenderEntry, TenderSet};
+        type Case<'a> = (&'a [(PmtTyCd, &'a str)], &'a str, PmtTyCd);
+        let cases: [Case; 3] = [
+            // 1200 cash beats the largest single entry (card 700).
+            (
+                &[
+                    (PmtTyCd::Cash, "600"),
+                    (PmtTyCd::Cash, "600"),
+                    (PmtTyCd::Card, "700"),
+                ],
+                "1900",
+                PmtTyCd::Cash,
+            ),
+            // A tie goes to the lower wire code (01 before 05).
+            (
+                &[(PmtTyCd::Card, "500"), (PmtTyCd::Cash, "500")],
+                "1000",
+                PmtTyCd::Cash,
+            ),
+            (
+                &[
+                    (PmtTyCd::MobileMoney, "800"),
+                    (PmtTyCd::Card, "800"),
+                    (PmtTyCd::Cash, "400"),
+                ],
+                "2000",
+                PmtTyCd::Card,
+            ),
+        ];
+        for (entries, due, want) in cases {
+            let mut orders = vec![entries.to_vec()];
+            // Every permutation, by Heap's algorithm.
+            let mut v = entries.to_vec();
+            let mut c = vec![0usize; v.len()];
+            let mut i = 0;
+            while i < v.len() {
+                if c[i] < i {
+                    v.swap(if i % 2 == 0 { 0 } else { c[i] }, i);
+                    orders.push(v.clone());
+                    c[i] += 1;
+                    i = 0;
+                } else {
+                    c[i] = 0;
+                    i += 1;
+                }
+            }
+            assert!(orders.len() >= 2);
+            for order in orders {
+                let mut set = TenderSet::default();
+                for (code, amount) in &order {
+                    set.push(TenderEntry {
+                        pmt_ty_cd: *code,
+                        amount: rwf(amount),
+                    })
+                    .unwrap();
+                }
+                let settled = set.settle(rwf(due)).unwrap();
+                assert_eq!(settled.header_pmt_ty_cd, want, "order {order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_opening_time_is_shown_on_the_kigali_clock() {
+        assert_eq!(
+            kigali_hhmm("2026-11-21T04:58:00Z").as_deref(),
+            Some("06:58")
+        );
+        assert_eq!(
+            kigali_hhmm("2026-11-21T23:05:09Z").as_deref(),
+            Some("01:05")
+        );
+        assert_eq!(kigali_hhmm("garbage"), None);
+    }
+
+    #[tokio::test]
     async fn reprinting_a_z_with_none_closed_is_a_problem() {
         let mut l = lane_without_shift().await;
         let (mut p, _) = devices();
-        l.reprint_z(&mut p).unwrap();
+        l.reprint_z(&mut p).await.unwrap();
         assert!(p.written.is_empty() && matches!(l.notice(), Notice::Problem(_)));
     }
 

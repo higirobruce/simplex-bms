@@ -109,7 +109,6 @@ fn main() -> eframe::Result {
                 ui::Session {
                     lane: "Lane 02".into(),
                     cashier: "M. Uwase".into(),
-                    shift: "Shift 3 · open 06:58".into(),
                 },
             );
             Ok(Box::new(app))
