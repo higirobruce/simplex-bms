@@ -130,6 +130,8 @@ pub enum LaneError {
     NotSelling,
     #[error("{0}. Correct the payment and try again; nothing was recorded.")]
     Tender(#[from] TenderError),
+    #[error("There is no receipt to reprint.")]
+    NothingToReprint,
     #[error("There is nothing to pay for. Scan an item first.")]
     EmptyBasket,
     #[error(
@@ -184,6 +186,9 @@ pub struct LaneState {
     basket: Basket,
     tenders: TenderSet,
     pending: Option<Pending>,
+    /// The bytes `compose` returned for the last confirmed sale, kept verbatim
+    /// so a reprint is the same document and never a recomposition.
+    last_receipt: Option<Vec<u8>>,
 }
 
 impl LaneState {
@@ -226,6 +231,7 @@ impl LaneState {
             basket: Basket::new(),
             tenders: TenderSet::default(),
             pending,
+            last_receipt: None,
         })
     }
 
@@ -475,9 +481,13 @@ impl LaneState {
             change: settled.change,
         };
         let mut faults: Vec<String> = Vec::new();
+        // Never leave an earlier sale's receipt behind as "the last receipt".
+        self.last_receipt = None;
         match self.compose_receipt(&settled, &totals, &pending.handle, &receipt) {
             Ok(bytes) => {
-                if let Err(e) = printer.write(&bytes) {
+                // Retained BEFORE the write: a jam must not lose the bytes.
+                let bytes = self.last_receipt.insert(bytes);
+                if let Err(e) = printer.write(bytes) {
                     faults.push(format!("the receipt did not print ({e})"));
                 }
             }
@@ -500,6 +510,35 @@ impl LaneState {
             ))
         };
         Ok(settled)
+    }
+
+    /// The receipt composed for the last confirmed sale, byte for byte, if one
+    /// could be composed.
+    pub fn last_receipt(&self) -> Option<&[u8]> {
+        self.last_receipt.as_deref()
+    }
+
+    /// Prints the retained receipt again. Printing is not the sale: this touches
+    /// only the printer, never the store or the VSDC, and emits exactly the
+    /// bytes composed originally. A printer fault, like having nothing to
+    /// reprint, is a `Problem` notice with `Ok(())`: the cashier can act on it.
+    pub fn reprint(&mut self, printer: &mut dyn Printer) -> Result<(), LaneError> {
+        self.buffer.clear();
+        let Some(bytes) = self.last_receipt.as_deref() else {
+            return self.refuse(LaneError::NothingToReprint);
+        };
+        match printer.write(bytes) {
+            Ok(()) => {
+                self.notice = Notice::Info("Receipt reprinted.".into());
+                Ok(())
+            }
+            Err(e) => {
+                self.notice = Notice::Problem(format!(
+                    "The receipt did not print ({e}). Check the printer and try the reprint again; the sale itself is safe."
+                ));
+                Ok(())
+            }
+        }
     }
 
     /// Handles the VSDC's refusal. Always returns `Err`: the sale did not
@@ -1424,6 +1463,83 @@ mod tests {
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert_eq!(d.kicks, 1);
         assert_eq!(awaiting(&l).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_printer_failure_does_not_undo_a_confirmed_sale() {
+        // A paper jam is a stationery problem, not a fiscal one.
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("2000")).unwrap();
+        let (mut p, mut d) = devices();
+        p.fail_next = true;
+        let s = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        // settle reports success.
+        assert_eq!(s.expect("settled").change, rwf("750"));
+        assert_eq!(l.screen(), &Screen::Settled { change: rwf("750") });
+        // The store itself holds the sale as Confirmed: not Failed, not
+        // Voided/abandoned, and nothing left awaiting.
+        let rows: Vec<(i64, String)> = sqlx::query_as("select invc_no, state from sale")
+            .fetch_all(l.store.pool())
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![(1, "Confirmed".to_string())]);
+        assert_eq!(awaiting(&l).await, None);
+        // The cashier is told about the printer.
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("did not print"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+        // Nothing reached paper, but the bytes were kept.
+        assert!(p.written.is_empty());
+        let kept = l.last_receipt().expect("retained").to_vec();
+        assert!(!kept.is_empty());
+
+        // Reprint emits exactly those bytes (fail_next was one-shot).
+        l.reprint(&mut p).unwrap();
+        assert_eq!(p.written, kept);
+        assert_eq!(printed_invc(&p), "1");
+        assert!(matches!(l.notice(), Notice::Info(_)));
+        // The retained copy is unchanged by reprinting; a second one is identical.
+        l.reprint(&mut p).unwrap();
+        assert_eq!(p.written, [kept.clone(), kept.clone()].concat());
+        assert_eq!(l.last_receipt(), Some(kept.as_slice()));
+        // Reprinting never touched the store.
+        let n: i64 = sqlx::query_scalar("select count(*) from sale")
+            .fetch_one(l.store.pool())
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn a_reprint_that_fails_again_is_a_problem_and_keeps_the_receipt() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .unwrap();
+        let kept = l.last_receipt().unwrap().to_vec();
+        p.fail_next = true;
+        l.reprint(&mut p).unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.last_receipt(), Some(kept.as_slice()));
+        l.reprint(&mut p).unwrap();
+        assert!(p.written.ends_with(&kept));
+    }
+
+    #[tokio::test]
+    async fn reprint_with_no_sale_is_a_problem_not_an_error() {
+        let mut l = lane_with(&[], EmbeddedMode::Weight).await;
+        let (mut p, _d) = devices();
+        l.reprint(&mut p).unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert!(p.written.is_empty());
+        assert!(l.last_receipt().is_none());
     }
 
     #[tokio::test]

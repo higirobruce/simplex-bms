@@ -13,3 +13,4 @@ till-store = { path = "../till-store" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+sqlx.workspace = true
