@@ -19,7 +19,9 @@ pub mod codes;
 pub mod line;
 pub mod money;
 pub mod tax;
+pub mod tender;
 
 pub use basket::{Basket, BasketError, BasketTotals};
 pub use line::{BasketLine, LineAmounts, LineDiscount, LineError};
 pub use money::{Money, MoneyError, Qty, round_half_up};
+pub use tender::{Settled, TenderEntry, TenderError, TenderSet};
