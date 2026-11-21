@@ -11,7 +11,33 @@
 //!   buffer is capped, so a stuck scanner cannot grow it without bound);
 //! * `enter` takes the buffer, classifies it, looks it up in the local
 //!   catalogue, prices the line, and pushes it onto the basket;
-//! * `void_line` removes a line; its sequence number stays spent.
+//! * `void_line` removes a line; its sequence number stays spent;
+//! * `add_tender` takes a payment toward the basket, and `settle` runs the
+//!   fiscal sequence (below).
+//!
+//! # The fiscal sequence
+//!
+//! `settle` does, in this order and no other: check the tender covers the
+//! total (nothing is allocated if it does not) -> `begin_sale` (allocates the
+//! invoice number) -> `FiscalPort::save_sales` -> `confirm_sale` -> print ->
+//! drawer kick. Nothing prints before `confirm_sale` has returned `Ok`. The
+//! three ways the VSDC can refuse diverge from it as follows:
+//!
+//! * `Unreachable`: the sale is abandoned (number retired), the screen becomes
+//!   `HardStop`, nothing prints. Selling while the device is unreachable is
+//!   prohibited (CIS 24.7.9), so the lane stops instead of queueing.
+//! * `Rejected`: `fail_sale` counts the attempt; the sale stays `AwaitingVsdc`
+//!   and is held as the lane's pending sale, so the SAME number is retried by
+//!   the next `settle`. While it is pending the basket and tenders are frozen
+//!   (the stored sale must match what is retried); `abandon_pending` is the
+//!   way out of a rejection that can never succeed.
+//! * `Overlapped` (994): the VSDC already holds that number and no receipt can
+//!   be recovered. The sale is abandoned and the basket cleared; the lane keeps
+//!   selling (the VSDC is reachable) and the cashier re-rings the basket.
+//!
+//! If the VSDC answered but `confirm_sale` failed, the receipt is kept in the
+//! pending sale and the next `settle` retries only `confirm_sale`: asking the
+//! VSDC again would hit 994 on a number it has already recorded.
 //!
 //! # Refusals
 //!
@@ -24,10 +50,17 @@
 //! line that fails pricing is rejected BEFORE `push_line`, so it does not spend
 //! a sequence number.
 
+use crate::device::{Drawer, Printer};
+use crate::fiscal::{FiscalError, FiscalPort, SalePayload};
+use crate::receipt::{ReceiptInput, compose};
 use thiserror::Error;
+use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
 use till_core::scan::{EmbeddedMode, ScanError, Scanned, classify};
-use till_core::{Basket, BasketError, BasketLine, LineError, Money, Qty};
-use till_store::{CachedProduct, Counter, Store, StoreError};
+use till_core::{
+    Basket, BasketError, BasketLine, LineError, Money, Qty, Settled, TenderEntry, TenderError,
+    TenderSet,
+};
+use till_store::{CachedProduct, Counter, NewSale, SaleHandle, Store, StoreError, VsdcReceipt};
 
 /// Longest scan buffer kept. Longer than any code (EAN-13 is 13); the excess
 /// is dropped so the resulting `BadLength` still tells the cashier it was wrong.
@@ -53,6 +86,10 @@ pub struct LaneConfig {
     pub bhf_id: String,
     pub embedded: EmbeddedMode,
     pub counter: Counter,
+    /// Printed on every receipt (CIS 7.29 block: name, address, TIN).
+    pub shop_name: String,
+    pub shop_address: String,
+    pub shop_tin: String,
 }
 
 #[derive(Debug, Error)]
@@ -91,6 +128,40 @@ pub enum LaneError {
     Internal(String),
     #[error("This sale is no longer open for scanning.")]
     NotSelling,
+    #[error("{0}. Correct the payment and try again; nothing was recorded.")]
+    Tender(#[from] TenderError),
+    #[error("There is nothing to pay for. Scan an item first.")]
+    EmptyBasket,
+    #[error(
+        "The VSDC refused this sale: {code} {msg}. The basket and payment are held; press pay to retry the same invoice, or ask a supervisor to cancel it."
+    )]
+    Rejected { code: String, msg: String },
+    #[error(
+        "The VSDC already holds this invoice number, so this sale could not be recorded. Nothing was printed. Ring the basket up again."
+    )]
+    Overlapped,
+    #[error(
+        "The fiscal device (VSDC) cannot be reached. Selling is stopped until it is back. Nothing was printed. Call a supervisor."
+    )]
+    Unreachable,
+    #[error(
+        "A sale is waiting on the VSDC. Press pay to retry it, or ask a supervisor to cancel it, before changing the basket or payment."
+    )]
+    SalePending,
+    #[error(
+        "The VSDC has already recorded this sale, so it cannot be cancelled. Press pay to finish it."
+    )]
+    AlreadyRecorded,
+    #[error("There is no pending sale to cancel.")]
+    NothingPending,
+}
+
+/// A sale that holds an invoice number but is not yet confirmed.
+#[derive(Debug)]
+struct Pending {
+    handle: SaleHandle,
+    /// Set once the VSDC has answered, so a retry never asks it again.
+    receipt: Option<VsdcReceipt>,
 }
 
 pub struct LaneState {
@@ -100,6 +171,8 @@ pub struct LaneState {
     notice: Notice,
     screen: Screen,
     basket: Basket,
+    tenders: TenderSet,
+    pending: Option<Pending>,
 }
 
 impl LaneState {
@@ -111,12 +184,17 @@ impl LaneState {
             notice: Notice::None,
             screen: Screen::Selling,
             basket: Basket::new(),
+            tenders: TenderSet::default(),
+            pending: None,
         }
     }
 
     /// A character from the wedge. Starting a new scan clears the previous notice.
     pub fn key(&mut self, c: char) {
-        if c.is_control() || self.buffer.chars().count() >= MAX_BUFFER {
+        if self.screen != Screen::Selling
+            || c.is_control()
+            || self.buffer.chars().count() >= MAX_BUFFER
+        {
             return;
         }
         if self.buffer.is_empty() {
@@ -141,8 +219,8 @@ impl LaneState {
 
     pub async fn void_line(&mut self, item_seq: u16) -> Result<(), LaneError> {
         self.buffer.clear();
-        if self.screen != Screen::Selling {
-            return self.refuse(LaneError::NotSelling);
+        if let Err(e) = self.ensure_open() {
+            return self.refuse(e);
         }
         match self.basket.void_line(item_seq) {
             Ok(()) => {
@@ -151,6 +229,273 @@ impl LaneState {
             }
             Err(e) => self.refuse(e.into()),
         }
+    }
+
+    /// Takes a payment toward the basket. A refused tender (zero, fractional)
+    /// is a `Problem` notice and `Ok(())`, like every other cashier error.
+    pub fn add_tender(&mut self, code: PmtTyCd, amount: Money) -> Result<(), LaneError> {
+        self.buffer.clear();
+        let added = self.ensure_open().and_then(|()| {
+            self.tenders.push(TenderEntry {
+                pmt_ty_cd: code,
+                amount,
+            })?;
+            Ok(())
+        });
+        match added {
+            Ok(()) => {
+                self.notice = Notice::Info(format!("{amount} received."));
+                Ok(())
+            }
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    /// Everything tendered so far; `None` if the sum passes the supported range.
+    pub fn tender_total(&self) -> Option<Money> {
+        self.tenders.total()
+    }
+
+    /// Completes the sale through the fiscal device. See the module docs for
+    /// the sequence and how each failure diverges from it.
+    ///
+    /// `Ok(Some(settled))`: the sale is confirmed and the receipt printed.
+    /// `Ok(None)`: the sale was NOT completed for a reason the cashier can act
+    /// on; the notice (and, for `Unreachable`, the screen) says what. `Err`
+    /// only for a fault they cannot act on (store I/O).
+    pub async fn settle(
+        &mut self,
+        fiscal: &mut dyn FiscalPort,
+        printer: &mut dyn Printer,
+        drawer: &mut dyn Drawer,
+    ) -> Result<Option<Settled>, LaneError> {
+        self.buffer.clear();
+        match self.try_settle(fiscal, printer, drawer).await {
+            Ok(settled) => Ok(Some(settled)),
+            Err(e) => self.refuse(e).map(|()| None),
+        }
+    }
+
+    /// Gives up a rejected sale that can never succeed: retires its number and
+    /// unfreezes the basket and tenders. Refused once the VSDC has recorded it.
+    pub async fn abandon_pending(&mut self) -> Result<(), LaneError> {
+        self.buffer.clear();
+        match self.try_abandon_pending().await {
+            Ok(()) => {
+                self.notice = Notice::Info("Sale cancelled. Its invoice number is retired.".into());
+                Ok(())
+            }
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    async fn try_abandon_pending(&mut self) -> Result<(), LaneError> {
+        if self.screen != Screen::Selling {
+            return Err(LaneError::NotSelling);
+        }
+        match &self.pending {
+            None => Err(LaneError::NothingPending),
+            Some(p) if p.receipt.is_some() => Err(LaneError::AlreadyRecorded),
+            Some(p) => {
+                self.store
+                    .abandon_sale(&p.handle, "cancelled by supervisor after VSDC rejection")
+                    .await?;
+                self.pending = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// Scans, voids and tenders are only for an open, unfrozen sale.
+    fn ensure_open(&self) -> Result<(), LaneError> {
+        if self.screen != Screen::Selling {
+            return Err(LaneError::NotSelling);
+        }
+        if self.pending.is_some() {
+            return Err(LaneError::SalePending);
+        }
+        Ok(())
+    }
+
+    async fn try_settle(
+        &mut self,
+        fiscal: &mut dyn FiscalPort,
+        printer: &mut dyn Printer,
+        drawer: &mut dyn Drawer,
+    ) -> Result<Settled, LaneError> {
+        if self.screen != Screen::Selling {
+            return Err(LaneError::NotSelling);
+        }
+        if self.basket.is_empty() {
+            return Err(LaneError::EmptyBasket);
+        }
+        let totals = self.basket.totals()?;
+        // Refused here, before an invoice number is taken, so a short tender
+        // burns nothing. `begin_sale` re-checks what it is given.
+        let settled = self.tenders.settle(totals.tot_amt)?;
+
+        let mut pending = match self.pending.take() {
+            Some(p) => p,
+            None => {
+                let handle = self
+                    .store
+                    .begin_sale(NewSale {
+                        dvc_srl_no: &self.cfg.dvc_srl_no,
+                        counter: self.cfg.counter,
+                        bhf_id: &self.cfg.bhf_id,
+                        basket: &self.basket,
+                        tenders: &self.tenders,
+                        settled: &settled,
+                        buyer_tin: None,
+                    })
+                    .await?;
+                Pending {
+                    handle,
+                    receipt: None,
+                }
+            }
+        };
+
+        if pending.receipt.is_none() {
+            let payload = SalePayload {
+                invc_no: pending.handle.invc_no,
+                bhf_id: self.cfg.bhf_id.clone(),
+                tot_amt: totals.tot_amt.to_string(),
+                tot_taxbl_amt: totals.tot_taxbl_amt.to_string(),
+                tot_tax_amt: totals.tot_tax_amt.to_string(),
+            };
+            match fiscal.save_sales(&payload) {
+                Ok(r) => pending.receipt = Some(r),
+                Err(e) => return self.fiscal_refused(pending, e).await,
+            }
+        }
+        let Some(receipt) = pending.receipt.clone() else {
+            // Unreachable: set just above. Fail safe, never panic.
+            self.pending = Some(pending);
+            return Err(LaneError::Internal("pending sale lost its receipt".into()));
+        };
+
+        // The VSDC has answered. Keep the answer until the store has it, so a
+        // failed confirm is retried without asking the VSDC (which would 994).
+        if let Err(e) = self
+            .store
+            .confirm_sale(&pending.handle, receipt.clone())
+            .await
+        {
+            self.pending = Some(pending);
+            return Err(e.into());
+        }
+
+        // Confirmed: only now may anything print.
+        self.screen = Screen::Settled {
+            change: settled.change,
+        };
+        let mut faults: Vec<String> = Vec::new();
+        match self.compose_receipt(&settled, &totals, &pending.handle, &receipt) {
+            Ok(bytes) => {
+                if let Err(e) = printer.write(&bytes) {
+                    faults.push(format!("the receipt did not print ({e})"));
+                }
+            }
+            Err(e) => faults.push(format!("the receipt could not be composed ({e})")),
+        }
+        // Cash was taken either way, so the drawer opens even if printing failed.
+        if let Err(e) = drawer.kick() {
+            faults.push(format!("the drawer did not open ({e})"));
+        }
+        self.notice = if faults.is_empty() {
+            Notice::Info(format!(
+                "Sale {} complete. Change {}.",
+                pending.handle.invc_no, settled.change
+            ))
+        } else {
+            Notice::Problem(format!(
+                "Sale {} is recorded with the tax authority, but {}. Call support; do not ring it again.",
+                pending.handle.invc_no,
+                faults.join(" and ")
+            ))
+        };
+        Ok(settled)
+    }
+
+    /// Handles the VSDC's refusal. Always returns `Err`: the sale did not
+    /// complete. The variant says what the cashier sees.
+    async fn fiscal_refused(
+        &mut self,
+        pending: Pending,
+        why: FiscalError,
+    ) -> Result<Settled, LaneError> {
+        match why {
+            FiscalError::Unreachable => {
+                // Stop first: even if the store write below fails the lane must
+                // not sell.
+                self.screen = Screen::HardStop {
+                    reason: LaneError::Unreachable.to_string(),
+                };
+                match self
+                    .store
+                    .abandon_sale(&pending.handle, "VSDC unreachable")
+                    .await
+                {
+                    Ok(()) => Err(LaneError::Unreachable),
+                    Err(e) => {
+                        self.pending = Some(pending);
+                        Err(e.into())
+                    }
+                }
+            }
+            FiscalError::Rejected { code, msg } => {
+                let reason = format!("VSDC rejected: {code} {msg}");
+                let recorded = self.store.fail_sale(&pending.handle, &reason).await;
+                // Held either way: the number is still ours and still unconfirmed.
+                self.pending = Some(pending);
+                recorded?;
+                Err(LaneError::Rejected { code, msg })
+            }
+            FiscalError::Overlapped => {
+                match self
+                    .store
+                    .abandon_sale(&pending.handle, "VSDC 994: invoice number already recorded")
+                    .await
+                {
+                    Ok(()) => {
+                        self.basket = Basket::new();
+                        self.tenders = TenderSet::default();
+                        Err(LaneError::Overlapped)
+                    }
+                    Err(e) => {
+                        self.pending = Some(pending);
+                        Err(e.into())
+                    }
+                }
+            }
+        }
+    }
+
+    fn compose_receipt(
+        &self,
+        settled: &Settled,
+        totals: &till_core::BasketTotals,
+        handle: &SaleHandle,
+        vsdc: &VsdcReceipt,
+    ) -> Result<Vec<u8>, String> {
+        let lines = self.basket.apportioned_lines().map_err(|e| e.to_string())?;
+        compose(ReceiptInput {
+            shop_name: &self.cfg.shop_name,
+            shop_address: &self.cfg.shop_address,
+            shop_tin: &self.cfg.shop_tin,
+            mrc: &vsdc.mrc_no,
+            sales_ty: SalesTyCd::Normal,
+            rcpt_ty: RcptTyCd::Sale,
+            lines: &lines,
+            totals,
+            tenders: &self.tenders,
+            settled,
+            invc_no: handle.invc_no,
+            cis_datetime: &kigali_now(),
+            vsdc,
+        })
+        .map_err(|e| e.to_string())
     }
 
     pub fn buffer(&self) -> &str {
@@ -164,6 +509,9 @@ impl LaneState {
     }
     pub fn basket(&self) -> &Basket {
         &self.basket
+    }
+    pub fn tenders(&self) -> &TenderSet {
+        &self.tenders
     }
     pub fn config(&self) -> &LaneConfig {
         &self.cfg
@@ -182,9 +530,7 @@ impl LaneState {
     }
 
     async fn try_enter(&mut self, raw: &str) -> Result<(), LaneError> {
-        if self.screen != Screen::Selling {
-            return Err(LaneError::NotSelling);
-        }
+        self.ensure_open()?;
         let scanned = classify(raw, self.cfg.embedded)?;
         let product = self
             .store
@@ -202,6 +548,38 @@ impl LaneState {
         self.notice = Notice::Info(format!("{} added (line {seq}).", product.name));
         Ok(())
     }
+}
+
+/// The lane clock as the CIS block wants it: `yyyymmddhhmmss`, Kigali time.
+/// Rwanda is UTC+2 all year (no daylight saving), so no zone database is needed.
+fn kigali_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    kigali_stamp(secs)
+}
+
+fn kigali_stamp(unix_secs: u64) -> String {
+    let local = unix_secs.saturating_add(2 * 3600);
+    let days = i64::try_from(local / 86_400).unwrap_or(0);
+    let rem = local % 86_400;
+    // Days since 1970-01-01 to a civil date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}{month:02}{day:02}{:02}{:02}{:02}",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 /// Builds the line a scan stands for. A scale label's weight is the quantity;
@@ -296,6 +674,9 @@ mod tests {
                 bhf_id: "00".into(),
                 embedded,
                 counter: Counter::SaleInvc,
+                shop_name: "Simplex Mart".into(),
+                shop_address: "KG 7 Ave, Kigali".into(),
+                shop_tin: "123456789".into(),
             },
         )
         .await
@@ -507,6 +888,9 @@ mod tests {
                 bhf_id: "00".into(),
                 embedded: EmbeddedMode::Weight,
                 counter: Counter::SaleInvc,
+                shop_name: "Simplex Mart".into(),
+                shop_address: "KG 7 Ave, Kigali".into(),
+                shop_tin: "123456789".into(),
             },
         )
         .await;
@@ -516,5 +900,333 @@ mod tests {
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert_eq!(l.buffer(), "");
         assert!(l.basket().is_empty());
+    }
+
+    // ---- tender and the fiscal sequence ----
+
+    use crate::device::{SimDrawer, SimPrinter};
+    use crate::fiscal::{SimFiscal, SimMode};
+
+    fn rwf(s: &str) -> Money {
+        Money::try_from_str(s).unwrap()
+    }
+    fn fiscal(mode: SimMode) -> SimFiscal {
+        SimFiscal {
+            next_rcpt_no: 1,
+            mode,
+        }
+    }
+    fn devices() -> (SimPrinter, SimDrawer) {
+        (
+            SimPrinter {
+                written: vec![],
+                fail_next: false,
+            },
+            SimDrawer { kicks: 0 },
+        )
+    }
+    /// A lane with one item of 1250 in the basket.
+    async fn lane_with_item() -> LaneState {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        scan(&mut l, EAN).await.unwrap();
+        l
+    }
+    /// The invoice number as printed on the receipt.
+    fn printed_invc(p: &SimPrinter) -> String {
+        String::from_utf8_lossy(&p.written)
+            .lines()
+            // The SDC block has a "RECEIPT NUMBER:" too; the CIS one is last.
+            .rfind(|l| l.contains("RECEIPT NUMBER:"))
+            .and_then(|l| l.trim_end().rsplit(' ').next())
+            .unwrap_or("")
+            .to_string()
+    }
+    async fn awaiting(l: &LaneState) -> Option<i64> {
+        l.store
+            .pending_sale("DVC1", Counter::SaleInvc)
+            .await
+            .unwrap()
+            .map(|p| p.invc_no)
+    }
+
+    #[tokio::test]
+    async fn a_complete_sale_prints_and_opens_the_drawer() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("2000")).unwrap();
+        assert_eq!(l.tender_total(), Some(rwf("2000")));
+        let (mut p, mut d) = devices();
+        let s = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        assert_eq!(s.change, rwf("750"));
+        assert_eq!(l.screen(), &Screen::Settled { change: rwf("750") });
+        assert!(!p.written.is_empty());
+        assert_eq!(d.kicks, 1);
+        // Confirmed in the store: nothing is left awaiting, and the number is spent.
+        assert_eq!(awaiting(&l).await, None);
+        assert_eq!(printed_invc(&p), "1");
+    }
+
+    #[tokio::test]
+    async fn tender_below_the_amount_due_does_not_settle() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1000")).unwrap();
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert!(p.written.is_empty());
+        assert_eq!(d.kicks, 0);
+        assert_eq!(awaiting(&l).await, None);
+        // No number was burned: topping up and settling takes invoice 1.
+        l.add_tender(PmtTyCd::Cash, rwf("250")).unwrap();
+        let mut f = fiscal(SimMode::Succeed);
+        l.settle(&mut f, &mut p, &mut d).await.unwrap().unwrap();
+        assert_eq!(printed_invc(&p), "1");
+    }
+
+    #[tokio::test]
+    async fn over_tender_on_a_card_yields_no_change() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Card, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let s = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        assert_eq!(s.change, Money::zero());
+
+        // A card tender ABOVE the total is refused, never paid out as cash.
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Card, rwf("2000")).unwrap();
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert!(p.written.is_empty());
+        assert_eq!(d.kicks, 0);
+        assert_eq!(awaiting(&l).await, None);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_vsdc_stops_the_lane_and_abandons_the_number() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Unreachable), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(matches!(l.screen(), Screen::HardStop { .. }));
+        assert!(p.written.is_empty());
+        assert_eq!(d.kicks, 0);
+        // Abandoned, not awaiting: the number is retired.
+        assert_eq!(awaiting(&l).await, None);
+        // Retired, not reused: the next sale on this store takes number 2.
+        let mut l2 = LaneState::new(l.store.clone(), l.cfg.clone()).await;
+        scan(&mut l2, EAN).await.unwrap();
+        l2.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        l2.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(printed_invc(&p), "2");
+    }
+
+    #[tokio::test]
+    async fn keystrokes_during_a_hard_stop_do_not_build_a_sale() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Unreachable), &mut p, &mut d)
+            .await
+            .unwrap();
+        let before = l.basket().len();
+        scan(&mut l, EAN).await.unwrap();
+        assert_eq!(l.basket().len(), before);
+        assert_eq!(l.buffer(), "");
+        assert!(matches!(l.screen(), Screen::HardStop { .. }));
+        l.add_tender(PmtTyCd::Cash, rwf("5")).unwrap();
+        assert_eq!(l.tender_total(), Some(rwf("1250")));
+        l.void_line(1).await.unwrap();
+        assert_eq!(l.basket().len(), before);
+        // And settle cannot be driven through a hard stop.
+        let r = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(p.written.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_sale_counts_an_attempt_and_keeps_the_number() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = fiscal(SimMode::Reject("894 Bad item class".into()));
+        let r = l.settle(&mut f, &mut p, &mut d).await.unwrap();
+        assert!(r.is_none());
+        assert_eq!(l.screen(), &Screen::Selling);
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("894") && m.contains("Bad item class"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+        assert!(p.written.is_empty());
+        assert_eq!(d.kicks, 0);
+        let first = awaiting(&l).await.expect("still awaiting");
+
+        // The basket and tenders are frozen while the sale is pending.
+        scan(&mut l, EAN).await.unwrap();
+        assert_eq!(l.basket().len(), 1);
+        l.add_tender(PmtTyCd::Cash, rwf("5")).unwrap();
+        assert_eq!(l.tender_total(), Some(rwf("1250")));
+
+        // Retry takes the SAME number and completes.
+        f.mode = SimMode::Succeed;
+        l.settle(&mut f, &mut p, &mut d).await.unwrap().unwrap();
+        assert_eq!(awaiting(&l).await, None);
+        assert_eq!(first, 1);
+        assert_eq!(printed_invc(&p), "1");
+    }
+
+    #[tokio::test]
+    async fn a_rejection_that_can_never_succeed_can_be_cancelled() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(
+            &mut fiscal(SimMode::Reject("899 No".into())),
+            &mut p,
+            &mut d,
+        )
+        .await
+        .unwrap();
+        l.abandon_pending().await.unwrap();
+        assert_eq!(awaiting(&l).await, None);
+        scan(&mut l, EAN).await.unwrap();
+        assert_eq!(l.basket().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_overlapped_sale_is_abandoned_and_the_lane_keeps_selling() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Overlapped), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert_eq!(l.screen(), &Screen::Selling);
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("Ring the basket up again"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+        assert!(p.written.is_empty());
+        assert_eq!(d.kicks, 0);
+        assert_eq!(awaiting(&l).await, None);
+        assert!(l.basket().is_empty());
+        assert_eq!(l.tender_total(), Some(Money::zero()));
+        // Selling resumes on the next number.
+        scan(&mut l, EAN).await.unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!p.written.is_empty());
+    }
+
+    /// A fiscal port that records the call and then breaks the store, so the
+    /// VSDC "answers" but `confirm_sale` cannot succeed.
+    struct BreaksStore {
+        pool: till_store::Store,
+    }
+    impl FiscalPort for BreaksStore {
+        fn save_sales(&mut self, payload: &SalePayload) -> Result<VsdcReceipt, FiscalError> {
+            let pool = self.pool.pool().clone();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(pool.close())
+            });
+            SimFiscal {
+                next_rcpt_no: 7,
+                mode: SimMode::Succeed,
+            }
+            .save_sales(payload)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nothing_prints_when_the_store_cannot_confirm() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = BreaksStore {
+            pool: l.store.clone(),
+        };
+        let r = l.settle(&mut f, &mut p, &mut d).await;
+        assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
+        assert!(
+            p.written.is_empty(),
+            "printed before confirm_sale succeeded"
+        );
+        assert_eq!(d.kicks, 0);
+        assert_eq!(l.screen(), &Screen::Selling);
+        // The VSDC's answer is kept, so a retry would not ask it again.
+        assert!(l.pending.as_ref().is_some_and(|x| x.receipt.is_some()));
+    }
+
+    #[tokio::test]
+    async fn a_printer_fault_after_confirmation_does_not_undo_the_sale() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        p.fail_next = true;
+        let s = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(s.is_some());
+        assert!(matches!(l.screen(), Screen::Settled { .. }));
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(d.kicks, 1);
+        assert_eq!(awaiting(&l).await, None);
+    }
+
+    #[tokio::test]
+    async fn settling_an_empty_basket_is_a_problem() {
+        let mut l = lane_with(&[], EmbeddedMode::Weight).await;
+        let (mut p, mut d) = devices();
+        let r = l
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+    }
+
+    #[test]
+    fn the_cis_clock_is_kigali_time() {
+        // 2026-11-21 22:30:05 UTC is 00:30:05 on the 22nd in Kigali.
+        assert_eq!(kigali_stamp(1_795_300_205), "20261122003005");
+        assert_eq!(kigali_stamp(0), "19700101020000");
+        // 2024-02-29 (leap day) 12:00:00 UTC.
+        assert_eq!(kigali_stamp(1_709_208_000), "20240229140000");
     }
 }
