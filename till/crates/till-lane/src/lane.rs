@@ -152,6 +152,8 @@ pub enum LaneError {
         "The VSDC has already recorded this sale, so it cannot be cancelled. Press pay to finish it."
     )]
     AlreadyRecorded,
+    #[error("The lane is not stopped.")]
+    NotStopped,
     #[error("There is no pending sale to cancel.")]
     NothingPending,
 }
@@ -276,6 +278,25 @@ impl LaneState {
         }
     }
 
+    /// Leaves a hard stop once a supervisor has cleared the fault (CIS 24.7.9:
+    /// after the error is cleared, selling must be enabled again). The basket
+    /// is kept; the tenders are cleared because the cashier takes payment
+    /// again. This does NOT claim the VSDC is back: if it is still unreachable
+    /// the next `settle` hard-stops again, which is the correct outcome.
+    pub fn resume_from_hard_stop(&mut self) -> Result<(), LaneError> {
+        self.buffer.clear();
+        if !matches!(self.screen, Screen::HardStop { .. }) {
+            return self.refuse(LaneError::NotStopped);
+        }
+        self.screen = Screen::Selling;
+        self.tenders = TenderSet::default();
+        self.notice = Notice::Info(
+            "Selling resumed. Take payment again; the lane stops again if the VSDC is still down."
+                .into(),
+        );
+        Ok(())
+    }
+
     /// Gives up a rejected sale that can never succeed: retires its number and
     /// unfreezes the basket and tenders. Refused once the VSDC has recorded it.
     pub async fn abandon_pending(&mut self) -> Result<(), LaneError> {
@@ -376,7 +397,10 @@ impl LaneState {
         };
 
         // The VSDC has answered. Keep the answer until the store has it, so a
-        // failed confirm is retried without asking the VSDC (which would 994).
+        // failed confirm is retried WITHOUT calling `save_sales` again. Do not
+        // "simplify" a retry into a full re-send: the VSDC has already recorded
+        // this invoice number, so a second save returns 994 (Overlapped), burns
+        // the number and loses a sale that was in fact fiscalised.
         if let Err(e) = self
             .store
             .confirm_sale(&pending.handle, receipt.clone())
@@ -1046,6 +1070,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(printed_invc(&p), "2");
+    }
+
+    #[tokio::test]
+    async fn a_hard_stop_can_be_cleared_and_stops_again_if_the_vsdc_is_still_down() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = fiscal(SimMode::Unreachable);
+        l.settle(&mut f, &mut p, &mut d).await.unwrap();
+        assert!(matches!(l.screen(), Screen::HardStop { .. }));
+
+        l.resume_from_hard_stop().unwrap();
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert_eq!(l.basket().len(), 1);
+        assert_eq!(l.tender_total(), Some(Money::zero()));
+
+        // Still unreachable: re-tender, settle, and it stops again, selling nothing.
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let r = l.settle(&mut f, &mut p, &mut d).await.unwrap();
+        assert!(r.is_none());
+        assert!(matches!(l.screen(), Screen::HardStop { .. }));
+        assert!(p.written.is_empty());
+        assert_eq!(d.kicks, 0);
+
+        // Resuming when not stopped is refused, not a panic.
+        l.resume_from_hard_stop().unwrap();
+        l.resume_from_hard_stop().unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.screen(), &Screen::Selling);
+
+        // Once the VSDC is back the same basket sells.
+        f.mode = SimMode::Succeed;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        assert!(l.settle(&mut f, &mut p, &mut d).await.unwrap().is_some());
     }
 
     #[tokio::test]
