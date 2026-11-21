@@ -188,6 +188,10 @@ pub enum LaneError {
         "A sale is still waiting on the VSDC, so the shift cannot be closed. Finish or cancel that sale first; it must be accounted for to RRA."
     )]
     ShiftHasPendingSale,
+    #[error(
+        "A sale is in progress. Finish it or void its lines and take back its payments before closing the shift."
+    )]
+    SaleInProgress,
     #[error("The declared cash cannot be negative. Count the drawer again.")]
     NegativeDeclaredCash,
     #[error("This shift was already closed. Open a new shift to sell.")]
@@ -1007,11 +1011,10 @@ impl LaneState {
     /// drawer is NOT refused: the variance is recorded and the shift closes.
     /// The lane then returns to `NoShift`, as a till is left overnight.
     ///
-    /// Because the return type carries the closing figures, a refusal the
-    /// cashier can act on (a sale awaiting the VSDC, a negative count, no open
-    /// shift) is `Err` here, with the `Problem` notice also set; it is told apart
-    /// from a fault by its variant (anything but `LaneError::Store` and
-    /// `LaneError::Internal`).
+    /// `Ok(Some(..))`: closed. `Ok(None)`: refused for a reason the cashier can
+    /// act on (no shift, negative count, a sale in progress or awaiting the
+    /// VSDC); the `Problem` notice says which and the shift stays open. `Err`
+    /// only for a store fault. Same contract as `settle`.
     #[cfg_attr(
         not(test),
         expect(
@@ -1019,7 +1022,10 @@ impl LaneState {
             reason = "no screen closes a shift yet; the UI task wires it"
         )
     )]
-    pub async fn close_shift(&mut self, declared_cash: Money) -> Result<ShiftClose, LaneError> {
+    pub async fn close_shift(
+        &mut self,
+        declared_cash: Money,
+    ) -> Result<Option<ShiftClose>, LaneError> {
         self.buffer.clear();
         match self.try_close_shift(declared_cash).await {
             Ok(closed) => {
@@ -1027,12 +1033,9 @@ impl LaneState {
                     "Shift closed. Expected {}, declared {}, variance {}.",
                     closed.totals.expected_cash, closed.declared_cash, closed.variance
                 ));
-                Ok(closed)
+                Ok(Some(closed))
             }
-            Err(e) => {
-                self.notice = Notice::Problem(e.to_string());
-                Err(e)
-            }
+            Err(e) => self.refuse(e).map(|()| None),
         }
     }
 
@@ -1053,9 +1056,16 @@ impl LaneState {
         if self.pending.is_some() {
             return Err(LaneError::ShiftHasPendingSale);
         }
+        // A settled sale is finished (its basket is only kept for the receipt);
+        // anything else holding lines or payments is a customer mid-sale.
+        let settled = matches!(self.screen, Screen::Settled { .. });
+        if !settled && (!self.basket.is_empty() || !self.tenders.entries().is_empty()) {
+            return Err(LaneError::SaleInProgress);
+        }
         let closed = match self.store.close_shift(&shift.id, declared_cash).await {
             Ok(c) => c,
             Err(StoreError::ShiftHasPendingSale) => return Err(LaneError::ShiftHasPendingSale),
+            Err(StoreError::NegativeDeclaredCash) => return Err(LaneError::NegativeDeclaredCash),
             Err(StoreError::ShiftAlreadyClosed) => {
                 // Closed elsewhere: this lane's shift is stale.
                 self.end_shift();
@@ -1405,7 +1415,11 @@ mod tests {
             .await
             .unwrap();
         // expected 2250; the cashier counts 250
-        let c = l.close_shift(rwf("250")).await.unwrap();
+        let c = l
+            .close_shift(rwf("250"))
+            .await
+            .unwrap()
+            .expect("a short till closes");
         assert_eq!(c.totals.expected_cash, rwf("2250"));
         assert_eq!(c.variance, rwf("-2000"));
         assert_eq!(l.screen(), &Screen::NoShift);
@@ -1424,7 +1438,11 @@ mod tests {
         let mut f = fiscal(SimMode::Reject("894 No".into()));
         l.settle(&mut f, &mut p, &mut d).await.unwrap();
         let r = l.close_shift(rwf("0")).await;
-        assert!(matches!(r, Err(LaneError::ShiftHasPendingSale)), "{r:?}");
+        assert!(matches!(r, Ok(None)), "{r:?}");
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("waiting on the VSDC"), "{m}"),
+            n => panic!("expected a problem, got {n:?}"),
+        }
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert_eq!(l.screen(), &Screen::Selling);
         assert!(l.shift().is_some());
@@ -1433,16 +1451,45 @@ mod tests {
     #[tokio::test]
     async fn closing_with_no_shift_or_a_negative_count_is_refused() {
         let mut l = lane_without_shift().await;
-        assert!(matches!(
-            l.close_shift(rwf("0")).await,
-            Err(LaneError::NoShift)
-        ));
+        assert!(matches!(l.close_shift(rwf("0")).await, Ok(None)));
+        assert!(matches!(l.notice(), Notice::Problem(_)));
         l.open_shift("alice", rwf("0")).await.unwrap();
-        assert!(matches!(
-            l.close_shift(rwf("-1")).await,
-            Err(LaneError::NegativeDeclaredCash)
-        ));
+        assert!(matches!(l.close_shift(rwf("-1")).await, Ok(None)));
+        assert!(matches!(l.notice(), Notice::Problem(_)));
         assert!(l.shift().is_some());
+    }
+
+    #[tokio::test]
+    async fn closing_over_a_half_rung_basket_is_refused_and_keeps_it() {
+        let mut l = lane_with_item().await;
+        assert!(matches!(l.close_shift(rwf("0")).await, Ok(None)));
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("in progress"), "{m}"),
+            n => panic!("expected a problem, got {n:?}"),
+        }
+        assert_eq!(l.basket().len(), 1);
+        assert_eq!(l.screen(), &Screen::Selling);
+        // payments keyed against an empty basket also count as a sale in progress
+        l.void_line(1).await.unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("5")).unwrap();
+        assert!(matches!(l.close_shift(rwf("0")).await, Ok(None)));
+        // once cleared, a short count still closes
+        l.clear_tenders().unwrap();
+        let c = l.close_shift(rwf("0")).await.unwrap().unwrap();
+        assert_eq!(c.variance, Money::zero());
+    }
+
+    #[tokio::test]
+    async fn closing_from_a_settled_screen_is_allowed_and_the_receipt_survives() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(l.close_shift(rwf("1000")).await.unwrap().is_some());
+        assert_eq!(l.screen(), &Screen::NoShift);
+        assert!(l.last_receipt().is_some());
     }
 
     #[tokio::test]

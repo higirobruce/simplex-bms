@@ -167,6 +167,11 @@ impl Store {
         shift_id: &str,
         declared_cash: Money,
     ) -> Result<ShiftClose, StoreError> {
+        // A count cannot be below zero; a SHORT count is still fine (that is
+        // the variance, not the count).
+        if declared_cash < Money::zero() {
+            return Err(StoreError::NegativeDeclaredCash);
+        }
         let mut tx = self.begin_immediate().await?;
         let closed = async {
             let conn = tx.conn();
@@ -751,6 +756,20 @@ mod tests {
             s.close_shift("nope", m("0")).await,
             Err(StoreError::ShiftNotFound { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_negative_declared_cash_is_refused_and_zero_is_a_valid_count() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "100").await;
+        let r = s.close_shift(&sh, m("-1.00")).await;
+        assert!(matches!(r, Err(StoreError::NegativeDeclaredCash)), "{r:?}");
+        assert!(s.current_shift("d1").await.unwrap().is_some());
+        // an empty drawer is a short till (variance -100), not a refusal
+        assert_eq!(
+            s.close_shift(&sh, m("0")).await.unwrap().variance,
+            m("-100")
+        );
     }
 
     #[tokio::test]

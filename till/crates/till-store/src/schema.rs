@@ -117,6 +117,9 @@ pub enum StoreError {
     /// A sale on this shift is still awaiting the VSDC and holds a live invoice number.
     #[error("a sale on this shift is still awaiting the VSDC")]
     ShiftHasPendingSale,
+    /// A declared cash count below zero is a data-entry error.
+    #[error("the declared cash cannot be negative")]
+    NegativeDeclaredCash,
     /// An opening float below zero is a data-entry error, not a float.
     #[error("the opening float cannot be negative")]
     NegativeOpeningFloat,
