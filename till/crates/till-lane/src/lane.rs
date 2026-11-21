@@ -61,7 +61,9 @@ use till_core::{
     Basket, BasketError, BasketLine, BasketTotals, LineAmounts, LineError, Money, Qty, Settled,
     TenderEntry, TenderError, TenderSet,
 };
-use till_store::{CachedProduct, Counter, NewSale, SaleHandle, Store, StoreError, VsdcReceipt};
+use till_store::{
+    CachedProduct, Counter, NewSale, OpenShift, SaleHandle, Store, StoreError, VsdcReceipt,
+};
 
 /// Longest scan buffer kept. Longer than any code (EAN-13 is 13); the excess
 /// is dropped so the resulting `BadLength` still tells the cashier it was wrong.
@@ -69,9 +71,16 @@ const MAX_BUFFER: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
+    /// No shift is open on this device, so nothing can be sold. A normal
+    /// state: every till starts its day here until a cashier opens a shift.
+    NoShift,
     Selling,
-    HardStop { reason: String },
-    Settled { change: Money },
+    HardStop {
+        reason: String,
+    },
+    Settled {
+        change: Money,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +139,12 @@ pub enum LaneError {
     Internal(String),
     #[error("This sale is no longer open for scanning.")]
     NotSelling,
+    #[error("No shift is open. Open a shift with the opening float before selling.")]
+    NoShift,
+    #[error("A shift is already open on this till.")]
+    ShiftAlreadyOpen,
+    #[error("The opening float cannot be negative. Count the drawer again.")]
+    NegativeFloat,
     #[error("{0}. Correct the payment and try again; nothing was recorded.")]
     Tender(#[from] TenderError),
     #[error("There is no receipt to reprint.")]
@@ -173,8 +188,10 @@ pub enum LaneError {
 /// confirm is a sale RRA already holds and must never be rung again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreOp {
-    /// Reading the pending sales when the lane opens.
+    /// Reading the pending sales and the open shift when the lane opens.
     Startup,
+    /// Writing a new shift.
+    OpenShift,
     /// Looking a scanned code up in the catalogue.
     Scan,
     /// Allocating the invoice number, before the VSDC is asked anything.
@@ -205,6 +222,9 @@ impl StoreOp {
         match self {
             StoreOp::Startup => format!(
                 "The lane could not read its own saved sales ({e}). It has not opened; call support."
+            ),
+            StoreOp::OpenShift => format!(
+                "The shift could not be opened ({e}). Nothing was recorded. Try again; if it repeats, call support."
             ),
             StoreOp::Scan => format!(
                 "The catalogue could not be read ({e}). Try the scan again; if it repeats, call support."
@@ -309,6 +329,9 @@ pub struct LaneState {
     basket: Basket,
     tenders: TenderSet,
     pending: Option<Pending>,
+    /// The shift this till is selling in. `None` exactly when the screen is
+    /// `NoShift`.
+    shift: Option<OpenShift>,
     /// The last confirmed sale, kept so a reprint can be recomposed as a COPY.
     last_sale: Option<LastSale>,
     /// What the VSDC last told us (see [`VsdcOutcome`]).
@@ -353,6 +376,18 @@ impl LaneState {
             });
             notice = Notice::Problem(LaneError::OutstandingSale.to_string());
         }
+        // An absent shift is not a fault: it is how a till starts every
+        // morning. A shift already open for this device is resumed silently,
+        // so a restarted till does not ask for a second opening float.
+        let shift = store
+            .current_shift(&cfg.dvc_srl_no)
+            .await
+            .map_err(|e| LaneError::store(StoreOp::Startup, e))?;
+        let screen = if shift.is_some() {
+            Screen::Selling
+        } else {
+            Screen::NoShift
+        };
         let timings = Timings {
             cold_start: Some(timer.elapsed()),
             ..Timings::default()
@@ -362,10 +397,11 @@ impl LaneState {
             cfg,
             buffer: String::new(),
             notice,
-            screen: Screen::Selling,
+            screen,
             basket: Basket::new(),
             tenders: TenderSet::default(),
             pending,
+            shift,
             last_sale: None,
             vsdc_outcome: VsdcOutcome::NoneYet,
             timings,
@@ -389,7 +425,7 @@ impl LaneState {
     /// A character from the wedge. Starting a new scan clears the previous notice.
     pub fn key(&mut self, c: char) {
         let timer = Timer::start();
-        if self.screen != Screen::Selling
+        if !matches!(self.screen, Screen::Selling | Screen::NoShift)
             || c.is_control()
             || self.buffer.chars().count() >= MAX_BUFFER
         {
@@ -513,7 +549,9 @@ impl LaneState {
     }
 
     async fn try_abandon_pending(&mut self) -> Result<(), LaneError> {
-        if self.screen != Screen::Selling {
+        // Cancelling needs no shift: a sale left outstanding by a crash must
+        // be clearable on a till that has since started on `NoShift`.
+        if !matches!(self.screen, Screen::Selling | Screen::NoShift) {
             return Err(LaneError::NotSelling);
         }
         match &self.pending {
@@ -537,6 +575,9 @@ impl LaneState {
 
     /// Scans, voids and tenders are only for an open, unfrozen sale.
     fn ensure_open(&self) -> Result<(), LaneError> {
+        if self.screen == Screen::NoShift {
+            return Err(LaneError::NoShift);
+        }
         if self.screen != Screen::Selling {
             return Err(LaneError::NotSelling);
         }
@@ -554,6 +595,9 @@ impl LaneState {
         drawer: &mut dyn Drawer,
         timer: Timer,
     ) -> Result<Settled, LaneError> {
+        if self.screen == Screen::NoShift {
+            return Err(LaneError::NoShift);
+        }
         if self.screen != Screen::Selling {
             return Err(LaneError::NotSelling);
         }
@@ -571,19 +615,13 @@ impl LaneState {
         let mut pending = match self.pending.take() {
             Some(p) => p,
             None => {
+                // The lane's own shift names the sale. The store re-checks it
+                // inside its write transaction, which is what catches a shift
+                // closed mid-sale.
                 let shift = self
-                    .store
-                    .current_shift(&self.cfg.dvc_srl_no)
-                    .await
-                    .map_err(|e| LaneError::store(StoreOp::BeginSale, e))?
-                    .ok_or_else(|| {
-                        LaneError::store(
-                            StoreOp::BeginSale,
-                            StoreError::NoOpenShift {
-                                dvc_srl_no: self.cfg.dvc_srl_no.clone(),
-                            },
-                        )
-                    })?;
+                    .shift
+                    .as_ref()
+                    .ok_or_else(|| LaneError::Internal("selling without a shift".into()))?;
                 let handle = self
                     .store
                     .begin_sale(NewSale {
@@ -840,6 +878,49 @@ impl LaneState {
     pub fn screen(&self) -> &Screen {
         &self.screen
     }
+    /// The shift this till is selling in, if one is open.
+    pub fn shift(&self) -> Option<&OpenShift> {
+        self.shift.as_ref()
+    }
+
+    /// Opens a shift and moves the lane from `NoShift` to `Selling`. `opened_by`
+    /// is whoever the UI says is at the till; the lane has no identity of its
+    /// own. A refusal the cashier can act on (a negative float, a shift that is
+    /// already open) is `Ok(())` with a `Problem` notice; `Err` is a store fault.
+    pub async fn open_shift(
+        &mut self,
+        opened_by: &str,
+        opening_float: Money,
+    ) -> Result<(), LaneError> {
+        self.buffer.clear();
+        match self.try_open_shift(opened_by, opening_float).await {
+            Ok(()) => Ok(()),
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    async fn try_open_shift(
+        &mut self,
+        opened_by: &str,
+        opening_float: Money,
+    ) -> Result<(), LaneError> {
+        if self.shift.is_some() {
+            return Err(LaneError::ShiftAlreadyOpen);
+        }
+        let shift = self
+            .store
+            .open_shift(&self.cfg.dvc_srl_no, opened_by, opening_float)
+            .await
+            .map_err(|e| match e {
+                StoreError::NegativeOpeningFloat => LaneError::NegativeFloat,
+                StoreError::ShiftAlreadyOpen { .. } => LaneError::ShiftAlreadyOpen,
+                e => LaneError::store(StoreOp::OpenShift, e),
+            })?;
+        self.shift = Some(shift);
+        self.screen = Screen::Selling;
+        self.notice = Notice::Info("Shift opened. Ready to sell.".into());
+        Ok(())
+    }
     pub fn basket(&self) -> &Basket {
         &self.basket
     }
@@ -1027,6 +1108,120 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    fn test_config() -> LaneConfig {
+        LaneConfig {
+            dvc_srl_no: "DVC1".into(),
+            bhf_id: "00".into(),
+            embedded: EmbeddedMode::Weight,
+            counter: Counter::SaleInvc,
+            shop_name: "Simplex Mart".into(),
+            shop_address: "KG 7 Ave, Kigali".into(),
+            shop_tin: "123456789".into(),
+        }
+    }
+
+    /// A lane over a catalogue with one product and NO shift open.
+    async fn lane_without_shift() -> LaneState {
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .sync_catalogue(&[product("a", Some(EAN), None, false)])
+            .await
+            .unwrap();
+        LaneState::new(store, test_config()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_lane_with_no_open_shift_starts_on_the_no_shift_screen() {
+        let l = lane_without_shift().await;
+        assert_eq!(l.screen(), &Screen::NoShift);
+        assert!(l.shift().is_none());
+        assert_eq!(l.notice(), &Notice::None);
+    }
+
+    #[tokio::test]
+    async fn scanning_with_no_shift_open_is_refused_and_adds_nothing() {
+        let mut l = lane_without_shift().await;
+        // Ok(()), not Err: the cashier can act on this.
+        scan(&mut l, EAN).await.unwrap();
+        assert!(l.basket().is_empty());
+        assert_eq!(l.buffer(), "");
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("Open a shift"), "{m}"),
+            n => panic!("expected a problem, got {n:?}"),
+        }
+        assert_eq!(l.screen(), &Screen::NoShift);
+    }
+
+    #[tokio::test]
+    async fn opening_a_shift_moves_the_lane_to_selling() {
+        let mut l = lane_without_shift().await;
+        l.open_shift("alice", rwf("5000")).await.unwrap();
+        assert_eq!(l.screen(), &Screen::Selling);
+        let s = l.shift().expect("the lane holds its shift");
+        assert_eq!(s.opened_by, "alice");
+        assert_eq!(s.opening_float, rwf("5000"));
+        scan(&mut l, EAN).await.unwrap();
+        assert_eq!(l.basket().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_sale_is_recorded_against_the_lanes_own_shift() {
+        let mut l = lane_without_shift().await;
+        l.open_shift("alice", Money::zero()).await.unwrap();
+        let id = l.shift().unwrap().id.clone();
+        scan(&mut l, EAN).await.unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("5000")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(matches!(l.screen(), Screen::Settled { .. }));
+        let sale_shift: String = sqlx::query_scalar("select shift_id from sale")
+            .fetch_one(l.store.pool())
+            .await
+            .unwrap();
+        assert_eq!(sale_shift, id);
+    }
+
+    #[tokio::test]
+    async fn a_negative_opening_float_is_a_problem_and_the_lane_stays_closed() {
+        let mut l = lane_without_shift().await;
+        l.open_shift("alice", rwf("-1")).await.unwrap();
+        assert_eq!(l.screen(), &Screen::NoShift);
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+    }
+
+    #[tokio::test]
+    async fn opening_a_second_shift_is_a_problem_and_keeps_the_first() {
+        let mut l = lane_without_shift().await;
+        l.open_shift("alice", rwf("100")).await.unwrap();
+        l.open_shift("bob", rwf("200")).await.unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.shift().unwrap().opened_by, "alice");
+    }
+
+    #[tokio::test]
+    async fn a_store_fault_opening_a_shift_is_err() {
+        let mut l = lane_without_shift().await;
+        l.store.pool().close().await;
+        let r = l.open_shift("alice", Money::zero()).await;
+        assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
+        assert_eq!(l.screen(), &Screen::NoShift);
+    }
+
+    #[tokio::test]
+    async fn a_lane_resumes_an_existing_open_shift_on_startup() {
+        let store = Store::open_in_memory().await.unwrap();
+        let opened = store
+            .open_shift("DVC1", "alice", rwf("5000"))
+            .await
+            .unwrap();
+        let l = LaneState::new(store, test_config()).await.unwrap();
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert_eq!(l.shift(), Some(&opened));
+        assert_eq!(l.notice(), &Notice::None);
     }
 
     async fn scan(l: &mut LaneState, code: &str) -> Result<(), LaneError> {
@@ -1227,6 +1422,11 @@ mod tests {
     #[tokio::test]
     async fn a_store_fault_returns_err_sets_the_notice_and_clears_the_buffer() {
         let store = Store::open_in_memory().await.unwrap();
+        // A scan only reaches the catalogue when a shift is open.
+        store
+            .open_shift("DVC1", "cashier", Money::zero())
+            .await
+            .unwrap();
         let mut l = LaneState::new(
             store,
             LaneConfig {

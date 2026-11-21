@@ -134,7 +134,13 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Handle::current().block_on(f)
 }
 
-fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &mut Local) {
+fn apply(
+    action: Action,
+    state: &mut LaneState,
+    devices: &mut Devices,
+    local: &mut Local,
+    session: &Session,
+) {
     local.note = None;
     let result = match action {
         Action::Char(c) => {
@@ -146,6 +152,7 @@ fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &m
             Ok(())
         }
         Action::Enter => match state.screen() {
+            Screen::NoShift => open_shift(state, local, session),
             Screen::Selling if !state.buffer().is_empty() => block_on(state.enter()),
             Screen::Selling => block_on(state.settle(
                 devices.fiscal.as_mut(),
@@ -180,6 +187,41 @@ fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &m
     local.fault = result.err().map(|e| e.to_string());
 }
 
+/// The longest opening float the till will take from the keyboard.
+const MAX_FLOAT_DIGITS: usize = 7;
+
+/// Enter on the no-shift screen: what is keyed is the opening float; nothing
+/// keyed means a float of zero. The cashier's name is the session's, because
+/// the lane has no sign-in of its own yet.
+fn open_shift(
+    state: &mut LaneState,
+    local: &mut Local,
+    session: &Session,
+) -> Result<(), crate::lane::LaneError> {
+    // A scanner types its code and Enter exactly like a cashier keys a float,
+    // so a barcode scanned on this screen must never become an opening float.
+    // No drawer opens with more than seven digits.
+    if state.buffer().chars().count() > MAX_FLOAT_DIGITS {
+        while !state.buffer().is_empty() {
+            state.backspace();
+        }
+        local.note = Some("That looks like a barcode. Key the opening float instead.".into());
+        return Ok(());
+    }
+    let float = if state.buffer().is_empty() {
+        Some(Money::zero())
+    } else {
+        Money::try_from_str(state.buffer()).ok()
+    };
+    match float {
+        Some(f) => block_on(state.open_shift(&session.cashier, f)),
+        None => {
+            local.note = Some("Key the opening float as a plain amount, then press Enter.".into());
+            Ok(())
+        }
+    }
+}
+
 /// F8: what is keyed is the cash handed over; nothing keyed means exact cash.
 fn tender_cash(state: &mut LaneState, local: &mut Local) -> Result<(), crate::lane::LaneError> {
     if *state.screen() != Screen::Selling {
@@ -212,7 +254,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
         .unwrap_or_default();
 
     for a in ctx.input(|i| actions_from(&i.events)) {
-        apply(a, state, devices, &mut local);
+        apply(a, state, devices, &mut local, &session);
     }
 
     let mut tapped = Vec::new();
@@ -223,6 +265,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
                 tapped.push(a);
             }
         }
+        Screen::NoShift => no_shift(ctx, state, &local, &session),
         _ => {
             if let Some(a) = rail(ctx, state, &local) {
                 tapped.push(a);
@@ -231,7 +274,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
         }
     }
     for a in &tapped {
-        apply(*a, state, devices, &mut local);
+        apply(*a, state, devices, &mut local, &session);
     }
     if !tapped.is_empty() {
         ctx.request_repaint();
@@ -330,7 +373,12 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
                         }
                     }
                     ui.label(text(clock(), mono(14.0), TOKENS.line));
-                    ui.label(text(session.shift.to_uppercase(), sans(14.0), TOKENS.line));
+                    let shift = if state.shift().is_some() {
+                        session.shift.to_uppercase()
+                    } else {
+                        "NO SHIFT".to_string()
+                    };
+                    ui.label(text(shift, sans(14.0), TOKENS.line));
                 });
             });
         });
@@ -906,6 +954,49 @@ fn hard_stop(ctx: &Context, state: &LaneState, reason: &str) -> Option<Action> {
     tapped
 }
 
+/// Shown until a cashier opens a shift. The float is keyed on the same wedge
+/// buffer the scans use, and Enter opens the shift.
+fn no_shift(ctx: &Context, state: &LaneState, local: &Local, session: &Session) {
+    egui::CentralPanel::default()
+        .frame(Frame::new().fill(TOKENS.ink).inner_margin(Margin::same(40)))
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(60.0);
+                ui.label(text("NO SHIFT OPEN", sans_bold(13.0), TOKENS.hi_vis));
+                ui.add_space(12.0);
+                ui.label(text("Open a shift to start selling", sans_bold(40.0), TOKENS.canvas));
+                ui.add_space(14.0);
+                ui.label(text(
+                    format!(
+                        "Count the drawer, key the opening float, and press Enter. The shift opens in the name of {}.",
+                        session.cashier
+                    ),
+                    sans(18.0),
+                    TOKENS.line,
+                ));
+                ui.add_space(24.0);
+                let buffer = if state.buffer().is_empty() {
+                    "Opening float ▏".to_string()
+                } else {
+                    format!("{} ▏", state.buffer())
+                };
+                ui.label(text(buffer, mono(28.0), TOKENS.canvas));
+                ui.add_space(12.0);
+                if let Notice::Problem(m) = state.notice() {
+                    ui.label(text(m, sans(16.0), TOKENS.hi_vis));
+                }
+                if let Some(n) = &local.note {
+                    ui.label(text(n, sans(16.0), TOKENS.hi_vis));
+                }
+                if let Some(f) = &local.fault {
+                    ui.label(text(f, sans(16.0), TOKENS.hi_vis));
+                }
+                ui.add_space(20.0);
+                ui.label(text("ENTER  Open shift", mono(14.0), TOKENS.line));
+            });
+        });
+}
+
 fn ghost_chip(ui: &mut Ui, label: &str) {
     Frame::new()
         .stroke(Stroke::new(1.0_f32, TOKENS.ink_soft))
@@ -978,14 +1069,25 @@ mod tests {
 
     impl Rig {
         fn new() -> Rig {
+            Rig::build(true)
+        }
+
+        /// A till as it starts in the morning: no shift yet.
+        fn without_shift() -> Rig {
+            Rig::build(false)
+        }
+
+        fn build(with_shift: bool) -> Rig {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let state = rt.block_on(async {
                 let store = Store::open_in_memory().await.unwrap();
                 store.sync_catalogue(&demo::products()).await.unwrap();
-                store
-                    .open_shift(&demo::config().dvc_srl_no, "cashier", Money::zero())
-                    .await
-                    .unwrap();
+                if with_shift {
+                    store
+                        .open_shift(&demo::config().dvc_srl_no, "cashier", Money::zero())
+                        .await
+                        .unwrap();
+                }
                 LaneState::new(store, demo::config()).await.unwrap()
             });
             let ctx = Context::default();
@@ -1012,6 +1114,41 @@ mod tests {
             let (state, devices) = (&mut self.state, &mut self.devices);
             let _ = self.ctx.run(input, |ctx| lane(ctx, state, devices));
         }
+    }
+
+    #[test]
+    fn the_cashier_opens_a_shift_from_the_no_shift_screen() {
+        let mut r = Rig::without_shift();
+        set_session(
+            &r.ctx,
+            Session {
+                lane: "Lane 02".into(),
+                cashier: "M. Uwase".into(),
+                shift: "Shift 3".into(),
+            },
+        );
+        r.frame(vec![]); // the no-shift screen renders
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        // A barcode scanned here is not an opening float.
+        let mut scan = type_text("5612345000017");
+        scan.extend(tap(Key::Enter));
+        r.frame(scan);
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        assert_eq!(r.state.buffer(), "");
+        assert!(r.state.basket().is_empty());
+        // Key the float; Enter opens the shift in the session's name.
+        r.frame(type_text("5000"));
+        assert_eq!(r.state.buffer(), "5000");
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        assert_eq!(
+            r.state.shift().unwrap().opening_float.to_string(),
+            "5000.00"
+        );
+        assert_eq!(r.state.shift().unwrap().opened_by, "M. Uwase");
+        r.frame(type_text("5612345000017"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(r.state.basket().len(), 1);
     }
 
     #[test]
