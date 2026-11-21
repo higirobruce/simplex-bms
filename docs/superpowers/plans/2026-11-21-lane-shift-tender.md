@@ -483,13 +483,25 @@ is the bug this task exists to prevent.
 
 ### Task 10: A mis-keyed tender can be taken back
 
-**Added during execution.** Task 5's implementer identified a hazard that Task 5
-itself created. With cash the only method, an overpayment always produced change,
-so a mis-key was self-correcting. Once a tender can be non-cash, it is not: change
-is cash-only and capped by cash received, so a cashier who taps card for 8,000 on a
-7,450 sale cannot produce the 550 — and cannot undo the tender either. The sale
-settles and the customer is **silently overcharged**. Mis-keys happen constantly on
-a real counter, so this closes a money-losing hole in the slice that opened it.
+**Added during execution. Corrected after dispatch — see the note below.**
+
+Task 5's implementer identified a dead-end that Task 5 itself created. With cash
+the only method, an overpayment always produced change, so a mis-key was
+self-correcting. Once a tender can be non-cash it is not: change is cash-only and
+capped by cash received, so a cashier who taps card for 8,000 on a 7,450 sale
+cannot produce the 550 — and until this task could not undo the tender either.
+
+**Correction.** When this task was written the hazard was described as the sale
+settling and the customer being silently overcharged. That was wrong, and the
+implementer caught it by reading the code rather than the plan.
+`TenderSet::settle` returns `Err(TenderError::OverTenderOnNonCash)` when change
+would exceed cash received (`till-core/src/tender.rs`), so `till-core` **refuses**
+the settlement. No customer is overcharged.
+
+The real defect is an operational dead-end: the cashier cannot settle and cannot
+take the tender back, with a customer waiting and a basket they do not want to
+lose. That is worth fixing, but it is a usability failure rather than a money
+one, and the plan should not have claimed otherwise.
 
 **Files:**
 - Modify: `till/crates/till-lane/src/lane.rs`, `till/crates/till-lane/src/ui.rs`
