@@ -87,6 +87,13 @@ impl Money {
         Ok(Money(d))
     }
 
+    /// The inner decimal, read-only. Crate-private so a caller can compute with
+    /// the value but can only build a new [`Money`] through a checked path,
+    /// which keeps the 12-digit invariant intact.
+    pub(crate) fn amount(self) -> Decimal {
+        self.0
+    }
+
     /// `None` if the sum overflows or exceeds 12 digits.
     pub fn checked_add(self, other: Money) -> Option<Money> {
         Self::bounded(self.0.checked_add(other.0)?)
