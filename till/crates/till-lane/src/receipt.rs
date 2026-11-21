@@ -19,14 +19,30 @@
 //!
 //! # Known compliance gaps, deferred out of this slice
 //!
-//! Both need a raster image command the ESC/POS encoder does not have yet, and
-//! certification should meet them as known items:
+//! The first two need a raster image command the ESC/POS encoder does not
+//! have yet. All three, plus the printer-status limitation below, are known
+//! items that certification should meet as such:
 //!
 //! * the official RRA logo on every receipt (CIS 7.29);
 //! * the COPY / TRAINING / PROFORMA watermark (CIS 11). The designation is
 //!   printed as a banner and the "THIS IS NOT AN OFFICIAL RECEIPT" notice is
 //!   printed, but the watermark itself is not. The "at least twice bigger than
 //!   the amounts" rule is met by double height.
+//! * the COPY receipt counter (CIS 7.25.1, 15.1). A reprinted COPY carries the
+//!   ORIGINAL sale's `rcpt_no` and `tot_rcpt_no`, so it reads like `168/258 CS`
+//!   and states an `NS` counter beneath a `CS` label. CIS 7.25.1 expects a
+//!   counter per receipt type, and the 15.1 COPY sample shows `24/260 CR`, a
+//!   series of its own. Nothing is burned and no figure is misstated, but the
+//!   number series is the original's. Closing it needs a VSDC round-trip (CIS
+//!   section 6) and `Counter::CopyInvc`, which exists in the store but is
+//!   unused. That contradicts "reprint touches only the printer", so it belongs
+//!   with the Phase 3 fiscal client.
+//! * `LaneState::reprint` treats the original as printed once the printer
+//!   `write` returns `Ok` (`LastSale::original_printed`). That says the bytes
+//!   were accepted, not that paper survived: a mid-roll jam reported as
+//!   success makes every later reprint a COPY, so no original is ever
+//!   re-issued. This is the safe direction (never two originals). Closing it
+//!   needs `DLE EOT` printer status, which the encoder does not have.
 
 use rust_decimal::Decimal;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd, TaxType};
