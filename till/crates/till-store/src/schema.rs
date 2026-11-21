@@ -52,10 +52,21 @@ fn migrator() -> Migrator {
 
 /// How long a writer waits for SQLite's write lock before failing with
 /// `SQLITE_BUSY`. Under `BEGIN IMMEDIATE` a second invoice allocator queues on
-/// this. Set explicitly (it equals sqlx's default) so it is a recorded
-/// decision: 5 s outlasts any sale transaction by orders of magnitude, yet a
-/// genuinely wedged lock surfaces at the counter instead of hanging the lane.
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+/// this.
+///
+/// Why 2 s: an allocation transaction is one UPDATE and one INSERT on WAL
+/// (sub-millisecond); the sale transaction adds its line and tender rows (a
+/// few milliseconds even at the 999-line ceiling). No transaction ever spans
+/// the VSDC round trip: the `AwaitingVsdc` row is committed, the network call
+/// runs with no lock held, and confirmation opens a fresh transaction. So real
+/// contention clears in single-digit milliseconds and 2 s is roughly 200x
+/// that, while a genuinely stuck lane surfaces to the cashier sooner than
+/// sqlx's inherited 5 s would.
+///
+/// Deliberately NOT 5000: that is sqlx's default, and a value equal to the
+/// default makes `busy_timeout_is_two_seconds` unable to notice the option
+/// being dropped. Do not "tidy" this back to 5 s.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Handle to the local database.
 #[derive(Debug, Clone)]
@@ -370,22 +381,23 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Guards against the busy timeout being LOWERED on either path. It does
-    /// NOT prove the option is set explicitly: 5000 ms is also sqlx's default,
-    /// so deleting the `.busy_timeout(..)` call would still pass.
+    /// Pins the busy timeout on both open paths. Because 2000 ms differs from
+    /// sqlx's default (5000), deleting the `.busy_timeout(..)` call from either
+    /// path makes this fail; the value was chosen off the default partly for
+    /// that reason.
     #[tokio::test]
-    async fn busy_timeout_is_five_seconds() {
+    async fn busy_timeout_is_two_seconds() {
         async fn ms(s: &Store) -> i64 {
             sqlx::query_scalar("pragma busy_timeout")
                 .fetch_one(s.pool())
                 .await
                 .unwrap()
         }
-        assert_eq!(ms(&Store::open_in_memory().await.unwrap()).await, 5000);
+        assert_eq!(ms(&Store::open_in_memory().await.unwrap()).await, 2000);
         let dir = std::env::temp_dir().join(format!("till-store-busy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let s = Store::open(&dir.join("till.db")).await.unwrap();
-        assert_eq!(ms(&s).await, 5000);
+        assert_eq!(ms(&s).await, 2000);
         drop(s);
         std::fs::remove_dir_all(&dir).ok();
     }
