@@ -373,11 +373,32 @@ function defaultDb(): PrismaClient {
 type SeededProduct = {
   id: string;
   name: string;
+  packSize: string | null;
   department: string;
   unitPrice: Prisma.Decimal;
   isWeighed: boolean;
   taxTyCd: "A" | "B";
 };
+
+/** A promotional price and the half-open window [startsAt, endsAt) it applies in. */
+type ActivePromotion = {
+  productId: string;
+  price: Prisma.Decimal;
+  startsAt: Date;
+  endsAt: Date;
+};
+
+/** What a line is charged at: the promotional price if one is running, else the shelf price. */
+function effectivePrice(
+  product: SeededProduct,
+  soldAt: Date,
+  promotions: ActivePromotion[],
+): Prisma.Decimal {
+  const running = promotions.find(
+    (p) => p.productId === product.id && p.startsAt <= soldAt && soldAt < p.endsAt,
+  );
+  return running ? running.price : product.unitPrice;
+}
 
 /**
  * Stocks an existing org as a supermarket. Creates rows only — never deletes — and is
@@ -432,6 +453,7 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
       select: {
         id: true,
         name: true,
+        packSize: true,
         department: true,
         unitPrice: true,
         isWeighed: true,
@@ -456,11 +478,23 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
 
   // ---- batches, write-offs and a couple of receipts -----------------------
   const now = new Date();
-  /** The catalogue line by name, so these fixtures survive a reordered catalogue. */
-  const item = (name: string): SeededProduct => {
-    const found = products.find((p) => p.name === name);
-    if (!found) throw new Error(`seedGrocery: no catalogue line named "${name}"`);
-    return found;
+  /**
+   * The catalogue line by name, so these fixtures survive a reordered catalogue. Two
+   * lines share a name in different pack sizes (Omo washing powder, Inyange still
+   * water), so an ambiguous name is an error rather than a silent first match: pass the
+   * pack size to pick one.
+   */
+  const item = (name: string, pack?: string): SeededProduct => {
+    const matches = products.filter(
+      (p) => p.name === name && (pack === undefined || p.packSize === pack),
+    );
+    const asked = pack === undefined ? `"${name}"` : `"${name}" (${pack})`;
+    if (matches.length === 0) throw new Error(`seedGrocery: no catalogue line named ${asked}`);
+    if (matches.length > 1) {
+      const sizes = matches.map((m) => m.packSize ?? "no pack size").join(", ");
+      throw new Error(`seedGrocery: ${asked} matches ${matches.length} lines (${sizes}); name the pack size`);
+    }
+    return matches[0];
   };
   const perishables = [
     { product: item("Inyange fresh milk"), lot: "MLK-2611-A", bestBeforeDays: 5, qty: "48.000" },
@@ -533,24 +567,31 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
 
   // ---- promotions and price history --------------------------------------
   const promoMilk = item("Inyange UHT milk");
-  const promoSoap = item("Omo washing powder");
+  const promoSoap = item("Omo washing powder", "1 kg");
+  // The milk promotion is running now and covers both trading days below, so the sales
+  // charge 1,300 for it. The soap promotion starts next week and changes nothing yet.
+  const promotions: ActivePromotion[] = [
+    {
+      productId: promoMilk.id,
+      price: money(1300),
+      startsAt: new Date(now.getTime() - DAY_MS),
+      endsAt: new Date(now.getTime() + 5 * DAY_MS),
+    },
+    {
+      productId: promoSoap.id,
+      price: money(2990),
+      startsAt: new Date(now.getTime() + 7 * DAY_MS),
+      endsAt: new Date(now.getTime() + 14 * DAY_MS),
+    },
+  ];
   await db.promotion.createMany({
-    data: [
-      {
-        productId: promoMilk.id,
-        price: money(1300).toFixed(2),
-        startsAt: new Date(now.getTime() - DAY_MS),
-        endsAt: new Date(now.getTime() + 5 * DAY_MS),
-        orgId,
-      },
-      {
-        productId: promoSoap.id,
-        price: money(2990).toFixed(2),
-        startsAt: new Date(now.getTime() + 7 * DAY_MS),
-        endsAt: new Date(now.getTime() + 14 * DAY_MS),
-        orgId,
-      },
-    ],
+    data: promotions.map((p) => ({
+      productId: p.productId,
+      price: p.price.toFixed(2),
+      startsAt: p.startsAt,
+      endsAt: p.endsAt,
+      orgId,
+    })),
   });
   const sugar = item("Kabuye white sugar");
   const oil = item("Sunflower cooking oil");
@@ -612,6 +653,9 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
       orgId,
       rng,
       products,
+      promotions,
+      // The promoted line opens each lane's day, so the discount is demonstrably rung up.
+      openWith: promoMilk,
       laneId: lane.id,
       shiftId: shift.id,
       firstInvcNo: 1,
@@ -649,6 +693,8 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
     orgId,
     rng,
     products,
+    promotions,
+    openWith: promoMilk,
     laneId: lanes[0].id,
     shiftId: openShift.id,
     firstInvcNo: SALES_PER_LANE + 1,
@@ -688,6 +734,8 @@ const LINE_COUNTS = [1, 1, 2, 2, 3, 3, 3, 4, 4, 5, 6, 8];
 type DraftLine = {
   product: SeededProduct;
   qty: Prisma.Decimal;
+  /** The price charged: the promotional price when one is running, else the shelf price. */
+  prc: Prisma.Decimal;
   discountKind: "PERCENT" | "AMOUNT" | null;
   discountValue: Prisma.Decimal | null;
 };
@@ -701,6 +749,9 @@ async function ringBaskets(opts: {
   orgId: string;
   rng: () => number;
   products: SeededProduct[];
+  promotions: ActivePromotion[];
+  /** A line to put in the first basket, whatever the random pick says. */
+  openWith?: SeededProduct;
   laneId: string;
   shiftId: string;
   firstInvcNo: number;
@@ -710,14 +761,15 @@ async function ringBaskets(opts: {
   /** 1-based index of the basket to void, if any. */
   voidAt: number | null;
 }): Promise<Prisma.Decimal> {
-  const { db, orgId, rng, products, laneId, shiftId, count, from, everyMinutes, voidAt } = opts;
+  const { db, orgId, rng, products, promotions, laneId, shiftId, count, from, everyMinutes, voidAt } =
+    opts;
   const weighed = products.filter((p) => p.isWeighed);
   let cash = new Prisma.Decimal(0);
 
   for (let n = 0; n < count; n++) {
     const invcNo = opts.firstInvcNo + n;
     const soldAt = new Date(from.getTime() + n * everyMinutes * 60_000 + Math.floor(rng() * 9) * 60_000);
-    const lines = buildLines(rng, products, weighed);
+    const lines = buildLines(rng, products, weighed, soldAt, promotions, n === 0 ? opts.openWith : undefined);
     const totals = priceBasket(lines, invcNo);
     const tenders = tenderFor(rng, totals.totAmt, invcNo);
     const voided = voidAt !== null && n + 1 === voidAt;
@@ -743,7 +795,7 @@ async function ringBaskets(opts: {
             productId: l.product.id,
             itemSeq: i + 1,
             qty: l.qty.toFixed(3),
-            prc: l.product.unitPrice.toFixed(2),
+            prc: l.prc.toFixed(2),
             taxTyCd: l.product.taxTyCd,
             discountKind: l.discountKind,
             discountValue: l.discountValue?.toFixed(2) ?? null,
@@ -772,10 +824,17 @@ function buildLines(
   rng: () => number,
   products: SeededProduct[],
   weighed: SeededProduct[],
+  soldAt: Date,
+  promotions: ActivePromotion[],
+  openWith?: SeededProduct,
 ): DraftLine[] {
   const want = LINE_COUNTS[Math.floor(rng() * LINE_COUNTS.length)];
   const chosen: SeededProduct[] = [];
   const seen = new Set<string>();
+  if (openWith) {
+    chosen.push(openWith);
+    seen.add(openWith.id);
+  }
   // Nearly half the baskets start at the scale, so weighed lines are well represented.
   if (rng() < 0.45) {
     const p = weighed[Math.floor(rng() * weighed.length)];
@@ -792,17 +851,18 @@ function buildLines(
 
   return chosen.map((product) => {
     const qty = product.isWeighed ? weight(rng) : units(rng);
+    const prc = effectivePrice(product, soldAt, promotions);
     const perishable = !product.isWeighed && ["Bakery", "Dairy"].includes(product.department);
     const roll = rng();
     // The odd perishable goes out at a close-of-day markdown; a big line now and then
     // carries a flat shelf-edge offer. The floor keeps a discount well under the line.
     if (perishable && roll < 0.08) {
-      return { product, qty, discountKind: "PERCENT" as const, discountValue: new Prisma.Decimal(10) };
+      return { product, qty, prc, discountKind: "PERCENT" as const, discountValue: new Prisma.Decimal(10) };
     }
-    if (roll > 0.95 && lineAmount(qty, product.unitPrice).gt(5_000)) {
-      return { product, qty, discountKind: "AMOUNT" as const, discountValue: new Prisma.Decimal(500) };
+    if (roll > 0.95 && lineAmount(qty, prc).gt(5_000)) {
+      return { product, qty, prc, discountKind: "AMOUNT" as const, discountValue: new Prisma.Decimal(500) };
     }
-    return { product, qty, discountKind: null, discountValue: null };
+    return { product, qty, prc, discountKind: null, discountValue: null };
   });
 }
 
@@ -843,7 +903,7 @@ function priceBasket(lines: DraftLine[], invcNo: number) {
   let exemptNet = new Prisma.Decimal(0);
   let standardNet = new Prisma.Decimal(0);
   for (const l of lines) {
-    const gross = lineAmount(l.qty, l.product.unitPrice);
+    const gross = lineAmount(l.qty, l.prc);
     const off =
       l.discountKind === "PERCENT" && l.discountValue
         ? gross.times(l.discountValue).div(100).toDecimalPlaces(2)
