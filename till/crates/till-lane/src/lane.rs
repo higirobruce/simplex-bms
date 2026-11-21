@@ -55,7 +55,7 @@ use crate::fiscal::{FiscalError, FiscalPort, SalePayload};
 use crate::fmt;
 use crate::latency::{Timer, Timings};
 use crate::receipt::{ReceiptInput, compose};
-use crate::report::{self, x_report, z_report};
+use crate::report::{self, x_report, z_report, z_report_copy};
 use thiserror::Error;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
 use till_core::scan::{EmbeddedMode, ScanError, Scanned, classify};
@@ -152,6 +152,8 @@ pub enum LaneError {
     Tender(#[from] TenderError),
     #[error("There is no receipt to reprint.")]
     NothingToReprint,
+    #[error("No shift has been closed on this till, so there is no Z report to reprint.")]
+    NoZToReprint,
     #[error("There is nothing to pay for. Scan an item first.")]
     EmptyBasket,
     #[error(
@@ -347,6 +349,13 @@ struct Pending {
     recovered: bool,
 }
 
+/// What a closed shift recorded, and whether its Z has reached paper.
+struct LastZ {
+    close: ShiftClose,
+    at: String,
+    printed: bool,
+}
+
 pub struct LaneState {
     store: Store,
     cfg: LaneConfig,
@@ -361,6 +370,9 @@ pub struct LaneState {
     shift: Option<OpenShift>,
     /// The last confirmed sale, kept so a reprint can be recomposed as a COPY.
     last_sale: Option<LastSale>,
+    /// The last Z closed on this till, kept so a jam is a stationery problem:
+    /// the shift stays closed and its Z can be printed again.
+    last_z: Option<LastZ>,
     /// What the VSDC last told us (see [`VsdcOutcome`]).
     vsdc_outcome: VsdcOutcome,
     /// The last measurement of each latency path (see `crate::latency`).
@@ -430,6 +442,7 @@ impl LaneState {
             pending,
             shift,
             last_sale: None,
+            last_z: None,
             vsdc_outcome: VsdcOutcome::NoneYet,
             timings,
         })
@@ -1115,17 +1128,56 @@ impl LaneState {
         let Some(closed) = self.close_shift(declared_cash).await? else {
             return Ok(()); // refused: close_shift left the Problem notice
         };
-        let bytes = z_report(&closed, &self.cfg, &kigali_now());
+        // Retained before anything prints: the close is the truth, paper follows.
+        let at = kigali_now();
+        let bytes = z_report(&closed, &self.cfg, &at);
         let figures = format!(
             "Expected {}, declared {}, variance {}.",
             fmt::rwf(closed.totals.expected_cash),
             fmt::rwf(closed.declared_cash),
             report::variance(closed.variance)
         );
+        let last = self.last_z.insert(LastZ {
+            close: closed,
+            at,
+            printed: false,
+        });
         self.notice = match printer.write(&bytes) {
-            Ok(()) => Notice::Info(format!("Shift closed. Z report printed. {figures}")),
+            Ok(()) => {
+                last.printed = true;
+                Notice::Info(format!("Shift closed. Z report printed. {figures}"))
+            }
             Err(e) => Notice::Problem(format!(
-                "The shift is closed and its figures are final, but the Z report did not print ({e}). {figures} Write them down and call a supervisor."
+                "The shift is closed and its figures are final, but the Z report did not print ({e}). {figures} Check the printer and reprint the Z."
+            )),
+        };
+        Ok(())
+    }
+
+    /// Prints the last Z again. The first time it reaches paper it is the
+    /// original; any later one is marked COPY. Nothing in the store is touched.
+    pub fn reprint_z(&mut self, printer: &mut dyn Printer) -> Result<(), LaneError> {
+        self.buffer.clear();
+        let Some(last) = self.last_z.as_mut() else {
+            return self.refuse(LaneError::NoZToReprint);
+        };
+        let bytes = if last.printed {
+            z_report_copy(&last.close, &self.cfg, &last.at)
+        } else {
+            z_report(&last.close, &self.cfg, &last.at)
+        };
+        self.notice = match printer.write(&bytes) {
+            Ok(()) => {
+                let msg = if last.printed {
+                    "Z report reprinted (marked COPY)."
+                } else {
+                    "Z report printed."
+                };
+                last.printed = true;
+                Notice::Info(msg.into())
+            }
+            Err(e) => Notice::Problem(format!(
+                "The Z report did not print ({e}). Check the printer and try again; the shift is closed and its figures are safe."
             )),
         };
         Ok(())
@@ -1687,6 +1739,34 @@ mod tests {
             Notice::Problem(m) => assert!(m.contains("closed") && m.contains("variance"), "{m}"),
             n => panic!("expected a problem, got {n:?}"),
         }
+        assert!(p.written.is_empty());
+        assert!(l.store.current_shift("DVC1").await.unwrap().is_none());
+        // The Z is not lost: a reprint emits the very bytes the first attempt
+        // would have (it never reached paper, so it is the original).
+        let wanted = z_report(
+            &l.last_z.as_ref().unwrap().close,
+            &l.cfg,
+            &l.last_z.as_ref().unwrap().at,
+        );
+        l.reprint_z(&mut p).unwrap();
+        assert_eq!(p.written, wanted);
+        assert!(matches!(l.notice(), Notice::Info(_)));
+        // Once on paper, a further one is a marked COPY, and the shift stays closed.
+        l.reprint_z(&mut p).unwrap();
+        assert!(printed(&p).contains("COPY - SHIFT CLOSED"));
+        assert!(l.shift().is_none());
+        // A second close is still refused.
+        let n = p.written.len();
+        l.print_z(rwf("0"), &mut p).await.unwrap();
+        assert_eq!(p.written.len(), n);
+    }
+
+    #[tokio::test]
+    async fn reprinting_a_z_with_none_closed_is_a_problem() {
+        let mut l = lane_without_shift().await;
+        let (mut p, _) = devices();
+        l.reprint_z(&mut p).unwrap();
+        assert!(p.written.is_empty() && matches!(l.notice(), Notice::Problem(_)));
     }
 
     #[tokio::test]

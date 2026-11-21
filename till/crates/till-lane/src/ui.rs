@@ -76,6 +76,8 @@ pub enum Action {
     ReportX,
     /// Close the shift with the keyed cash count and print the Z report.
     ReportZ,
+    /// Print the last Z again (a jam is not a lost closing).
+    ReprintZ,
     CancelSale,
     Resume,
     NotBuilt(&'static str),
@@ -143,9 +145,17 @@ const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
     (PmtTyCd::Other, egui::Key::Num7, "Other", "Other"),
 ];
 
-/// The Z report key. Ctrl is held because a Z closes the shift: it must not
-/// be one stray press of the key beside F7's harmless X.
-const Z_KEY: (egui::Key, &str, Action) = (egui::Key::F7, "Z close shift", Action::ReportZ);
+/// Shift-chorded report keys: key, name, action. Shift+F7 is the Z, beside F7's
+/// harmless X: a chord because a Z closes the shift, and Shift rather than Ctrl
+/// because the operating system reserves Ctrl+F-key chords on some machines.
+const SHIFT_KEYS: [(egui::Key, &str, Action); 2] = [
+    (egui::Key::F7, "Z close shift", Action::ReportZ),
+    (egui::Key::F9, "Reprint Z", Action::ReprintZ),
+];
+
+fn shift_cap(key: egui::Key) -> String {
+    format!("Shift {}", key.name())
+}
 
 /// The key cap of a Ctrl chord, derived from the key itself so a cap can never
 /// disagree with the binding that `actions_from` really reads.
@@ -176,11 +186,13 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
             } => match key {
                 // Ctrl+Backspace is not a wedge character and not a method key.
                 egui::Key::Backspace if modifiers.ctrl => out.push(Action::ClearTenders),
-                k if modifiers.ctrl && *k == Z_KEY.0 => out.push(Z_KEY.2),
                 k if modifiers.ctrl => {
                     if let Some((code, ..)) = METHODS.iter().find(|(_, mk, ..)| mk == k) {
                         out.push(Action::Tender(*code));
                     }
+                }
+                k if modifiers.shift && SHIFT_KEYS.iter().any(|(sk, ..)| sk == k) => {
+                    out.extend(SHIFT_KEYS.iter().filter(|(sk, ..)| sk == k).map(|t| t.2));
                 }
                 egui::Key::Enter => out.push(Action::Enter),
                 egui::Key::Backspace => out.push(Action::Backspace),
@@ -248,6 +260,7 @@ fn apply(
         Action::Reprint => state.reprint(devices.printer.as_mut()),
         Action::ReportX => block_on(state.print_x(devices.printer.as_mut())),
         Action::ReportZ => close_with_z(state, local, devices),
+        Action::ReprintZ => state.reprint_z(devices.printer.as_mut()),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
         Action::NotBuilt(name) => {
@@ -258,7 +271,7 @@ fn apply(
     local.fault = result.err().map(|e| e.to_string());
 }
 
-/// Ctrl+F7: what is keyed is the cash the cashier counted. Unlike the opening
+/// Shift+F7: what is keyed is the cash the cashier counted. Unlike the opening
 /// float, nothing keyed is NOT taken as zero: a Z closes the shift for good, and
 /// a count of zero must be keyed on purpose, never by a stray key press.
 fn close_with_z(
@@ -278,7 +291,7 @@ fn close_with_z(
             state.backspace();
         }
         local.note = Some(
-            "Key the cash you counted in the drawer (0 if empty), then press Ctrl F7 to close the shift."
+            "Key the cash you counted in the drawer (0 if empty), then press Shift F7 to close the shift."
                 .into(),
         );
         return Ok(());
@@ -1029,7 +1042,9 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
     for (code, key, _, cap) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
         all.push((ctrl_cap(*key), *cap, Action::Tender(*code), false, false));
     }
-    all.push((ctrl_cap(Z_KEY.0), Z_KEY.1, Z_KEY.2, false, false));
+    for (key, name, action) in SHIFT_KEYS {
+        all.push((shift_cap(key), name, action, false, false));
+    }
     all.push((
         "Ctrl Bksp".to_owned(),
         "Clear tenders",
@@ -1802,8 +1817,17 @@ mod tests {
         let _ = ctx.run(RawInput::default(), |ctx| fatal(ctx, "database unreadable"));
     }
 
-    fn tap_ctrl_f7() -> Vec<Event> {
-        tap_ctrl(Key::F7)
+    fn tap_shift_f7() -> Vec<Event> {
+        [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key: Key::F7,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            })
+            .collect()
     }
 
     #[test]
@@ -1822,12 +1846,12 @@ mod tests {
     #[test]
     fn z_needs_a_keyed_count_and_a_stray_press_closes_nothing() {
         let mut r = Rig::new();
-        let shown = r.frame(tap_ctrl_f7());
+        let shown = r.frame(tap_shift_f7());
         assert!(shown.contains("Key the cash you counted"), "{shown}");
         assert!(r.state.shift().is_some());
         // A scanned barcode is not a cash count either.
         r.frame(type_text("6001234567890"));
-        r.frame(tap_ctrl_f7());
+        r.frame(tap_shift_f7());
         assert!(r.state.shift().is_some());
         assert_eq!(r.state.buffer(), "");
         // Plain F7 is the harmless X, never a Z.
@@ -1837,10 +1861,10 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_f7_with_a_counted_amount_closes_the_shift() {
+    fn shift_f7_with_a_counted_amount_closes_the_shift() {
         let mut r = Rig::new();
         r.frame(type_text("1000"));
-        r.frame(tap_ctrl_f7());
+        r.frame(tap_shift_f7());
         assert!(r.state.shift().is_none());
         assert_eq!(*r.state.screen(), Screen::NoShift);
         match r.state.notice() {
@@ -1859,7 +1883,8 @@ mod tests {
         for (_, key, ..) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
             assert!(shown.contains(&ctrl_cap(*key)), "{key:?} cap in {shown}");
         }
-        assert!(shown.contains("Ctrl F7") && shown.contains("Z close shift"));
+        assert!(shown.contains(&shift_cap(Key::F7)) && shown.contains("Z close shift"));
+        assert!(shown.contains("Shift F9") && shown.contains("Reprint Z"));
         assert!(shown.contains("X report"));
     }
 }

@@ -41,7 +41,23 @@ pub fn x_report(totals: &ShiftTotals, cfg: &LaneConfig, at: &str) -> Vec<u8> {
 /// The closing report: the figures of [`x_report`] plus the declared cash and
 /// the signed variance. Final.
 pub fn z_report(close: &ShiftClose, cfg: &LaneConfig, at: &str) -> Vec<u8> {
-    let head = header("Z REPORT", "SHIFT CLOSED - FINAL", cfg, at);
+    compose_z(close, cfg, at, false)
+}
+
+/// The Z again, for a Z that already printed once: the same figures and clock,
+/// marked as a copy so two papers cannot pass for two "final" closings. A Z that
+/// never printed is re-issued with [`z_report`], identical to the first attempt.
+pub fn z_report_copy(close: &ShiftClose, cfg: &LaneConfig, at: &str) -> Vec<u8> {
+    compose_z(close, cfg, at, true)
+}
+
+fn compose_z(close: &ShiftClose, cfg: &LaneConfig, at: &str, copy: bool) -> Vec<u8> {
+    let status = if copy {
+        "COPY - SHIFT CLOSED - FINAL"
+    } else {
+        "SHIFT CLOSED - FINAL"
+    };
+    let head = header("Z REPORT", status, cfg, at);
     let e = body(head, &close.totals)
         .line(&pair("DECLARED CASH", &rwf(close.declared_cash)))
         .bold(true)
@@ -248,6 +264,18 @@ mod tests {
             assert!(t.contains("28144.07"), "tax keeps two decimals: {t}");
             assert!(t.contains("184,500"));
         }
+    }
+
+    #[test]
+    fn a_copy_is_marked_and_otherwise_identical() {
+        let c = close("133000", "-2000");
+        let (z, copy) = (
+            text(&z_report(&c, &cfg(), AT)),
+            text(&z_report_copy(&c, &cfg(), AT)),
+        );
+        assert!(copy.contains("COPY") && !z.contains("COPY"));
+        assert_eq!(z_report(&c, &cfg(), AT), z_report(&c, &cfg(), AT));
+        assert_eq!(copy.replace("COPY - ", ""), z);
     }
 
     #[test]
