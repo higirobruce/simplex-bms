@@ -4,8 +4,9 @@ use rust_decimal::Decimal;
 use thiserror::Error;
 
 use crate::codes::TaxType;
+use crate::line::LineAmounts;
 use crate::line::{BasketLine, LineDiscount, LineError};
-use crate::money::Money;
+use crate::money::{Money, round_half_up};
 
 /// Highest `item_seq` a sale can carry. In the VSDC `TrnsSalesSaveWrItem`,
 /// `itemSeq` is a required NUMBER of data length 3, so a 1000th line has no
@@ -31,6 +32,14 @@ pub enum BasketError {
     /// Refused rather than saturated: a clipped total is a wrong fiscal total.
     #[error("basket total is outside the supported range")]
     TotalOutOfRange,
+    /// The basket discount is larger than the basket, or would take more than
+    /// one line's supply amount. Refused, never clamped.
+    #[error("the basket discount is larger than the basket it applies to")]
+    DiscountExceedsBasket,
+    /// Rounding the earlier shares up left a negative residual for the last
+    /// line, which would be a surcharge. Refused rather than hidden.
+    #[error("the basket discount cannot be split into whole francs across these lines")]
+    DiscountNotSplittable,
     #[error(transparent)]
     Line(#[from] LineError),
 }
@@ -41,8 +50,8 @@ pub enum BasketError {
 #[derive(Debug, Clone, Default)]
 pub struct Basket {
     lines: Vec<BasketLine>,
-    /// Whole-basket discount; applied by a later task, held here so `Basket`
-    /// keeps one shape.
+    /// Whole-basket discount. RRA has no header-level discount, so it is
+    /// pushed onto the lines by [`Basket::apportioned_lines`].
     pub basket_discount: Option<LineDiscount>,
     last_seq: u16,
 }
@@ -123,6 +132,77 @@ impl Basket {
         Ok(())
     }
 
+    pub fn set_basket_discount(&mut self, discount: LineDiscount) {
+        self.basket_discount = Some(discount);
+    }
+
+    /// Each line with its final amounts, the basket discount pushed down.
+    ///
+    /// The total discount is a whole-franc figure: an amount rounds half-up, a
+    /// percentage is taken of the summed `sply_amt` (the lines' own discounts
+    /// do not shrink the base) and rounds half-up. Each line's share is
+    /// `total x sply_amt / sum(sply_amt)` rounded half-up to whole francs, and
+    /// the LAST line takes `total - sum(earlier shares)`, so the shares sum
+    /// exactly to the total. It is added to the line's own discount. With no
+    /// basket discount the lines come back untouched.
+    pub fn apportioned_lines(&self) -> Result<Vec<(BasketLine, LineAmounts)>, BasketError> {
+        let mut priced = Vec::with_capacity(self.lines.len());
+        let mut sum_sply = Money::zero();
+        for line in &self.lines {
+            let a = line.amounts()?;
+            sum_sply = add(sum_sply, a.sply_amt)?;
+            priced.push((line.clone(), a));
+        }
+        let Some(discount) = self.basket_discount else {
+            return Ok(priced);
+        };
+        let total = match discount {
+            LineDiscount::Amount(m) => round_half_up(m.amount(), 0),
+            LineDiscount::Percent(p) => sum_sply
+                .amount()
+                .checked_mul(round_half_up(p, 2))
+                .and_then(|x| x.checked_div(Decimal::ONE_HUNDRED))
+                .map(|x| round_half_up(x, 0))
+                .ok_or(BasketError::TotalOutOfRange)?,
+        };
+        if total < Decimal::ZERO {
+            return Err(LineError::NegativeDiscount.into());
+        }
+        if total > sum_sply.amount() {
+            return Err(BasketError::DiscountExceedsBasket);
+        }
+        if total.is_zero() {
+            return Ok(priced);
+        }
+        let last = priced.len().saturating_sub(1);
+        let mut given = Decimal::ZERO;
+        let mut out = Vec::with_capacity(priced.len());
+        for (i, (mut line, a)) in priced.into_iter().enumerate() {
+            let share = if i == last {
+                total - given
+            } else {
+                total
+                    .checked_mul(a.sply_amt.amount())
+                    .and_then(|x| x.checked_div(sum_sply.amount()))
+                    .map(|x| round_half_up(x, 0))
+                    .ok_or(BasketError::TotalOutOfRange)?
+            };
+            if share < Decimal::ZERO {
+                return Err(BasketError::DiscountNotSplittable);
+            }
+            given += share;
+            let combined = Money::from_decimal(a.dc_amt.amount() + share)
+                .ok_or(BasketError::TotalOutOfRange)?;
+            if combined > a.sply_amt {
+                return Err(BasketError::DiscountExceedsBasket);
+            }
+            line.discount = Some(LineDiscount::Amount(combined));
+            let amounts = line.amounts()?;
+            out.push((line, amounts));
+        }
+        Ok(out)
+    }
+
     pub fn lines(&self) -> impl Iterator<Item = &BasketLine> {
         self.lines.iter()
     }
@@ -148,8 +228,7 @@ impl Basket {
         let mut taxbl = [Money::zero(); 4];
         let mut tax = [Money::zero(); 4];
         let mut tot_amt = Money::zero();
-        for line in &self.lines {
-            let a = line.amounts()?;
+        for (line, a) in self.apportioned_lines()? {
             let i = slot(line.tax_ty_cd);
             if let (Some(t), Some(x)) = (taxbl.get_mut(i), tax.get_mut(i)) {
                 *t = add(*t, a.taxbl_amt)?;
@@ -188,6 +267,10 @@ impl Basket {
 mod tests {
     use super::*;
     use crate::money::Qty;
+
+    fn dec(n: i64) -> Decimal {
+        Decimal::from(n)
+    }
     use crate::tax::extract_tax;
 
     fn line(
@@ -325,5 +408,106 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(b.totals(), Err(BasketError::TotalOutOfRange));
+    }
+
+    fn m(s: &str) -> Money {
+        Money::try_from_str(s).unwrap()
+    }
+
+    #[test]
+    fn a_basket_discount_apportions_exactly_with_a_residual() {
+        let mut b = Basket::new();
+        for _ in 0..3 {
+            b.push_line(line("P", "1", "1000", TaxType::B, None))
+                .unwrap();
+        }
+        b.set_basket_discount(LineDiscount::Amount(m("100")));
+        let apportioned = b.apportioned_lines().unwrap();
+        let shares: Vec<String> = apportioned
+            .iter()
+            .map(|(_, a)| a.dc_amt.to_string())
+            .collect();
+        assert_eq!(shares, vec!["33.00", "33.00", "34.00"]);
+        let taxbl: Vec<String> = apportioned
+            .iter()
+            .map(|(_, a)| a.taxbl_amt.to_string())
+            .collect();
+        assert_eq!(taxbl, vec!["967.00", "967.00", "966.00"]);
+        assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "2900.00");
+    }
+
+    #[test]
+    fn a_percent_basket_discount_applies_to_every_line() {
+        let mut b = Basket::new();
+        b.push_line(line("A", "1", "1000", TaxType::B, None))
+            .unwrap();
+        b.push_line(line("B", "1", "3000", TaxType::B, None))
+            .unwrap();
+        b.set_basket_discount(LineDiscount::Percent(dec(10)));
+        assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "3600.00");
+    }
+
+    #[test]
+    fn apportionment_respects_band_boundaries() {
+        let mut b = Basket::new();
+        b.push_line(line("MILK", "1", "1000", TaxType::A, None))
+            .unwrap();
+        b.push_line(line("SOAP", "1", "1000", TaxType::B, None))
+            .unwrap();
+        b.set_basket_discount(LineDiscount::Amount(m("200")));
+        let t = b.totals().unwrap();
+        assert_eq!(t.taxbl_amt[0].to_string(), "900.00");
+        assert_eq!(t.taxbl_amt[1].to_string(), "900.00");
+        assert_eq!(t.tax_amt[0].to_string(), "0.00");
+        assert_eq!(t.tax_amt[1].to_string(), "137.29");
+    }
+
+    #[test]
+    fn no_line_can_be_driven_negative() {
+        let mut b = Basket::new();
+        b.push_line(line("P", "1", "100", TaxType::B, None))
+            .unwrap();
+        b.set_basket_discount(LineDiscount::Amount(m("101")));
+        assert!(matches!(
+            b.totals(),
+            Err(BasketError::DiscountExceedsBasket)
+        ));
+    }
+
+    #[test]
+    fn a_line_discount_and_a_basket_discount_compose() {
+        let mut b = Basket::new();
+        let d = Some(LineDiscount::Amount(m("100")));
+        b.push_line(line("P", "1", "1000", TaxType::B, d)).unwrap();
+        b.set_basket_discount(LineDiscount::Percent(dec(10)));
+        assert_eq!(b.totals().unwrap().tot_taxbl_amt.to_string(), "800.00");
+    }
+
+    #[test]
+    fn the_combined_discount_on_one_line_cannot_exceed_its_supply() {
+        // Shares are 50 / 50, but line 1 already has 80 off its 100.
+        let mut b = Basket::new();
+        let d = Some(LineDiscount::Amount(m("80")));
+        b.push_line(line("A", "1", "100", TaxType::B, d)).unwrap();
+        b.push_line(line("B", "1", "100", TaxType::B, None))
+            .unwrap();
+        b.set_basket_discount(LineDiscount::Amount(m("100")));
+        assert!(matches!(
+            b.totals(),
+            Err(BasketError::DiscountExceedsBasket)
+        ));
+    }
+
+    #[test]
+    fn a_rounding_overshoot_is_refused_not_turned_into_a_surcharge() {
+        // 2 off four equal lines: each share 0.5 rounds up to 1, so the last
+        // line's residual would be -1.
+        let mut b = Basket::new();
+        for _ in 0..4 {
+            b.push_line(line("P", "1", "100", TaxType::B, None))
+                .unwrap();
+        }
+        b.set_basket_discount(LineDiscount::Amount(m("2")));
+        assert_eq!(b.totals(), Err(BasketError::DiscountNotSplittable));
     }
 }
