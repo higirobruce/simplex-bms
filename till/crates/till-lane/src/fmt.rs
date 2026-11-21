@@ -81,6 +81,17 @@ pub fn qty(q: Qty) -> String {
     q.to_string()
 }
 
+/// Formats a quantity for the cashier's screen: a whole quantity as `2`,
+/// anything else as `qty` does (`1.250`). Screen only. The receipt keeps
+/// [`qty`]; what RRA expects there is an open question, not decided here.
+pub fn qty_display(q: Qty) -> String {
+    let full = qty(q);
+    match full.strip_suffix(".000") {
+        Some(whole) => whole.to_string(),
+        None => full,
+    }
+}
+
 /// Adds thousands separators (commas) to a numeric string from the right.
 ///
 /// Takes a string of digits and inserts commas every three digits, starting
@@ -173,6 +184,16 @@ mod tests {
     fn tax_keeps_two_places_because_rra_does() {
         assert_eq!(tax(m("983.89")), "983.89");
         assert_eq!(tax(m("0.00")), "0.00");
+    }
+
+    #[test]
+    fn qty_display_drops_the_decimals_of_a_whole_quantity_only() {
+        assert_eq!(qty_display(q("2")), "2");
+        assert_eq!(qty_display(q("1.000")), "1");
+        assert_eq!(qty_display(q("10")), "10");
+        assert_eq!(qty_display(q("1.250")), "1.250");
+        assert_eq!(qty_display(q("0.500")), "0.500");
+        assert_eq!(qty_display(q("0.001")), "0.001");
     }
 
     #[test]

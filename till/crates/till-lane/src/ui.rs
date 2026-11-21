@@ -487,7 +487,11 @@ fn basket_row(
                     });
                 },
                 &|ui| {
-                    ui.label(text(fmt::qty(line.qty), mono_bold(15.0), TOKENS.ink));
+                    ui.label(text(
+                        fmt::qty_display(line.qty),
+                        mono_bold(15.0),
+                        TOKENS.ink,
+                    ));
                 },
                 &|ui| {
                     ui.label(text(fmt::rwf(line.prc), mono_bold(15.0), TOKENS.ink));
