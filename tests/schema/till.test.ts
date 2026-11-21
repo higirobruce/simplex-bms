@@ -110,3 +110,39 @@ test("sales expose their lines and tenders through lines and tenders", async () 
   expect(s.lines).toHaveLength(1);
   expect(s.tenders).toHaveLength(1);
 });
+
+test("two lanes in one org may share a bhfId: RRA issues it per branch", async () => {
+  const { orgId, locationId } = await seedTill();
+  await prisma.lane.create({ data: { code: "B1", name: "b1", locationId, orgId, bhfId: "00" } });
+  const second = await prisma.lane.create({ data: { code: "B2", name: "b2", locationId, orgId, bhfId: "00" } });
+  expect(second.bhfId).toBe("00");
+  expect(await prisma.lane.count({ where: { orgId, bhfId: "00" } })).toBe(2);
+});
+
+test("two lanes in one org cannot claim one device serial, but another org may reuse it", async () => {
+  const { orgId, locationId, otherOrgId } = await seedTill();
+  await prisma.lane.create({ data: { code: "D1", name: "d1", locationId, orgId, bhfId: "00", dvcSrlNo: "dvc-1" } });
+  await expect(
+    prisma.lane.create({ data: { code: "D2", name: "d2", locationId, orgId, bhfId: "00", dvcSrlNo: "dvc-1" } }),
+  ).rejects.toThrow(/Unique constraint/);
+  const other = await prisma.lane.create({
+    data: { code: "D1", name: "other org", locationId, orgId: otherOrgId, dvcSrlNo: "dvc-1" },
+  });
+  expect(other.dvcSrlNo).toBe("dvc-1");
+});
+
+test("any number of lanes with no dvcSrlNo are fine", async () => {
+  const { orgId, locationId } = await seedTill();
+  await prisma.lane.create({ data: { code: "U1", name: "u1", locationId, orgId } });
+  await prisma.lane.create({ data: { code: "U2", name: "u2", locationId, orgId, dvcSrlNo: null } });
+  expect(await prisma.lane.count({ where: { orgId, dvcSrlNo: null } })).toBe(4);
+});
+
+test("any number of lanes with no bhfId are fine", async () => {
+  const { orgId, locationId } = await seedTill();
+  // seedTill already made two lanes with a NULL bhfId; add more
+  await prisma.lane.create({ data: { code: "N1", name: "n1", locationId, orgId } });
+  await prisma.lane.create({ data: { code: "N2", name: "n2", locationId, orgId, bhfId: null } });
+  const n = await prisma.lane.count({ where: { orgId, bhfId: null } });
+  expect(n).toBe(4);
+});

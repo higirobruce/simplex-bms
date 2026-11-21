@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { expect, test } from "vitest";
-import { seedGrocery } from "../../scripts/seed-grocery";
+import { exVatPrice, seedGrocery } from "../../scripts/seed-grocery";
 import { prisma, seedOrg } from "../helpers/db";
 
 const DEPARTMENTS = [
@@ -244,4 +244,53 @@ test("the seed creates lanes and a closed shift with sales", async () => {
 
   // One voided basket, so the lane screens have a void to render.
   expect(sales.filter((s) => s.voidedAt !== null).length).toBeGreaterThanOrEqual(1);
+});
+
+test("costPrice is derived from the ex-VAT price, not the shelf price", async () => {
+  // User decision 2026-11-21: costPrice is ex-VAT. On band B the old inclusive
+  // basis overstated the cost base by 18/118 = 15.25% of shelf.
+  // Household carries a 0.25 margin; these three items are standard-rated.
+  const { orgId } = await seedOrg();
+  await seedGrocery(orgId, prisma);
+  const cases = [
+    { name: "Omo washing powder", pack: "1 kg", shelf: 3500, exVat: "2966.10", cost: "2224.58" },
+    { name: "Sunlight laundry bar", pack: "800 g", shelf: 1500, exVat: "1271.19", cost: "953.39" },
+    { name: "Dishwashing liquid", pack: "750 ml", shelf: 2200, exVat: "1864.41", cost: "1398.31" },
+  ];
+  for (const c of cases) {
+    expect(exVatPrice(c.shelf, false).toFixed(2)).toBe(c.exVat);
+    const p = await prisma.product.findFirstOrThrow({
+      where: { orgId, name: c.name, packSize: c.pack },
+    });
+    expect(p.taxTyCd).toBe("B");
+    expect(p.unitPrice.toFixed(2)).toBe(c.shelf.toFixed(2));
+    expect(p.costPrice!.toFixed(2)).toBe(c.cost);
+    // and the old basis is now provably not what we store
+    expect(p.costPrice!.toFixed(2)).not.toBe((c.shelf * 0.75).toFixed(2));
+  }
+});
+
+test("an exempt product's costPrice is unchanged by the ex-VAT rule", async () => {
+  // Band A has no VAT to remove, so Produce's 0.30 margin applies to the shelf price.
+  const { orgId } = await seedOrg();
+  await seedGrocery(orgId, prisma);
+  expect(exVatPrice(1200, true).toFixed(2)).toBe("1200.00");
+  const tomatoes = await prisma.product.findFirstOrThrow({ where: { orgId, name: "Tomatoes" } });
+  expect(tomatoes.taxTyCd).toBe("A");
+  expect(tomatoes.costPrice!.toFixed(2)).toBe("840.00");
+});
+
+test("every standard-rated product costs less than its ex-VAT price", async () => {
+  // the invariant the rule exists to protect: cost < ex-VAT < shelf, for all band B.
+  // Expected ex-VAT is computed here with the test's own vatOf, not the seed's.
+  const { orgId } = await seedOrg();
+  await seedGrocery(orgId, prisma);
+  const standard = await prisma.product.findMany({ where: { orgId, taxTyCd: "B" } });
+  expect(standard.length).toBeGreaterThan(20);
+  for (const p of standard) {
+    const exVat = dec(p.unitPrice).minus(vatOf(dec(p.unitPrice)));
+    expect(exVatPrice(Number(p.unitPrice), false).toString()).toBe(exVat.toString());
+    expect(Number(p.costPrice)).toBeLessThan(Number(exVat));
+    expect(Number(exVat)).toBeLessThan(Number(p.unitPrice));
+  }
 });

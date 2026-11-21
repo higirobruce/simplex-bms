@@ -655,6 +655,7 @@ enum TenderMethod {
   BANK_CHECK
   CARD
   MOBILE_MONEY
+  OTHER
 }
 
 model Lane {
@@ -666,7 +667,21 @@ model Lane {
   orgId      String
   org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   mrc        String?
+  // The RRA branch id. RRA issues it per BRANCH, so every lane of a shop
+  // legitimately shares it: deliberately NOT unique. Nullable (an unconfigured
+  // lane).
   bhfId      String?
+  // The till's device serial (the `dvcSrlNo` it sends to selectInitInfo). This
+  // is the real per-till identity: the VSDC keeps invoice counters per DEVICE
+  // (vsdc.txt 3.3.1.1, InitDevice). Nullable (a lane may be unconfigured);
+  // Postgres treats NULLs as distinct in a unique index, so several
+  // unconfigured lanes are legal, but two lanes in one org cannot claim one
+  // serial.
+  dvcSrlNo   String?
+  // Mirror of the VSDC's per-device invoice counter (the last sale invoice
+  // number selectInitInfo reported / the till last confirmed). The till's
+  // authoritative copies live in its local database (till-store `invc_seq`,
+  // one per receipt type); this is where the cloud records the VSDC's value.
   lastInvcNo Int       @default(0)
   createdAt  DateTime  @default(now())
   deletedAt  DateTime?
@@ -674,6 +689,7 @@ model Lane {
   sales      Sale[]
 
   @@unique([code, orgId])
+  @@unique([dvcSrlNo, orgId])
 }
 
 model Shift {

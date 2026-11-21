@@ -339,6 +339,28 @@ const money = (v: Prisma.Decimal | string | number) => new Prisma.Decimal(v).toD
 /** The 18% VAT carved out of a tax-inclusive amount. */
 const vatOf = (inclusive: Prisma.Decimal) => inclusive.times(18).div(118).toDecimalPlaces(2);
 
+/**
+ * COST_IS_EX_VAT — the convention behind costPrice, in one place.
+ *
+ * Decision 2026-11-21: costPrice is ex-VAT. The shelf price is VAT-inclusive, so deriving
+ * cost from it overstated the cost basis on standard-rated (band B) goods by 18/118, about
+ * 15.25% of shelf, and with it every margin figure. The developer's answer was "I think
+ * so" — tentative. To reverse it, set this to false: exVatPrice then returns the shelf
+ * price and costPrice reverts to the old inclusive basis. Pinned by tests/seed/grocery.test.ts.
+ */
+const COST_IS_EX_VAT = true;
+
+/**
+ * The price with band B VAT removed: price less round_half_up(price x 18/118, 2). VAT is
+ * extracted from an inclusive price, never added at 18/100. Exempt (band A) goods carry
+ * no VAT, so their price is returned unchanged.
+ */
+export function exVatPrice(price: number, exempt: boolean): Prisma.Decimal {
+  const shelf = money(price);
+  if (!COST_IS_EX_VAT || exempt) return shelf;
+  return shelf.minus(vatOf(shelf));
+}
+
 const DAY_MS = 86_400_000;
 const atHour = (base: Date, hour: number, minute = 0) =>
   new Date(base.getFullYear(), base.getMonth(), base.getDate(), hour, minute, 0, 0);
@@ -433,7 +455,10 @@ export async function seedGrocery(orgId: string, db: SeedClient = defaultDb()): 
         category: dept.name,
         department: dept.name,
         unitPrice: money(item.price).toFixed(2),
-        costPrice: money(item.price * (1 - dept.margin)).toFixed(2),
+        costPrice: exVatPrice(item.price, item.exempt === true)
+          .times(new Prisma.Decimal(1).minus(dept.margin))
+          .toDecimalPlaces(2)
+          .toFixed(2),
         reorderLevel: toQty(dept.reorderLevel).toFixed(3),
         barcode: weighed ? null : ean13(item.from ?? "RW", serial++),
         plu: item.plu ?? null,
