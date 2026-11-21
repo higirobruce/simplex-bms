@@ -30,6 +30,13 @@ pub struct Tokens {
     pub accent_soft: Color32,
     pub hi_vis: Color32,
     pub danger: Color32,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "part of the full token set; nothing paints success yet"
+        )
+    )]
     pub success: Color32,
     pub warning: Color32,
 }

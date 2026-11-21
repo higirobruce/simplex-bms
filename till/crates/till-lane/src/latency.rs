@@ -31,8 +31,16 @@
 use std::time::{Duration, Instant};
 
 /// The budgets, in milliseconds. See the module docs before trusting them.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the tests compare timings with the budgets")
+)]
 pub struct Budget;
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "only the tests compare timings with the budgets")
+)]
 impl Budget {
     pub const KEY_TO_SCREEN_MS: u128 = 50;
     pub const SCAN_TO_LINE_MS: u128 = 100;
@@ -60,5 +68,12 @@ pub struct Timings {
     pub key_to_screen: Option<Duration>,
     pub scan_to_line: Option<Duration>,
     pub tender_to_bytes: Option<Duration>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "recorded for measurement; nothing displays it yet"
+        )
+    )]
     pub cold_start: Option<Duration>,
 }

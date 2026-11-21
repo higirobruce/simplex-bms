@@ -58,8 +58,8 @@ use thiserror::Error;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
 use till_core::scan::{EmbeddedMode, ScanError, Scanned, classify};
 use till_core::{
-    Basket, BasketError, BasketLine, LineError, Money, Qty, Settled, TenderEntry, TenderError,
-    TenderSet,
+    Basket, BasketError, BasketLine, BasketTotals, LineAmounts, LineError, Money, Qty, Settled,
+    TenderEntry, TenderError, TenderSet,
 };
 use till_store::{CachedProduct, Counter, NewSale, SaleHandle, Store, StoreError, VsdcReceipt};
 
@@ -121,10 +121,11 @@ pub enum LaneError {
         #[source]
         source: LineError,
     },
-    #[error(
-        "The catalogue could not be read ({0}). Try the scan again; if it repeats, call support."
-    )]
-    Store(#[from] StoreError),
+    /// A store fault. The message depends on WHICH operation failed (see
+    /// [`StoreOp`]): what the cashier must do after a failed scan is the
+    /// opposite of what they must do after a failed confirm.
+    #[error("{0}")]
+    Store(StoreFault),
     #[error("The lane hit an internal fault ({0}). Call support.")]
     Internal(String),
     #[error("This sale is no longer open for scanning.")]
@@ -167,6 +168,127 @@ pub enum LaneError {
     NothingPending,
 }
 
+/// The store operation that failed. Each one has its own message, because the
+/// right instruction differs: a failed scan is safe to repeat, a failed
+/// confirm is a sale RRA already holds and must never be rung again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreOp {
+    /// Reading the pending sales when the lane opens.
+    Startup,
+    /// Looking a scanned code up in the catalogue.
+    Scan,
+    /// Allocating the invoice number, before the VSDC is asked anything.
+    BeginSale,
+    /// Recording the VSDC's answer after it has fiscalised the sale.
+    ConfirmSale,
+    /// Cancelling a held sale at a supervisor's request.
+    CancelSale,
+    /// Retiring the number after the VSDC proved unreachable.
+    RetireUnreachable,
+    /// Retiring the number after the VSDC answered 994.
+    RetireOverlapped,
+    /// Noting a VSDC rejection against a held sale.
+    RecordRejection,
+}
+
+/// A [`StoreError`] together with the operation it interrupted.
+#[derive(Debug, Error)]
+#[error("{}", self.op.advice(&self.source))]
+pub struct StoreFault {
+    pub op: StoreOp,
+    #[source]
+    pub source: StoreError,
+}
+
+impl StoreOp {
+    fn advice(self, e: &StoreError) -> String {
+        match self {
+            StoreOp::Startup => format!(
+                "The lane could not read its own saved sales ({e}). It has not opened; call support."
+            ),
+            StoreOp::Scan => format!(
+                "The catalogue could not be read ({e}). Try the scan again; if it repeats, call support."
+            ),
+            StoreOp::BeginSale => format!(
+                "The sale could not be started ({e}). Nothing was sent to the VSDC and nothing was printed. Press pay to try again; if it repeats, call support."
+            ),
+            StoreOp::ConfirmSale => format!(
+                "The VSDC has recorded this sale, but the till could not save its answer ({e}). Nothing was printed. Do not ring the items again. Press pay to finish the sale; if it fails again, call support."
+            ),
+            StoreOp::CancelSale => format!(
+                "The sale could not be cancelled ({e}). It is still held. Try again; if it repeats, call support."
+            ),
+            StoreOp::RetireUnreachable => format!(
+                "The VSDC cannot be reached, and the till could not retire this sale's invoice number ({e}). Selling is stopped and nothing was printed. Call support."
+            ),
+            StoreOp::RetireOverlapped => format!(
+                "The VSDC already holds this invoice number, and the till could not retire it ({e}). Nothing was printed. Call support before ringing the basket again."
+            ),
+            StoreOp::RecordRejection => format!(
+                "The VSDC refused this sale, and the till could not note the refusal ({e}). The sale is still held; press pay to retry it, or ask a supervisor to cancel it. If it repeats, call support."
+            ),
+        }
+    }
+}
+
+impl LaneError {
+    fn store(op: StoreOp, source: StoreError) -> LaneError {
+        LaneError::Store(StoreFault { op, source })
+    }
+}
+
+/// What the lane last learned from the VSDC. The lane does not poll it, so
+/// this is the outcome of the last call and never a claim about right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VsdcOutcome {
+    /// No sale has been sent to the VSDC this session.
+    NoneYet,
+    /// The last sale sent got an answer (a receipt, a refusal or a 994).
+    Answered,
+    /// The last sale sent could not reach the VSDC.
+    Unreachable,
+}
+
+/// Everything needed to compose the sale's receipt again. Owned, so it
+/// outlives the basket and tenders that `next_customer` clears.
+#[derive(Debug)]
+struct LastSale {
+    lines: Vec<(BasketLine, LineAmounts)>,
+    totals: BasketTotals,
+    tenders: TenderSet,
+    settled: Settled,
+    invc_no: i64,
+    /// Stamped once, when the sale was confirmed; a copy carries the same time.
+    cis_datetime: String,
+    vsdc: VsdcReceipt,
+    /// The finished original, as first composed.
+    original: Option<Vec<u8>>,
+    /// An original has reached the printer. Until it has, a reprint IS the
+    /// original (CIS 7.18: one original; the customer must get it).
+    original_printed: bool,
+}
+
+impl LastSale {
+    fn compose(&self, cfg: &LaneConfig, sales_ty: SalesTyCd) -> Result<Vec<u8>, String> {
+        compose(ReceiptInput {
+            shop_name: &cfg.shop_name,
+            shop_address: &cfg.shop_address,
+            shop_tin: &cfg.shop_tin,
+            mrc: &self.vsdc.mrc_no,
+            sales_ty,
+            rcpt_ty: RcptTyCd::Sale,
+            lines: &self.lines,
+            totals: &self.totals,
+            tenders: &self.tenders,
+            settled: &self.settled,
+            invc_no: self.invc_no,
+            cis_datetime: &self.cis_datetime,
+            vsdc: &self.vsdc,
+        })
+        .map_err(|e| e.to_string())
+    }
+}
+
 /// A sale that holds an invoice number but is not yet confirmed.
 #[derive(Debug)]
 struct Pending {
@@ -187,9 +309,10 @@ pub struct LaneState {
     basket: Basket,
     tenders: TenderSet,
     pending: Option<Pending>,
-    /// The bytes `compose` returned for the last confirmed sale, kept verbatim
-    /// so a reprint is the same document and never a recomposition.
-    last_receipt: Option<Vec<u8>>,
+    /// The last confirmed sale, kept so a reprint can be recomposed as a COPY.
+    last_sale: Option<LastSale>,
+    /// What the VSDC last told us (see [`VsdcOutcome`]).
+    vsdc_outcome: VsdcOutcome,
     /// The last measurement of each latency path (see `crate::latency`).
     timings: Timings,
 }
@@ -215,7 +338,11 @@ impl LaneState {
         // HardStop (which would blame a VSDC that may be perfectly reachable).
         let mut pending = None;
         let mut notice = Notice::None;
-        if let Some(p) = store.pending_sale(&cfg.dvc_srl_no, cfg.counter).await? {
+        if let Some(p) = store
+            .pending_sale(&cfg.dvc_srl_no, cfg.counter)
+            .await
+            .map_err(|e| LaneError::store(StoreOp::Startup, e))?
+        {
             pending = Some(Pending {
                 handle: SaleHandle {
                     id: p.id,
@@ -239,7 +366,8 @@ impl LaneState {
             basket: Basket::new(),
             tenders: TenderSet::default(),
             pending,
-            last_receipt: None,
+            last_sale: None,
+            vsdc_outcome: VsdcOutcome::NoneYet,
             timings,
         })
     }
@@ -397,7 +525,10 @@ impl LaneState {
                 } else {
                     "cancelled by supervisor after VSDC rejection"
                 };
-                self.store.abandon_sale(&p.handle, reason).await?;
+                self.store
+                    .abandon_sale(&p.handle, reason)
+                    .await
+                    .map_err(|e| LaneError::store(StoreOp::CancelSale, e))?;
                 self.pending = None;
                 Ok(())
             }
@@ -451,7 +582,8 @@ impl LaneState {
                         settled: &settled,
                         buyer_tin: None,
                     })
-                    .await?;
+                    .await
+                    .map_err(|e| LaneError::store(StoreOp::BeginSale, e))?;
                 Pending {
                     handle,
                     receipt: None,
@@ -469,8 +601,17 @@ impl LaneState {
                 tot_tax_amt: totals.tot_tax_amt.to_string(),
             };
             match fiscal.save_sales(&payload) {
-                Ok(r) => pending.receipt = Some(r),
-                Err(e) => return self.fiscal_refused(pending, e).await,
+                Ok(r) => {
+                    self.vsdc_outcome = VsdcOutcome::Answered;
+                    pending.receipt = Some(r);
+                }
+                Err(e) => {
+                    self.vsdc_outcome = match e {
+                        FiscalError::Unreachable => VsdcOutcome::Unreachable,
+                        _ => VsdcOutcome::Answered,
+                    };
+                    return self.fiscal_refused(pending, e).await;
+                }
             }
         }
         let Some(receipt) = pending.receipt.clone() else {
@@ -490,7 +631,7 @@ impl LaneState {
             .await
         {
             self.pending = Some(pending);
-            return Err(e.into());
+            return Err(LaneError::store(StoreOp::ConfirmSale, e));
         }
 
         // Confirmed: only now may anything print.
@@ -499,16 +640,27 @@ impl LaneState {
         };
         let mut faults: Vec<String> = Vec::new();
         // Never leave an earlier sale's receipt behind as "the last receipt".
-        self.last_receipt = None;
-        match self.compose_receipt(&settled, &totals, &pending.handle, &receipt) {
-            Ok(bytes) => {
-                // Retained BEFORE the write: a jam must not lose the bytes.
-                let bytes = self.last_receipt.insert(bytes);
-                match printer.write(bytes) {
-                    Ok(()) => self.timings.tender_to_bytes = Some(timer.elapsed()),
-                    Err(e) => faults.push(format!("the receipt did not print ({e})")),
+        self.last_sale = None;
+        match self.capture_sale(&settled, &totals, &pending.handle, &receipt) {
+            Ok(sale) => match sale.compose(&self.cfg, SalesTyCd::Normal) {
+                Ok(bytes) => {
+                    // Retained BEFORE the write: a jam must not lose the sale.
+                    let sale = self.last_sale.insert(sale);
+                    let bytes = sale.original.insert(bytes);
+                    match printer.write(bytes) {
+                        Ok(()) => {
+                            sale.original_printed = true;
+                            self.timings.tender_to_bytes = Some(timer.elapsed());
+                        }
+                        Err(e) => faults.push(format!("the receipt did not print ({e})")),
+                    }
                 }
-            }
+                Err(e) => {
+                    // Keep the sale: the reprint will try again.
+                    self.last_sale = Some(sale);
+                    faults.push(format!("the receipt could not be composed ({e})"));
+                }
+            },
             Err(e) => faults.push(format!("the receipt could not be composed ({e})")),
         }
         // Cash was taken either way, so the drawer opens even if printing failed.
@@ -530,33 +682,63 @@ impl LaneState {
         Ok(settled)
     }
 
-    /// The receipt composed for the last confirmed sale, byte for byte, if one
-    /// could be composed.
+    /// The original receipt composed for the last confirmed sale, byte for
+    /// byte, if one could be composed.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by tests; the UI reprints through `reprint`")
+    )]
     pub fn last_receipt(&self) -> Option<&[u8]> {
-        self.last_receipt.as_deref()
+        self.last_sale.as_ref().and_then(|s| s.original.as_deref())
     }
 
-    /// Prints the retained receipt again. Printing is not the sale: this touches
-    /// only the printer, never the store or the VSDC, and emits exactly the
-    /// bytes composed originally. A printer fault, like having nothing to
-    /// reprint, is a `Problem` notice with `Ok(())`: the cashier can act on it.
+    /// What the VSDC last told the lane. The lane does not poll the VSDC, so
+    /// this is the outcome of the last sale sent, not current connectivity.
+    pub fn vsdc_outcome(&self) -> VsdcOutcome {
+        self.vsdc_outcome
+    }
+
+    /// Prints the last sale's receipt again. Printing is not the sale: this
+    /// touches only the printer, never the store or the VSDC.
+    ///
+    /// CIS 7.18: print only one original; a reprint carries the COPY mark. So
+    /// a reprint is RECOMPOSED as `SalesTyCd::Copy` (COPY banner, `CS` label),
+    /// never replayed, or the customer would hold two identical originals. The
+    /// one exception: if no original has reached the printer yet (it jammed
+    /// or was out of paper), this first reprint IS the original, because
+    /// otherwise the sale would have no original at all.
+    ///
+    /// A printer fault, like having nothing to reprint, is a `Problem` notice
+    /// with `Ok(())`: the cashier can act on it.
     pub fn reprint(&mut self, printer: &mut dyn Printer) -> Result<(), LaneError> {
         self.buffer.clear();
-        let Some(bytes) = self.last_receipt.as_deref() else {
+        let Some(sale) = self.last_sale.as_mut() else {
             return self.refuse(LaneError::NothingToReprint);
         };
-        match printer.write(bytes) {
-            Ok(()) => {
-                self.notice = Notice::Info("Receipt reprinted.".into());
-                Ok(())
+        let is_original = !sale.original_printed;
+        let bytes = match (is_original, sale.original.as_ref()) {
+            (true, Some(original)) => Ok(original.clone()),
+            (true, None) => sale.compose(&self.cfg, SalesTyCd::Normal),
+            (false, _) => sale.compose(&self.cfg, SalesTyCd::Copy),
+        };
+        let written = match bytes {
+            Ok(bytes) => {
+                let r = printer.write(&bytes).map_err(|e| e.to_string());
+                if r.is_ok() && is_original {
+                    sale.original_printed = true;
+                }
+                r.map_err(|e| format!("The receipt did not print ({e})"))
             }
-            Err(e) => {
-                self.notice = Notice::Problem(format!(
-                    "The receipt did not print ({e}). Check the printer and try the reprint again; the sale itself is safe."
-                ));
-                Ok(())
-            }
-        }
+            Err(e) => Err(format!("The receipt could not be composed ({e})")),
+        };
+        self.notice = match written {
+            Ok(()) if is_original => Notice::Info("Receipt printed.".into()),
+            Ok(()) => Notice::Info("Receipt reprinted (marked COPY).".into()),
+            Err(m) => Notice::Problem(format!(
+                "{m}. Check the printer and try the reprint again; the sale itself is safe."
+            )),
+        };
+        Ok(())
     }
 
     /// Handles the VSDC's refusal. Always returns `Err`: the sale did not
@@ -581,7 +763,7 @@ impl LaneState {
                     Ok(()) => Err(LaneError::Unreachable),
                     Err(e) => {
                         self.pending = Some(pending);
-                        Err(e.into())
+                        Err(LaneError::store(StoreOp::RetireUnreachable, e))
                     }
                 }
             }
@@ -590,7 +772,7 @@ impl LaneState {
                 let recorded = self.store.fail_sale(&pending.handle, &reason).await;
                 // Held either way: the number is still ours and still unconfirmed.
                 self.pending = Some(pending);
-                recorded?;
+                recorded.map_err(|e| LaneError::store(StoreOp::RecordRejection, e))?;
                 Err(LaneError::Rejected { code, msg })
             }
             FiscalError::Overlapped => {
@@ -606,37 +788,33 @@ impl LaneState {
                     }
                     Err(e) => {
                         self.pending = Some(pending);
-                        Err(e.into())
+                        Err(LaneError::store(StoreOp::RetireOverlapped, e))
                     }
                 }
             }
         }
     }
 
-    fn compose_receipt(
+    /// Gathers what a receipt is composed from, owned, at the moment the sale
+    /// is confirmed (the basket and tenders are cleared by `next_customer`).
+    fn capture_sale(
         &self,
         settled: &Settled,
-        totals: &till_core::BasketTotals,
+        totals: &BasketTotals,
         handle: &SaleHandle,
         vsdc: &VsdcReceipt,
-    ) -> Result<Vec<u8>, String> {
-        let lines = self.basket.apportioned_lines().map_err(|e| e.to_string())?;
-        compose(ReceiptInput {
-            shop_name: &self.cfg.shop_name,
-            shop_address: &self.cfg.shop_address,
-            shop_tin: &self.cfg.shop_tin,
-            mrc: &vsdc.mrc_no,
-            sales_ty: SalesTyCd::Normal,
-            rcpt_ty: RcptTyCd::Sale,
-            lines: &lines,
-            totals,
-            tenders: &self.tenders,
-            settled,
+    ) -> Result<LastSale, String> {
+        Ok(LastSale {
+            lines: self.basket.apportioned_lines().map_err(|e| e.to_string())?,
+            totals: totals.clone(),
+            tenders: self.tenders.clone(),
+            settled: *settled,
             invc_no: handle.invc_no,
-            cis_datetime: &kigali_now(),
-            vsdc,
+            cis_datetime: kigali_now(),
+            vsdc: vsdc.clone(),
+            original: None,
+            original_printed: false,
         })
-        .map_err(|e| e.to_string())
     }
 
     pub fn buffer(&self) -> &str {
@@ -651,10 +829,11 @@ impl LaneState {
     pub fn basket(&self) -> &Basket {
         &self.basket
     }
-    pub fn tenders(&self) -> &TenderSet {
-        &self.tenders
-    }
     /// The last measurement of each latency path.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by tests; no screen shows timings yet")
+    )]
     pub fn timings(&self) -> &Timings {
         &self.timings
     }
@@ -681,7 +860,8 @@ impl LaneState {
         let product = self
             .store
             .lookup(&scanned)
-            .await?
+            .await
+            .map_err(|e| LaneError::store(StoreOp::Scan, e))?
             .ok_or_else(|| LaneError::UnknownCode(raw.trim().to_string()))?;
         let line = line_for(&product, &scanned)?;
 
@@ -1586,14 +1766,17 @@ mod tests {
         let kept = l.last_receipt().expect("retained").to_vec();
         assert!(!kept.is_empty());
 
-        // Reprint emits exactly those bytes (fail_next was one-shot).
+        // No original has reached paper, so the first reprint IS the original
+        // (fail_next was one-shot): otherwise the sale would have none.
         l.reprint(&mut p).unwrap();
         assert_eq!(p.written, kept);
         assert_eq!(printed_invc(&p), "1");
         assert!(matches!(l.notice(), Notice::Info(_)));
-        // The retained copy is unchanged by reprinting; a second one is identical.
+        // The original is out; every later reprint is a COPY, not these bytes.
         l.reprint(&mut p).unwrap();
-        assert_eq!(p.written, [kept.clone(), kept.clone()].concat());
+        let copy = p.written[kept.len()..].to_vec();
+        assert_ne!(copy, kept);
+        assert!(printable(&copy).contains("COPY"));
         assert_eq!(l.last_receipt(), Some(kept.as_slice()));
         // Reprinting never touched the store.
         let n: i64 = sqlx::query_scalar("select count(*) from sale")
@@ -1622,8 +1805,43 @@ mod tests {
         // The failed attempt wrote nothing.
         assert_eq!(p.written, kept);
         l.reprint(&mut p).unwrap();
-        // The retry really emitted the bytes a second time.
-        assert_eq!(p.written, [kept.clone(), kept.clone()].concat());
+        // The retry emitted a second document, and it is a COPY, not a replay.
+        let copy = &p.written[kept.len()..];
+        assert!(!copy.is_empty());
+        assert_ne!(copy, kept.as_slice());
+        assert!(printable(copy).contains("COPY"));
+    }
+
+    fn printable(bytes: &[u8]) -> String {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+
+    #[tokio::test]
+    async fn a_reprint_is_a_marked_copy_never_a_second_original() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .unwrap();
+        let original = p.written.clone();
+        l.reprint(&mut p).unwrap();
+        let copy = p.written[original.len()..].to_vec();
+        // CIS 7.18: not the same document, marked COPY, labelled CS not NS.
+        assert_ne!(copy, original);
+        let (o, c) = (printable(&original), printable(&copy));
+        assert!(!o.contains("COPY") && o.contains("NS"), "{o}");
+        assert!(c.contains("COPY"), "{c}");
+        assert!(c.contains("CS") && !c.contains("NS"), "{c}");
+        // The retained original is untouched, and a second copy matches the first.
+        assert_eq!(l.last_receipt(), Some(original.as_slice()));
+        l.reprint(&mut p).unwrap();
+        assert_eq!(&p.written[original.len() + copy.len()..], copy.as_slice());
+        // Still a reprint after the basket is cleared for the next customer.
+        l.next_customer().unwrap();
+        l.reprint(&mut p).unwrap();
+        assert!(matches!(l.notice(), Notice::Info(_)));
     }
 
     #[tokio::test]
@@ -1634,6 +1852,44 @@ mod tests {
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert!(p.written.is_empty());
         assert!(l.last_receipt().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_confirm_failure_does_not_tell_the_cashier_to_rescan() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = BreaksStore {
+            pool: l.store.clone(),
+        };
+        let e = l.settle(&mut f, &mut p, &mut d).await.unwrap_err();
+        let m = e.to_string();
+        assert!(!m.contains("catalogue") && !m.contains("scan again"), "{m}");
+        assert!(m.contains("Do not ring the items again"), "{m}");
+        assert_eq!(l.notice(), &Notice::Problem(m));
+        // While a scan failure still says what it always did.
+        let scan = LaneError::store(StoreOp::Scan, StoreError::Busy).to_string();
+        assert!(scan.contains("catalogue could not be read"), "{scan}");
+    }
+
+    #[tokio::test]
+    async fn the_vsdc_outcome_is_what_the_last_sale_learned() {
+        let mut l = lane_with_item().await;
+        assert_eq!(l.vsdc_outcome(), VsdcOutcome::NoneYet);
+        l.add_tender(PmtTyCd::Cash, rwf("2500")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Unreachable), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert_eq!(l.vsdc_outcome(), VsdcOutcome::Unreachable);
+        l.resume_from_hard_stop().unwrap();
+        // Resuming claims nothing: the outcome stays what it was.
+        assert_eq!(l.vsdc_outcome(), VsdcOutcome::Unreachable);
+        l.add_tender(PmtTyCd::Cash, rwf("2500")).unwrap();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert_eq!(l.vsdc_outcome(), VsdcOutcome::Answered);
     }
 
     #[tokio::test]

@@ -59,9 +59,15 @@ pub enum FiscalError {
     #[error("VSDC unreachable")]
     Unreachable,
 
-    /// The VSDC rejected the sale with a code and message. The till must not
-    /// retry with the same invoice number; some rejections (bad item class,
-    /// deregistered device) are permanent.
+    /// The VSDC rejected the sale with a code and message. Whether the same
+    /// invoice number may be retried depends on the response code, and that
+    /// decision is not made here: this type only carries the refusal. The
+    /// policy lives in `lane::LaneState::settle` (see the module docs of
+    /// `lane`): a rejection holds the sale pending and the next settle retries
+    /// the SAME number; a supervisor may instead cancel it with
+    /// `abandon_pending`, which is the way out of a permanent rejection (bad
+    /// item class, deregistered device). Code 994 is the exception and is its
+    /// own variant, `Overlapped`.
     #[error("VSDC rejected: {code} {msg}")]
     Rejected { code: String, msg: String },
 
@@ -77,6 +83,13 @@ pub enum FiscalError {
 
 /// Mode the simulated fiscal port can run in.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the demo only succeeds; tests drive the failure modes"
+    )
+)]
 pub enum SimMode {
     /// Return a successful receipt with an incrementing receipt number.
     Succeed,

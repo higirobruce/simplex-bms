@@ -1,33 +1,25 @@
-// Task 5 will call these formatting functions; until then they are unused.
-#[allow(dead_code)]
+// Money, quantity and tax formatting for the screen and the receipt.
 mod fmt;
 
-// Later tasks consume the full token set; until then parts of it are unused.
-#[allow(dead_code)]
+// Design tokens for the egui theme. Individual unused tokens are marked where they are declared.
 mod theme;
 
-// Task 3: Device traits and simulated implementations.
-#[allow(dead_code)]
+// Device traits and simulated implementations.
 mod device;
 
-// Task 4: ESC/POS byte encoder. Task 5 composes the tax receipt on top of it.
-#[allow(dead_code)]
+// ESC/POS byte encoder, which `receipt` composes the tax receipt on top of.
 mod escpos;
 
-// Task 5: composes the RRA tax receipt.
-#[allow(dead_code)]
+// Composes the RRA tax receipt.
 mod receipt;
 
-// Task 6: fiscal port trait and simulated VSDC. Phase 3 will write the real client.
-#[allow(dead_code)]
+// Fiscal port trait and simulated VSDC. Phase 3 will write the real client.
 mod fiscal;
 
-// Task 7: the sale itself.
-#[allow(dead_code)]
+// The sale itself.
 mod lane;
 
-// Task 10: latency budgets and the timings `lane` records against them.
-#[allow(dead_code)]
+// Latency budgets and the timings `lane` records against them.
 mod latency;
 
 mod demo;

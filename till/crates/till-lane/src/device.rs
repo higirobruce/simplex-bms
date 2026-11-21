@@ -27,17 +27,26 @@ pub trait Drawer {
 /// Reads weight from a serial scale.
 pub trait Scale {
     /// Reads the current weight on the scale. Returns an error if the device is
-    /// not connected or times out waiting for a reading. This trait is not called
-    /// in this phase but is part of the design spec; task 7 will use it.
+    /// not connected or times out waiting for a reading. Nothing calls this in
+    /// this build: the lane takes weights from scale labels, not a serial scale.
+    /// It is part of the design spec and must exist.
+    #[expect(dead_code, reason = "the serial scale is not wired into the lane yet")]
     fn read_weight(&mut self) -> Result<Qty, DeviceError>;
 }
 
 /// Polls a barcode scanner that acts as a HID keyboard wedge.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "nothing polls a scanner in this build; keystrokes arrive through the UI"
+    )
+)]
 pub trait ScanSource {
     /// Returns the next scanned barcode, or None if no scan is queued. This trait
     /// is not called in this phase because the operating system delivers keyboard
-    /// wedge input as ordinary keystrokes. Task 2 polls it; a later task may poll
-    /// here too. It is part of the design spec and must exist.
+    /// wedge input as ordinary keystrokes. Nothing polls it in this build; it is
+    /// part of the design spec and must exist.
     fn poll(&mut self) -> Option<String>;
 }
 
@@ -46,12 +55,23 @@ pub trait ScanSource {
 pub enum DeviceError {
     /// The device is not connected or powered off.
     #[error("device not connected")]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no simulated device reports being disconnected yet"
+        )
+    )]
     NotConnected,
     /// I/O error communicating with the device.
     #[error("I/O error: {0}")]
     Io(String),
     /// The device did not respond within the timeout window.
     #[error("device timeout")]
+    #[expect(
+        dead_code,
+        reason = "only the scale's timeout builds this, and the scale is unused"
+    )]
     Timeout,
 }
 
@@ -61,6 +81,13 @@ pub enum DeviceError {
 /// `fail_next` flag is load-bearing for the proof that a printer failure after a
 /// sale is fiscally confirmed does not undo the sale.
 #[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "tests use it; the running lane uses the devices in devices.rs"
+    )
+)]
 pub struct SimPrinter {
     /// Every byte written to the printer since construction.
     pub written: Vec<u8>,
@@ -101,6 +128,7 @@ impl Drawer for SimDrawer {
 #[derive(Debug)]
 pub struct SimScale {
     /// The weight to return on the next read, or None to trigger a timeout.
+    #[expect(dead_code, reason = "read only by the unused Scale::read_weight")]
     pub next: Option<Qty>,
 }
 
@@ -116,6 +144,10 @@ impl Scale for SimScale {
 /// empty. It models the behavior of a HID keyboard wedge, which the operating
 /// system will also deliver as keystrokes in a real till.
 #[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "nothing polls a scanner in this build")
+)]
 pub struct SimScanner {
     /// A queue of barcodes waiting to be scanned. Each poll removes the front.
     pub queued: VecDeque<String>,

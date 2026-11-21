@@ -12,7 +12,7 @@
 
 use crate::devices::Devices;
 use crate::fmt;
-use crate::lane::{LaneState, Notice, Screen};
+use crate::lane::{LaneState, Notice, Screen, VsdcOutcome};
 use crate::theme::{self, TOKENS};
 use eframe::egui::{
     self, Align, Align2, Color32, Context, CornerRadius, FontFamily, FontId, Frame, Layout, Margin,
@@ -312,12 +312,22 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
                     TOKENS.line,
                 ));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // The VSDC is "online" unless the lane has hard-stopped.
-                    match state.screen() {
-                        Screen::HardStop { .. } => {
-                            chip(ui, "VSDC unreachable", TOKENS.danger, TOKENS.surface)
+                    // The lane does not poll the VSDC; it only learns at
+                    // settlement. So the chip reports the last outcome, and
+                    // never claims the device is reachable right now.
+                    match (state.screen(), state.vsdc_outcome()) {
+                        (Screen::HardStop { .. }, _) | (_, VsdcOutcome::Unreachable) => chip(
+                            ui,
+                            "VSDC unreachable at last sale",
+                            TOKENS.danger,
+                            TOKENS.surface,
+                        ),
+                        (_, VsdcOutcome::Answered) => {
+                            chip(ui, "VSDC answered last sale", TOKENS.hi_vis, TOKENS.ink)
                         }
-                        _ => chip(ui, "VSDC online", TOKENS.hi_vis, TOKENS.ink),
+                        (_, VsdcOutcome::NoneYet) => {
+                            chip(ui, "VSDC not contacted yet", TOKENS.line, TOKENS.ink)
+                        }
                     }
                     ui.label(text(clock(), mono(14.0), TOKENS.line));
                     ui.label(text(session.shift.to_uppercase(), sans(14.0), TOKENS.line));

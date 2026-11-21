@@ -14,6 +14,13 @@ const LF: u8 = 0x0A;
 pub enum Align {
     Left,
     Centre,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no receipt right-aligns a row; the encoder keeps the full ESC a set"
+        )
+    )]
     Right,
 }
 
@@ -124,6 +131,13 @@ impl Esc {
     }
 
     /// `ESC p 0 25 250`: pulse drawer pin 2; on/off times are in 2 ms units.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the drawer is kicked through the Drawer trait, not the receipt bytes"
+        )
+    )]
     pub fn kick_drawer(mut self) -> Self {
         self.buf.extend([ESC, 0x70, 0x00, 25, 250]);
         self
