@@ -35,14 +35,20 @@ pub enum BasketError {
     /// The basket discount is larger than the basket. Refused, never clamped.
     #[error("the basket discount is larger than the basket it applies to")]
     DiscountExceedsBasket,
-    /// One line's own discount plus its share of the basket discount would
-    /// exceed that line's supply amount, or the lines' own discounts leave no
-    /// room for the basket discount. Remedy: that line already has a discount.
+    /// The lines' own discounts leave too little headroom (supply amount less
+    /// own discount, summed over all lines) for the basket discount. Shares are
+    /// clamped to each line's headroom and the remainder is walked backwards
+    /// over what is left, so this is returned only when that walk finishes with
+    /// part of the discount still unplaced, i.e. the discount genuinely exceeds
+    /// the total headroom. There is no early return for a single line.
     #[error("a line's own discount leaves no room for its share of the basket discount")]
     LineDiscountExceedsLine,
-    /// Defensive only: the residual is non-negative (earlier shares floor) and
-    /// always fits in the lines' headroom, so this is unreachable. It names the
-    /// arm instead of letting a negative share through.
+    /// Defensive only. After the clamp, `placed` is the sum of shares that were
+    /// each floored and then only ever LOWERED (clamping to headroom never
+    /// raises a share), and `total` is at most the sum of supply amounts, so
+    /// `total - placed` is non-negative and this is unreachable. It names the
+    /// arm instead of letting a negative remainder through; do not delete it on
+    /// the strength of the proof, which holds only while the clamp only lowers.
     #[error("the basket discount cannot be split into whole francs across these lines")]
     DiscountNotSplittable,
     #[error(transparent)]
@@ -199,6 +205,10 @@ impl Basket {
                     .checked_mul(a.sply_amt.amount())
                     .and_then(|x| x.checked_div(sum_sply.amount()))
                     .map(|x| x.floor())
+                    // `None` is a multiply overflow, which is what
+                    // TotalOutOfRange says. A zero `sum_sply` (the other
+                    // `checked_div` failure) is unreachable: `total > 0` and
+                    // `total <= sum_sply` were both checked above.
                     .ok_or(BasketError::TotalOutOfRange)?
             };
             shares.push(share);
@@ -288,6 +298,8 @@ impl Basket {
             }
         }
         Ok(BasketTotals {
+            // Impossible-arm placeholder: at most MAX_ITEM_SEQ (999) lines, so
+            // the conversion cannot fail; TotalOutOfRange is only a stand-in.
             tot_item_cnt: u32::try_from(self.lines.len())
                 .map_err(|_| BasketError::TotalOutOfRange)?,
             taxbl_amt: taxbl,

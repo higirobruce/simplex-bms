@@ -49,10 +49,16 @@ fn check_digits(d: Decimal, max_dp: u32) -> Result<(), MoneyError> {
     Ok(())
 }
 
-/// Parses plain decimal text, rejecting more than `max` decimal places, then
-/// more than [`MAX_DIGITS`] digits in total. Scientific notation and a leading
-/// `+` are rejected; trailing and leading zeros are harmless, so `"1.500"` and
-/// `"0005"` are valid.
+/// Parses decimal text, rejecting more than `max` decimal places, then more
+/// than [`MAX_DIGITS`] digits in total.
+///
+/// What it screens out itself: a leading `+` and any `e`/`E` (scientific
+/// notation). Everything else is whatever `rust_decimal` accepts, which is
+/// LENIENT, not a strict grammar: surrounding whitespace is trimmed, and `"1_200"`
+/// (underscores) parses as 1200, `".5"` as 0.5 and `"1."` as 1. Leading and
+/// trailing zeros are harmless, so `"1.500"` and `"0005"` are valid. It is not
+/// tightened because no producer emits those shapes (the cloud sends canonical
+/// Decimal strings); do not rely on it to validate untrusted free text.
 fn parse_exact(s: &str, max: u32) -> Result<Decimal, MoneyError> {
     let t = s.trim();
     if t.starts_with('+') || t.contains(['e', 'E']) {

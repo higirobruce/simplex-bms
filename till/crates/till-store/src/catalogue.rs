@@ -22,6 +22,8 @@
 //! scannable until a deliberate full-replace operation exists (a follow-up that
 //! needs the cloud to say the payload is complete).
 
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Deserializer};
 use sqlx::{Row, SqliteConnection};
 use std::str::FromStr;
@@ -117,11 +119,18 @@ impl Store {
     /// prices some goods from today and some from last week.
     ///
     /// `BEGIN IMMEDIATE` takes the write lock first, which is also what makes
-    /// the inserted/updated split exact: the existence check and the upsert
+    /// the inserted/updated split exact: the existence pre-pass and the upsert
     /// cannot be interleaved with another writer. (`ON CONFLICT ... RETURNING`
-    /// cannot tell an insert from an update in SQLite.) Any error, including a
-    /// barcode claimed by two products, returns before `commit`, and dropping
-    /// the transaction rolls everything back.
+    /// cannot tell an insert from an update in SQLite.) Any error returns
+    /// before `commit`, and dropping the transaction rolls everything back.
+    ///
+    /// The write lock is the lane's: a sale cannot begin while it is held, and
+    /// a sale that waits past the 2 s busy timeout fails with
+    /// [`StoreError::Busy`]. So everything that can be decided without the
+    /// database (validation, two batch products claiming one barcode) is done
+    /// BEFORE the transaction, and inside it the batch costs a constant number
+    /// of statements, not several per product. It is still ONE transaction:
+    /// all-or-nothing matters more than throughput.
     pub async fn sync_catalogue(
         &self,
         products: &[CachedProduct],
@@ -129,8 +138,9 @@ impl Store {
         for p in products {
             validate(p)?;
         }
+        check_batch_barcodes(products)?;
         let mut tx = self.begin_immediate().await?;
-        let report = upsert_all(tx.conn(), products).await?;
+        let (report, _statements) = upsert_all(tx.conn(), products).await?;
         tx.commit().await?;
         Ok(report)
     }
@@ -174,57 +184,121 @@ impl Store {
 const SELECT: &str = "select id, sku, name, barcode, plu, unit_price, tax_ty_cd, is_weighed, \
                       item_cls_cd from product";
 
+/// Finds two DIFFERENT products in one batch claiming one barcode, in memory,
+/// before the write lock is taken. Mirrors what the statements would do in
+/// order: an id that appears again replaces its own earlier claim (so
+/// `x:b1, x:b2, y:b1` is legal, exactly as sequential upserts would leave it),
+/// and only a barcode held by another id is a conflict.
+fn check_batch_barcodes(products: &[CachedProduct]) -> Result<(), StoreError> {
+    let mut owner: HashMap<&str, &str> = HashMap::new();
+    let mut current: HashMap<&str, &str> = HashMap::new();
+    for p in products {
+        if let Some(old) = current.remove(p.id.as_str()) {
+            owner.remove(old);
+        }
+        if let Some(b) = p.barcode.as_deref() {
+            if let Some(other) = owner.get(b) {
+                return Err(StoreError::DuplicateBarcodeInBatch {
+                    barcode: b.to_string(),
+                    first_id: (*other).to_string(),
+                    second_id: p.id.clone(),
+                });
+            }
+            owner.insert(b, p.id.as_str());
+            current.insert(p.id.as_str(), b);
+        }
+    }
+    Ok(())
+}
+
+/// The whole batch in a CONSTANT number of statements. Each takes the batch as
+/// one JSON array bound once and unpacked with `json_each`, which also avoids
+/// SQLite's bound-variable limit. A per-product loop (the previous shape) held
+/// the write lock for seconds at tens of thousands of products and could make
+/// a sale fail with `SQLITE_BUSY`; the per-row work now happens inside SQLite
+/// instead of one round trip per row.
+///
+/// Returns the number of statements it ran (counted beside each one) so a test
+/// can assert that it is the same for 1 product and for 500.
 async fn upsert_all(
     conn: &mut SqliteConnection,
     products: &[CachedProduct],
-) -> Result<SyncReport, StoreError> {
-    // Phase 1: release every barcode the batch's products hold. `barcode` is
-    // UNIQUE and rows are checked one statement at a time, so two products
-    // exchanging barcodes (or a longer rotation) would otherwise collide
-    // mid-batch, and no retry could ever succeed. A collision with a product
-    // OUTSIDE the batch is still refused in phase 2. A later failure rolls
-    // this clear back with everything else.
-    for p in products {
-        sqlx::query("update product set barcode = null where id = ?")
-            .bind(&p.id)
-            .execute(&mut *conn)
-            .await?;
-    }
+) -> Result<(SyncReport, usize), StoreError> {
+    let ids = serde_json::to_string(&products.iter().map(|p| &p.id).collect::<Vec<_>>())?;
+    let rows = serde_json::to_string(
+        &products
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": p.id, "sku": p.sku, "name": p.name, "barcode": p.barcode,
+                    "plu": p.plu, "unit_price": p.unit_price.to_string(),
+                    "tax_ty_cd": p.tax_ty_cd.wire(), "is_weighed": i64::from(p.is_weighed),
+                    "item_cls_cd": p.item_cls_cd,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    let mut statements = 0usize;
+
+    // Statement 1: which ids already exist. One pre-pass replaces a
+    // `select count(*)` per product and keeps inserted/updated exact: the lock
+    // is held, so nothing can change between this and the upsert.
+    statements += 1;
+    let existing: HashSet<String> =
+        sqlx::query_scalar("select id from product where id in (select value from json_each(?))")
+            .bind(&ids)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
     let (mut inserted, mut updated) = (0usize, 0usize);
+    let mut seen: HashSet<&str> = HashSet::new();
     for p in products {
-        let existed: i64 = sqlx::query_scalar("select count(*) from product where id = ?")
-            .bind(&p.id)
-            .fetch_one(&mut *conn)
-            .await?;
-        // `department` is not part of the cached product, so it is left alone
-        // on update rather than blanked.
-        sqlx::query(&format!(
-            "insert into product (id, sku, name, barcode, plu, unit_price, tax_ty_cd, \
-             is_weighed, item_cls_cd, synced_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, {NOW_SQL}) \
-             on conflict (id) do update set sku = excluded.sku, name = excluded.name, \
-             barcode = excluded.barcode, plu = excluded.plu, unit_price = excluded.unit_price, \
-             tax_ty_cd = excluded.tax_ty_cd, is_weighed = excluded.is_weighed, \
-             item_cls_cd = excluded.item_cls_cd, synced_at = excluded.synced_at"
-        ))
-        .bind(&p.id)
-        .bind(&p.sku)
-        .bind(&p.name)
-        .bind(&p.barcode)
-        .bind(&p.plu)
-        .bind(p.unit_price.to_string())
-        .bind(p.tax_ty_cd.wire())
-        .bind(i64::from(p.is_weighed))
-        .bind(&p.item_cls_cd)
-        .execute(&mut *conn)
-        .await?;
-        if existed > 0 {
+        // A repeated id is an insert the first time and an update after.
+        if existing.contains(&p.id) || !seen.insert(p.id.as_str()) {
             updated += 1;
         } else {
             inserted += 1;
         }
     }
-    // PLU is not UNIQUE in the schema (and cannot be changed), so the
-    // invariant is enforced here, over the whole table, before commit.
+
+    // Statement 2, phase 1: release every barcode the batch's products hold.
+    // `barcode` is UNIQUE and rows are checked one at a time, so two products
+    // exchanging barcodes (or a longer rotation) would otherwise collide
+    // mid-statement, and no retry could ever succeed. Two batch products
+    // claiming one barcode were refused in memory before the lock; a collision
+    // with a product OUTSIDE the batch is still refused by the upsert. A later
+    // failure rolls this clear back with everything else.
+    statements += 1;
+    sqlx::query("update product set barcode = null where id in (select value from json_each(?))")
+        .bind(&ids)
+        .execute(&mut *conn)
+        .await?;
+
+    // Statement 3: the upsert. `department` is not part of the cached product,
+    // so it is left alone on update rather than blanked. (`where true` is what
+    // lets SQLite parse `on conflict` after an `insert ... select`.)
+    statements += 1;
+    sqlx::query(&format!(
+        "insert into product (id, sku, name, barcode, plu, unit_price, tax_ty_cd, \
+             is_weighed, item_cls_cd, synced_at) \
+             select json_extract(value, '$.id'), json_extract(value, '$.sku'), \
+             json_extract(value, '$.name'), json_extract(value, '$.barcode'), \
+             json_extract(value, '$.plu'), json_extract(value, '$.unit_price'), \
+             json_extract(value, '$.tax_ty_cd'), json_extract(value, '$.is_weighed'), \
+             json_extract(value, '$.item_cls_cd'), {NOW_SQL} from json_each(?) where true \
+             on conflict (id) do update set sku = excluded.sku, name = excluded.name, \
+             barcode = excluded.barcode, plu = excluded.plu, unit_price = excluded.unit_price, \
+             tax_ty_cd = excluded.tax_ty_cd, is_weighed = excluded.is_weighed, \
+             item_cls_cd = excluded.item_cls_cd, synced_at = excluded.synced_at"
+    ))
+    .bind(&rows)
+    .execute(&mut *conn)
+    .await?;
+
+    // Statement 4: PLU is not UNIQUE in the schema (and cannot be changed), so
+    // the invariant is enforced here, over the whole table, before commit.
+    statements += 1;
     let dup: Option<String> = sqlx::query_scalar(
         "select plu from product where plu is not null group by plu having count(*) > 1 limit 1",
     )
@@ -233,7 +307,7 @@ async fn upsert_all(
     if let Some(plu) = dup {
         return Err(StoreError::AmbiguousPlu { plu });
     }
-    Ok(SyncReport { inserted, updated })
+    Ok((SyncReport { inserted, updated }, statements))
 }
 
 fn decode_product(row: &sqlx::sqlite::SqliteRow) -> Result<CachedProduct, StoreError> {
@@ -402,7 +476,20 @@ mod tests {
             prod("p3", Some("4006381333931"), None, "100", TaxType::B),
             prod("p4", Some("4006381333931"), None, "200", TaxType::B),
         ];
-        assert!(s.sync_catalogue(&dup).await.is_err());
+        // Changed: this used to assert only `is_err()` (the failure was an
+        // opaque UNIQUE violation mid-transaction). The batch is now refused in
+        // memory before the lock, with a named error naming both products.
+        match s.sync_catalogue(&dup).await {
+            Err(StoreError::DuplicateBarcodeInBatch {
+                barcode,
+                first_id,
+                second_id,
+            }) => {
+                assert_eq!(barcode, "4006381333931");
+                assert_eq!((first_id.as_str(), second_id.as_str()), ("p3", "p4"));
+            }
+            other => panic!("expected DuplicateBarcodeInBatch, got {other:?}"),
+        }
         assert_eq!(count(&s).await, 0);
     }
 
@@ -412,17 +499,23 @@ mod tests {
         s.sync_catalogue(&[prod("p1", Some("4006381333931"), None, "1200", TaxType::A)])
             .await
             .unwrap();
-        // p1 would be repriced and p9 added before p8 collides with p1's barcode
+        // Changed: p8 used to collide with p1 INSIDE the batch, which is now
+        // refused in memory before any write, so that no longer exercised the
+        // rollback. The collision is now with a product OUTSIDE the batch, so
+        // p1 is repriced and p9 added before the upsert statement fails.
+        s.sync_catalogue(&[prod("out", Some("5449000000996"), None, "10", TaxType::B)])
+            .await
+            .unwrap();
         let batch = [
             prod("p1", Some("4006381333931"), None, "9999", TaxType::B),
             prod("p9", Some("96385074"), None, "50", TaxType::B),
-            prod("p8", Some("4006381333931"), None, "60", TaxType::B),
+            prod("p8", Some("5449000000996"), None, "60", TaxType::B),
         ];
         assert!(matches!(
             s.sync_catalogue(&batch).await,
             Err(StoreError::Sqlx(_))
         ));
-        assert_eq!(count(&s).await, 1);
+        assert_eq!(count(&s).await, 2);
         let p1 = s
             .lookup(&Scanned::Barcode("4006381333931".into()))
             .await
@@ -436,7 +529,7 @@ mod tests {
         s.sync_catalogue(&[prod("p9", Some("96385074"), None, "50", TaxType::B)])
             .await
             .unwrap();
-        assert_eq!(count(&s).await, 2);
+        assert_eq!(count(&s).await, 3);
     }
 
     #[tokio::test]
@@ -739,5 +832,98 @@ mod tests {
         );
         assert!(serde_json::from_str::<CachedProduct>(&ok.replace("\"B\"", "\"Z\"")).is_err());
         assert!(serde_json::from_str::<CachedProduct>(&ok.replace("1200.50", "1.234")).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_same_id_twice_in_one_batch_is_not_a_duplicate_barcode() {
+        // x:b1 then x:b2 then y:b1 leaves x on b2 and y on b1 when applied in
+        // order, so it must not be refused; x:b1 then y:b1 must be.
+        let s = Store::open_in_memory().await.unwrap();
+        let r = s
+            .sync_catalogue(&[
+                prod("x", Some("4006381333931"), None, "1", TaxType::B),
+                prod("x", Some("96385074"), None, "1", TaxType::B),
+                prod("y", Some("4006381333931"), None, "1", TaxType::B),
+            ])
+            .await
+            .unwrap();
+        assert_eq!((r.inserted, r.updated), (2, 1));
+        let x = s
+            .lookup(&Scanned::Barcode("96385074".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        let y = s
+            .lookup(&Scanned::Barcode("4006381333931".into()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((x.id.as_str(), y.id.as_str()), ("x", "y"));
+    }
+
+    #[tokio::test]
+    async fn counts_stay_exact_across_a_mixed_batch() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[
+            prod("a", Some("4006381333931"), None, "1", TaxType::B),
+            prod("b", None, None, "1", TaxType::B),
+        ])
+        .await
+        .unwrap();
+        let r = s
+            .sync_catalogue(&[
+                prod("a", Some("4006381333931"), None, "2", TaxType::B),
+                prod("c", None, None, "1", TaxType::B),
+                prod("d", None, None, "1", TaxType::B),
+            ])
+            .await
+            .unwrap();
+        assert_eq!((r.inserted, r.updated), (2, 1));
+    }
+
+    #[tokio::test]
+    async fn special_characters_and_nulls_survive_the_json_batch() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut p = prod("q", None, None, "12.50", TaxType::B);
+        p.name = "Inyama \"y'inka\" \\ é 🥩".into();
+        p.item_cls_cd = Some("5020230602".into());
+        s.sync_catalogue(&[p.clone()]).await.unwrap();
+        let (name, bc, plu, w, cls): (String, Option<String>, Option<String>, i64, Option<String>) =
+            sqlx::query_as(
+                "select name, barcode, plu, is_weighed, item_cls_cd from product where id='q'",
+            )
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(name, p.name);
+        assert_eq!((bc, plu, w), (None, None, 0));
+        assert_eq!(cls.as_deref(), Some("5020230602"));
+    }
+
+    #[tokio::test]
+    async fn statements_under_the_lock_do_not_grow_with_the_batch() {
+        let s = Store::open_in_memory().await.unwrap();
+        let batch = |n: usize, tag: &str| -> Vec<CachedProduct> {
+            (0..n)
+                .map(|i| {
+                    prod(
+                        &format!("{tag}{i}"),
+                        Some(&format!("{tag}-bc-{i}")),
+                        None,
+                        "10",
+                        TaxType::B,
+                    )
+                })
+                .collect()
+        };
+        let mut counts = Vec::new();
+        for (n, tag) in [(1usize, "a"), (500, "b")] {
+            let mut tx = s.begin_immediate().await.unwrap();
+            let (r, stmts) = upsert_all(tx.conn(), &batch(n, tag)).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(r.inserted, n);
+            counts.push(stmts);
+        }
+        assert_eq!(counts, vec![4, 4], "1 product and 500 cost the same");
     }
 }

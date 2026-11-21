@@ -18,7 +18,35 @@ use till_core::{Money, Qty};
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(sqlx::Error),
+    /// SQLite's write lock was still held by another connection when the
+    /// `busy_timeout` ran out (`SQLITE_BUSY`). Nothing was written. It is
+    /// transient by nature: a caller may retry ONCE, and if that also fails
+    /// must tell the cashier something they can act on ("the till is busy
+    /// syncing, try again in a moment"), never the raw database error.
+    #[error("the till database is busy; try again")]
+    Busy,
+    /// Two products in one catalogue batch claim the same barcode. Caught in
+    /// memory before the write lock is taken; names both so the cloud data can
+    /// be fixed.
+    #[error("products {first_id} and {second_id} both claim barcode {barcode}")]
+    DuplicateBarcodeInBatch {
+        barcode: String,
+        first_id: String,
+        second_id: String,
+    },
+    /// A text field over the VSDC's declared length (see `till-core`).
+    #[error(transparent)]
+    FieldTooLong(#[from] till_core::FieldTooLong),
+    /// The sale is `Confirmed`: a fiscal record that must not be destroyed.
+    #[error("sale {id} is confirmed; a confirmed sale cannot be abandoned")]
+    SaleAlreadyConfirmed { id: String },
+    /// Impossible-arm placeholder: a tender position that does not fit an
+    /// `i64`. A sale has far fewer tenders than that, so this cannot happen;
+    /// it exists so the conversion has an honest name instead of borrowing
+    /// another variant's message.
+    #[error("tender position out of range (impossible)")]
+    TenderSeqOutOfRange,
     #[error("migration failed: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
     /// A stored column that will not parse back into its `till-core` type.
@@ -67,6 +95,32 @@ pub enum StoreError {
     Payload(#[from] serde_json::Error),
 }
 
+/// Maps SQLite's `SQLITE_BUSY` to [`StoreError::Busy`] and everything else to
+/// [`StoreError::Sqlx`]. Every `?` on a sqlx call in this crate goes through
+/// here, so `begin_immediate`, `begin_sale`, `confirm_sale` and
+/// `sync_catalogue` all report a lock timeout the same, named way.
+///
+/// Uses the error's numeric code, not its message text. SQLite's code is
+/// "extended": the low byte is the primary code and the upper bits refine it
+/// (`SQLITE_BUSY_SNAPSHOT` is 517, `SQLITE_BUSY_RECOVERY` 261), so the test is
+/// `code & 0xff == SQLITE_BUSY (5)`. `SQLITE_LOCKED` (6) is a different
+/// condition (shared-cache table locks) and is deliberately not mapped.
+impl From<sqlx::Error> for StoreError {
+    fn from(e: sqlx::Error) -> StoreError {
+        const SQLITE_BUSY: i64 = 5;
+        let busy = e
+            .as_database_error()
+            .and_then(|d| d.code())
+            .and_then(|c| c.parse::<i64>().ok())
+            .is_some_and(|c| c & 0xff == SQLITE_BUSY);
+        if busy {
+            StoreError::Busy
+        } else {
+            StoreError::Sqlx(e)
+        }
+    }
+}
+
 /// The migrations, compiled into the binary so a till needs no files beside
 /// its executable.
 ///
@@ -92,7 +146,12 @@ fn migrator() -> Migrator {
 ///
 /// Why 2 s: an allocation transaction is one UPDATE and one INSERT on WAL
 /// (sub-millisecond); the sale transaction adds its line and tender rows (a
-/// few milliseconds even at the 999-line ceiling). No transaction ever spans
+/// few milliseconds even at the 999-line ceiling). The one transaction that is
+/// NOT that short is a catalogue sync, which scales with the catalogue (about
+/// 2 s for 60,000 products measured on a development machine, several times
+/// that on eMMC); it is kept to one statement per product and a handful of
+/// batch statements, and a sale that still loses the race gets
+/// [`StoreError::Busy`], which the caller may retry once. No transaction ever spans
 /// the VSDC round trip: the `AwaitingVsdc` row is committed, the network call
 /// runs with no lock held, and confirmation opens a fresh transaction. So real
 /// contention clears in single-digit milliseconds and 2 s is roughly 200x
@@ -149,6 +208,25 @@ impl Store {
     async fn migrated(pool: SqlitePool) -> Result<Store, StoreError> {
         migrator().run(&pool).await?;
         Ok(Store { pool })
+    }
+
+    /// A file-backed store with a short busy timeout, so a lock test does not
+    /// wait the production 2 s. Returns its temp directory for cleanup.
+    #[cfg(test)]
+    pub(crate) async fn open_with_busy_timeout_for_test(
+        tag: &str,
+        millis: u64,
+    ) -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("till-busy-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let opts = SqliteConnectOptions::new()
+            .filename(dir.join("till.db"))
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_millis(millis))
+            .journal_mode(SqliteJournalMode::Wal);
+        let pool = SqlitePoolOptions::new().connect_with(opts).await.unwrap();
+        (Store::migrated(pool).await.unwrap(), dir)
     }
 
     /// The underlying pool, for the queries of later modules.
@@ -466,5 +544,56 @@ mod tests {
         assert!(decode_tax_ty("tax_ty_cd", "Z").is_err());
         assert!(decode_pmt_ty("pmt_ty_cd", "99").is_err());
         assert!(decode_tax_ty("tax_ty_cd", "B").is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_locked_database_gives_busy_from_every_write_entry_point() {
+        let (s, dir) = Store::open_with_busy_timeout_for_test("busy", 50).await;
+        // another connection holds the write lock, as a long catalogue sync would
+        let holder = s.begin_immediate().await.unwrap();
+        assert!(matches!(s.begin_immediate().await, Err(StoreError::Busy)));
+        let p = crate::CachedProduct {
+            id: "p".into(),
+            sku: "S".into(),
+            name: "N".into(),
+            barcode: None,
+            plu: None,
+            unit_price: Money::try_from_str("1").unwrap(),
+            tax_ty_cd: TaxType::B,
+            is_weighed: false,
+            item_cls_cd: None,
+        };
+        assert!(matches!(
+            s.sync_catalogue(std::slice::from_ref(&p)).await,
+            Err(StoreError::Busy)
+        ));
+        let h = crate::SaleHandle {
+            id: "x".into(),
+            invc_no: 1,
+        };
+        let r = crate::VsdcReceipt {
+            rcpt_no: 1,
+            intrl_data: "i".into(),
+            rcpt_sign: "s".into(),
+            sdc_id: "d".into(),
+            mrc_no: "m".into(),
+            vsdc_rcpt_pbct_date: "20261121103000".into(),
+            tot_rcpt_no: 1,
+        };
+        assert!(matches!(s.confirm_sale(&h, r).await, Err(StoreError::Busy)));
+        drop(holder);
+        // and it is genuinely transient: once the lock is released it works
+        s.sync_catalogue(std::slice::from_ref(&p)).await.unwrap();
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn only_sqlite_busy_codes_map_to_busy() {
+        // not a database error at all
+        assert!(matches!(
+            StoreError::from(sqlx::Error::PoolTimedOut),
+            StoreError::Sqlx(_)
+        ));
     }
 }

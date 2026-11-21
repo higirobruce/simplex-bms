@@ -12,7 +12,8 @@
 //! 3. [`Store::confirm_sale`] (VSDC answered, receipt printed) opens a fresh
 //!    transaction, records the receipt and queues exactly one `outbound` row.
 //!    [`Store::fail_sale`] instead counts the failed attempt and leaves the
-//!    number for the retry.
+//!    number for the retry, and [`Store::abandon_sale`] retires a sale the
+//!    VSDC can never complete.
 //!
 //! The tax authority, not our server, is the legal counterparty, so nothing is
 //! queued for the cloud until step 3. And `confirm_sale` is the only path that
@@ -74,6 +75,11 @@ impl Store {
         if new.basket.is_empty() {
             return Err(StoreError::EmptySale);
         }
+        // Length limits on the buyer TIN and every line's text, before the
+        // number is taken (`apportioned_lines` below validates the lines).
+        if let Some(tin) = new.buyer_tin {
+            till_core::validate_buyer_tin(tin)?;
+        }
         let totals = new.basket.totals()?;
         if new.tenders.settle(totals.tot_amt)? != *new.settled {
             return Err(StoreError::SettlementMismatch);
@@ -132,7 +138,7 @@ impl Store {
                     "insert into sale_tender (sale_id, seq, pmt_ty_cd, amount) values (?, ?, ?, ?)",
                 )
                 .bind(&id)
-                .bind(i64::try_from(i + 1).map_err(|_| StoreError::EmptySale)?)
+                .bind(i64::try_from(i + 1).map_err(|_| StoreError::TenderSeqOutOfRange)?)
                 .bind(t.pmt_ty_cd.wire())
                 .bind(t.amount.to_string())
                 .execute(&mut *conn)
@@ -218,6 +224,66 @@ impl Store {
     }
 }
 
+impl Store {
+    /// Abandons a sale the VSDC will never complete: `AwaitingVsdc` to
+    /// `Voided`, with `reason` kept in `last_error`, in one transaction.
+    ///
+    /// This is the LOCAL escape hatch. Several VSDC failures are permanent (a
+    /// `994` carries no receipt and there is no endpoint to re-read one; a
+    /// rejected `itemClsCd`; a mistyped `custTin`; a deregistered device), and
+    /// without a way out `allocate_on` would refuse every new number for the
+    /// life of the installation.
+    ///
+    /// The invoice number is RETIRED, never reused: `invc_seq` is untouched, so
+    /// the next `begin_sale` takes the next number. A retired number is
+    /// accounted for (its row stays, `Voided`); a reused one would be a
+    /// duplicate at the VSDC. Nothing is queued to `outbound`: an abandoned
+    /// sale was never completed.
+    ///
+    /// Refused with [`StoreError::SaleAlreadyConfirmed`] for a `Confirmed` sale
+    /// (that would destroy a fiscal record). Idempotent on a `Voided` one. A
+    /// `Failed` sale is [`StoreError::SaleNotAwaiting`]: nothing writes that
+    /// state yet, and guessing what it means is not this function's job.
+    ///
+    /// Whether a voided number must ALSO be reported to the VSDC (RRA's
+    /// `salesSttsCd = 04` Canceled) is a Phase-3 question, to be settled with
+    /// the VSDC client. Until then this only unblocks the till; it tells the
+    /// authority nothing.
+    pub async fn abandon_sale(&self, handle: &SaleHandle, reason: &str) -> Result<(), StoreError> {
+        let mut tx = self.begin_immediate().await?;
+        let done = async {
+            let n = sqlx::query(
+                "update sale set state = 'Voided', last_error = ? \
+                 where id = ? and invc_no = ? and state = 'AwaitingVsdc'",
+            )
+            .bind(reason)
+            .bind(&handle.id)
+            .bind(handle.invc_no)
+            .execute(tx.conn())
+            .await?
+            .rows_affected();
+            if n == 1 {
+                return Ok(());
+            }
+            match refusal(tx.conn(), handle).await {
+                StoreError::SaleNotAwaiting { state, .. } if state == "Voided" => Ok(()),
+                StoreError::SaleNotAwaiting { id, state } if state == "Confirmed" => {
+                    Err(StoreError::SaleAlreadyConfirmed { id })
+                }
+                other => Err(other),
+            }
+        }
+        .await;
+        match done {
+            Ok(()) => tx.commit().await,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
+        }
+    }
+}
+
 /// Why an update that matched no `AwaitingVsdc` row did nothing.
 async fn refusal(conn: &mut SqliteConnection, h: &SaleHandle) -> StoreError {
     let state: Result<Option<String>, sqlx::Error> =
@@ -227,7 +293,7 @@ async fn refusal(conn: &mut SqliteConnection, h: &SaleHandle) -> StoreError {
             .fetch_optional(conn)
             .await;
     match state {
-        Err(e) => StoreError::Sqlx(e),
+        Err(e) => e.into(),
         Ok(None) => StoreError::SaleNotFound {
             id: h.id.clone(),
             invc_no: h.invc_no,
@@ -763,5 +829,195 @@ mod tests {
         }
         // and the number it would have taken is still available
         assert_eq!(s.allocate_invc_no("00").await.unwrap(), 1);
+    }
+
+    // ---- abandon_sale ----
+
+    #[tokio::test]
+    async fn abandoning_unblocks_the_branch_and_the_next_sale_gets_the_next_number() {
+        let s = Store::open_in_memory().await.unwrap();
+        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        assert_eq!(h.invc_no, 1);
+        assert!(matches!(
+            s.begin_sale(cash().sale("00")).await,
+            Err(StoreError::SequenceBlocked { invc_no: 1 })
+        ));
+        s.abandon_sale(&h, "VSDC 994, no receipt obtainable")
+            .await
+            .unwrap();
+        assert_eq!(s.pending_sale("00").await.unwrap(), None);
+        let next = s.begin_sale(cash().sale("00")).await.unwrap();
+        assert_eq!(
+            next.invc_no, 2,
+            "the abandoned number is retired, not reused"
+        );
+        // the retired number is still accounted for, with its reason
+        let (state, why): (String, String) =
+            sqlx::query_as("select state, last_error from sale where id = ?")
+                .bind(&h.id)
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        assert_eq!(state, "Voided");
+        assert_eq!(why, "VSDC 994, no receipt obtainable");
+    }
+
+    #[tokio::test]
+    async fn abandoning_a_confirmed_sale_is_refused_by_name_and_changes_nothing() {
+        let s = Store::open_in_memory().await.unwrap();
+        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        assert!(matches!(
+            s.abandon_sale(&h, "oops").await,
+            Err(StoreError::SaleAlreadyConfirmed { ref id }) if *id == h.id
+        ));
+        let state: String = sqlx::query_scalar("select state from sale where id = ?")
+            .bind(&h.id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(state, "Confirmed");
+    }
+
+    #[tokio::test]
+    async fn abandoning_twice_is_fine_and_keeps_the_first_reason() {
+        let s = Store::open_in_memory().await.unwrap();
+        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        s.abandon_sale(&h, "first").await.unwrap();
+        s.abandon_sale(&h, "second").await.unwrap();
+        let why: String = sqlx::query_scalar("select last_error from sale where id = ?")
+            .bind(&h.id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert_eq!(why, "first");
+    }
+
+    #[tokio::test]
+    async fn abandoning_queues_nothing_and_leaves_no_pending_sale() {
+        let s = Store::open_in_memory().await.unwrap();
+        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        s.abandon_sale(&h, "permanent").await.unwrap();
+        assert_eq!(count(&s, "select count(*) from outbound").await, 0);
+        assert_eq!(s.pending_sale("00").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn abandoning_an_unknown_sale_is_not_found_and_a_voided_sale_cannot_be_confirmed() {
+        let s = Store::open_in_memory().await.unwrap();
+        let ghost = SaleHandle {
+            id: "nope".into(),
+            invc_no: 9,
+        };
+        assert!(matches!(
+            s.abandon_sale(&ghost, "x").await,
+            Err(StoreError::SaleNotFound { .. })
+        ));
+        let h = s.begin_sale(cash().sale("00")).await.unwrap();
+        s.abandon_sale(&h, "x").await.unwrap();
+        assert!(matches!(
+            s.confirm_sale(&h, receipt()).await,
+            Err(StoreError::SaleNotAwaiting { .. })
+        ));
+    }
+
+    // ---- R116: a fully discounted sale ----
+
+    #[tokio::test]
+    async fn a_fully_discounted_sale_with_no_tenders_is_recorded_and_confirmed() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut basket = basket();
+        basket.basket_discount = Some(till_core::LineDiscount::Percent("100".parse().unwrap()));
+        let tenders = TenderSet::default();
+        let totals = basket.totals().unwrap();
+        assert_eq!(totals.tot_amt, Money::zero());
+        let settled = tenders.settle(totals.tot_amt).unwrap();
+        let h = s
+            .begin_sale(NewSale {
+                bhf_id: "00",
+                basket: &basket,
+                tenders: &tenders,
+                settled: &settled,
+                buyer_tin: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(count(&s, "select count(*) from sale_tender").await, 0);
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        assert_eq!(count(&s, "select count(*) from outbound").await, 1);
+    }
+
+    // ---- R117: field lengths are checked before a number is taken ----
+
+    #[tokio::test]
+    async fn an_over_long_item_name_is_refused_before_an_invoice_number_is_taken() {
+        let s = Store::open_in_memory().await.unwrap();
+        let mut basket = Basket::new();
+        let mut l = line("MILK", "1200", TaxType::A);
+        l.item_nm = "x".repeat(201);
+        basket.push_line(l).unwrap();
+        let tenders = {
+            let mut t = TenderSet::default();
+            t.push(TenderEntry {
+                pmt_ty_cd: PmtTyCd::Cash,
+                amount: Money::try_from_str("1200").unwrap(),
+            })
+            .unwrap();
+            t
+        };
+        let settled = tenders
+            .settle(Money::try_from_str("1200").unwrap())
+            .unwrap();
+        let r = s
+            .begin_sale(NewSale {
+                bhf_id: "00",
+                basket: &basket,
+                tenders: &tenders,
+                settled: &settled,
+                buyer_tin: None,
+            })
+            .await;
+        assert!(matches!(
+            r,
+            Err(StoreError::Basket(till_core::BasketError::Line(
+                till_core::LineError::FieldTooLong(f)
+            ))) if f.field == "itemNm" && f.max == 200
+        ));
+        assert_eq!(
+            count(&s, "select count(*) from invc_seq").await,
+            0,
+            "no number taken"
+        );
+        assert_eq!(count(&s, "select count(*) from sale").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_ten_digit_buyer_tin_is_refused_before_an_invoice_number_is_taken() {
+        let s = Store::open_in_memory().await.unwrap();
+        let f = cash();
+        let mut new = f.sale("00");
+        new.buyer_tin = Some("1001102634");
+        assert!(matches!(
+            s.begin_sale(new).await,
+            Err(StoreError::FieldTooLong(e)) if e.field == "custTin" && e.max == 9
+        ));
+        assert_eq!(count(&s, "select count(*) from invc_seq").await, 0);
+        new.buyer_tin = Some("100110263");
+        assert_eq!(s.begin_sale(new).await.unwrap().invc_no, 1);
+    }
+
+    #[tokio::test]
+    async fn beginning_a_sale_against_a_held_write_lock_is_busy_and_burns_no_number() {
+        let (s, dir) = Store::open_with_busy_timeout_for_test("sale-busy", 50).await;
+        let holder = s.begin_immediate().await.unwrap();
+        let f = cash();
+        assert!(matches!(
+            s.begin_sale(f.sale("00")).await,
+            Err(StoreError::Busy)
+        ));
+        drop(holder);
+        assert_eq!(s.begin_sale(f.sale("00")).await.unwrap().invc_no, 1);
+        drop(s);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

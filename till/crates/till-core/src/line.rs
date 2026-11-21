@@ -24,6 +24,50 @@ pub enum LineError {
     /// forward as a value nothing downstream can hold.
     #[error("line amount is outside the supported range")]
     AmountOutOfRange,
+    /// A text field longer than the VSDC accepts. Caught here, before the
+    /// invoice number is consumed, instead of at the VSDC after the customer
+    /// has paid.
+    #[error(transparent)]
+    FieldTooLong(#[from] FieldTooLong),
+}
+
+/// `itemClsCd`: CHAR 10 in `TrnsSalesSaveWrItem` (`vsdc.txt` line 1577).
+pub const ITEM_CLS_CD_MAX: usize = 10;
+/// `itemCd`: CHAR 20 (`vsdc.txt` line 1579).
+pub const ITEM_CD_MAX: usize = 20;
+/// `itemNm`: CHAR 200 (`vsdc.txt` line 1581).
+pub const ITEM_NM_MAX: usize = 200;
+/// `bcd`: CHAR 20 (`vsdc.txt` line 1583).
+pub const BCD_MAX: usize = 20;
+/// `custTin`: CHAR 9 (`vsdc.txt` line 1466).
+pub const CUST_TIN_MAX: usize = 9;
+
+/// A text field over the VSDC's declared length, named by its wire name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("{field} is {got} characters; the VSDC accepts at most {max}")]
+pub struct FieldTooLong {
+    pub field: &'static str,
+    pub max: usize,
+    pub got: usize,
+}
+
+/// Refuses `value` if it is longer than `max`. Length is counted in characters,
+/// not bytes: the spec says CHAR and does not say which, and counting bytes
+/// would refuse a legitimate accented product name the VSDC might accept.
+/// If the VSDC turns out to count bytes, only this function needs to change.
+fn check_len(field: &'static str, value: &str, max: usize) -> Result<(), FieldTooLong> {
+    let got = value.chars().count();
+    if got > max {
+        Err(FieldTooLong { field, max, got })
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates a buyer TIN (`custTin`) before a sale is begun. Length only: the
+/// authority declares CHAR 9 and this does not guess at a digit grammar.
+pub fn validate_buyer_tin(tin: &str) -> Result<(), FieldTooLong> {
+    check_len("custTin", tin, CUST_TIN_MAX)
 }
 
 /// A discount on one line. Mirrors the cloud's `DiscountKind`.
@@ -75,10 +119,25 @@ fn whole_francs(d: Decimal) -> Option<Money> {
 }
 
 impl BasketLine {
+    /// Checks every text field against the VSDC's declared length. Called first
+    /// by [`BasketLine::amounts`], which every sale prices through before
+    /// `begin_sale` opens its transaction, so an over-long name is refused
+    /// while no invoice number has been taken.
+    pub fn validate_fields(&self) -> Result<(), FieldTooLong> {
+        check_len("itemCd", &self.item_cd, ITEM_CD_MAX)?;
+        check_len("itemClsCd", &self.item_cls_cd, ITEM_CLS_CD_MAX)?;
+        check_len("itemNm", &self.item_nm, ITEM_NM_MAX)?;
+        if let Some(bcd) = &self.bcd {
+            check_len("bcd", bcd, BCD_MAX)?;
+        }
+        Ok(())
+    }
+
     /// Prices the line: supply amount, discount, taxable amount and extracted
     /// VAT. The discount applies to `sply_amt`, and the tax is extracted from
     /// what remains after it.
     pub fn amounts(&self) -> Result<LineAmounts, LineError> {
+        self.validate_fields()?;
         // Refused before anything is multiplied or divided.
         if !self.qty.is_positive() {
             return Err(LineError::NonPositiveQty);
@@ -373,5 +432,59 @@ mod tests {
     fn an_absurd_percent_is_refused_without_panicking() {
         let d = Some(LineDiscount::Percent(Decimal::MAX));
         assert!(line("P", "1", "100", TaxType::B, d).amounts().is_err());
+    }
+
+    #[test]
+    fn each_text_field_is_refused_one_over_its_limit_and_accepted_at_it() {
+        let cases: [(&str, usize); 4] = [
+            ("itemCd", ITEM_CD_MAX),
+            ("itemClsCd", ITEM_CLS_CD_MAX),
+            ("itemNm", ITEM_NM_MAX),
+            ("bcd", BCD_MAX),
+        ];
+        for (field, max) in cases {
+            let set = |l: &mut BasketLine, n: usize| {
+                let v = "x".repeat(n);
+                match field {
+                    "itemCd" => l.item_cd = v,
+                    "itemClsCd" => l.item_cls_cd = v,
+                    "itemNm" => l.item_nm = v,
+                    _ => l.bcd = Some(v),
+                }
+            };
+            let mut l = line("A", "1", "100", TaxType::B, None);
+            set(&mut l, max);
+            assert!(l.amounts().is_ok(), "{field} at the limit");
+            set(&mut l, max + 1);
+            assert_eq!(
+                l.amounts(),
+                Err(LineError::FieldTooLong(FieldTooLong {
+                    field,
+                    max,
+                    got: max + 1
+                })),
+                "{field} one over"
+            );
+        }
+    }
+
+    #[test]
+    fn length_counts_characters_not_bytes() {
+        let mut l = line("A", "1", "100", TaxType::B, None);
+        l.item_nm = "é".repeat(ITEM_NM_MAX);
+        assert!(l.amounts().is_ok());
+    }
+
+    #[test]
+    fn buyer_tin_over_nine_is_refused() {
+        assert!(validate_buyer_tin("100110263").is_ok());
+        assert_eq!(
+            validate_buyer_tin("1001102634"),
+            Err(FieldTooLong {
+                field: "custTin",
+                max: 9,
+                got: 10
+            })
+        );
     }
 }

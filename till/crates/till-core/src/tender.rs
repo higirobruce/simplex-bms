@@ -107,11 +107,25 @@ impl TenderSet {
     /// `due` is checked rather than trusted: today it is whole and non-negative
     /// by construction, but a refund path will pass amounts from elsewhere.
     ///
+    /// A zero `due` (a 100%-discounted basket) settles with NO tenders and no
+    /// change: it is still a sale that must be fiscalised, and `push` refuses
+    /// a zero tender so there is no other way to express it. Its header code is
+    /// [`PmtTyCd::Cash`]: RRA requires a `pmtTyCd`, no money changes hands so
+    /// none is truthful, and `01` CASH is the conventional default for a
+    /// zero-value receipt. An empty set against a positive `due` is still
+    /// [`TenderError::Empty`].
+    ///
     /// Checks run in a fixed order so the same input always gives the same
-    /// error: empty, negative due, fractional due, out-of-range sum, shortfall,
-    /// then change against non-cash.
+    /// error: empty (unless `due` is exactly zero), negative due, fractional
+    /// due, out-of-range sum, shortfall, then change against non-cash.
     pub fn settle(&self, due: Money) -> Result<Settled, TenderError> {
         let Some(first) = self.0.first() else {
+            if due == Money::zero() {
+                return Ok(Settled {
+                    change: Money::zero(),
+                    header_pmt_ty_cd: PmtTyCd::Cash,
+                });
+            }
             return Err(TenderError::Empty);
         };
         if due < Money::zero() {
@@ -376,11 +390,25 @@ mod tests {
         ));
     }
     #[test]
-    fn an_empty_set_is_refused() {
+    fn an_empty_set_is_refused_when_something_is_due() {
         assert!(matches!(
-            TenderSet::default().settle(Money::zero()),
+            TenderSet::default().settle(m("1")),
             Err(TenderError::Empty)
         ));
+    }
+    #[test]
+    fn zero_due_settles_with_no_tenders_and_no_change() {
+        // A 100%-discounted basket is still a sale that must be fiscalised.
+        let s = TenderSet::default().settle(Money::zero()).unwrap();
+        assert_eq!(s.change, Money::zero());
+        assert_eq!(s.header_pmt_ty_cd, PmtTyCd::Cash);
+    }
+    #[test]
+    fn zero_due_with_a_tender_still_returns_it_as_change() {
+        let s = set(&[e(PmtTyCd::Cash, "100")])
+            .settle(Money::zero())
+            .unwrap();
+        assert_eq!(s.change, m("100"));
     }
     #[test]
     fn a_sum_beyond_twelve_digits_is_an_error_not_a_wrap() {

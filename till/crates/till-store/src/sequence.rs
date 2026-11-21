@@ -23,6 +23,21 @@
 //!    ([`StoreError::SequenceBlocked`]); [`Store::pending_sale`] finds it at
 //!    startup.
 //!
+//! 4. A sale that can never complete is retired with [`Store::abandon_sale`]
+//!    (`Voided`, number never reused), which is the only way out of rule 3.
+//!
+//! # Exactly one lane may carry a given `bhfId`
+//!
+//! `invc_seq` is keyed on `bhf_id`, but it lives in a PER-TILL database, so it
+//! only separates branches within one install. RRA's sequence is per
+//! `(tin, bhfId)` across the whole shop. Two lanes configured with the same
+//! `bhfId` (the natural thing to do for a two-lane shop) would each count
+//! 1, 2, 3 in their own database and EVERY invoice would collide at the VSDC.
+//! That is a catastrophic misconfiguration, not a tuning choice: exactly one
+//! lane may carry a given `bhfId`. The cloud enforces it with
+//! `@@unique([bhfId, orgId])` on `Lane`; this crate cannot see the other
+//! lanes, so it cannot check it itself.
+//!
 //! Every transaction here is `BEGIN IMMEDIATE`. SQLite's default `BEGIN` is
 //! deferred: it reads first and only then tries to upgrade to a writer, and in
 //! WAL mode that upgrade fails at once (`SQLITE_BUSY_SNAPSHOT`) if another

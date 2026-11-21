@@ -23,6 +23,8 @@ pub mod tax;
 pub mod tender;
 
 pub use basket::{Basket, BasketError, BasketTotals};
-pub use line::{BasketLine, LineAmounts, LineDiscount, LineError};
+pub use line::{
+    BasketLine, FieldTooLong, LineAmounts, LineDiscount, LineError, validate_buyer_tin,
+};
 pub use money::{Money, MoneyError, Qty, round_half_up};
 pub use tender::{Settled, TenderEntry, TenderError, TenderSet};
