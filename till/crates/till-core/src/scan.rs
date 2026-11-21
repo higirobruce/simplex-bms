@@ -120,6 +120,15 @@ fn verify(bytes: &[u8], len: usize) -> Result<(), ScanError> {
     }
 }
 
+/// Canonical PLU form: leading zeros dropped, at least one digit kept. No
+/// standard PLU begins with `0`, so this is lossless. Never apply to barcodes.
+fn strip_leading_zeros(digits: &str) -> &str {
+    match digits.trim_start_matches('0') {
+        "" => "0",
+        rest => rest,
+    }
+}
+
 /// An in-store (variable measure) EAN-13 starts `02` or `20`-`29`.
 fn is_in_store(bytes: &[u8]) -> bool {
     matches!(bytes, [b'2', ..] | [b'0', b'2', ..])
@@ -136,7 +145,9 @@ pub fn classify(input: &str, embedded: EmbeddedMode) -> Result<Scanned, ScanErro
     let input = input.trim_matches(|c: char| c.is_ascii_whitespace());
     let bytes = digits_of(input)?;
     match bytes.len() {
-        4 | 5 => Ok(Scanned::Plu(input.to_string())),
+        // Only PLUs and item refs are normalised (leading zeros stripped);
+        // barcodes never are, they are matched byte-for-byte.
+        4 | 5 => Ok(Scanned::Plu(strip_leading_zeros(input).to_string())),
         8 => {
             verify(bytes, 8)?;
             Ok(Scanned::Barcode(input.to_string()))
@@ -165,10 +176,7 @@ pub fn classify(input: &str, embedded: EmbeddedMode) -> Result<Scanned, ScanErro
 /// with `0`, so `"04011"` is PLU `"4011"` and the stripping is lossless.
 fn decode_embedded(code: &str, embedded: EmbeddedMode) -> Result<Scanned, ScanError> {
     let item_ref = code.get(2..7).ok_or(ScanError::BadLength(code.len()))?;
-    let item_ref = match item_ref.trim_start_matches('0') {
-        "" => "0",
-        rest => rest,
-    };
+    let item_ref = strip_leading_zeros(item_ref);
     let value = code.get(7..12).ok_or(ScanError::BadLength(code.len()))?;
     let (qty, price) = match embedded {
         EmbeddedMode::Weight => {
@@ -350,9 +358,9 @@ mod tests {
         }
     }
     #[test]
-    fn plus_leading_zeros_are_kept_and_all_zero_is_a_plu() {
-        assert!(matches!(classify("0000", Weight).unwrap(), Scanned::Plu(p) if p == "0000"));
-        assert!(matches!(classify("01234", Weight).unwrap(), Scanned::Plu(p) if p == "01234"));
+    fn keyed_plu_drops_leading_zeros_and_all_zero_becomes_single_zero() {
+        assert!(matches!(classify("0000", Weight).unwrap(), Scanned::Plu(p) if p == "0"));
+        assert!(matches!(classify("01234", Weight).unwrap(), Scanned::Plu(p) if p == "1234"));
     }
     #[test]
     fn hostile_input_never_panics() {
@@ -387,6 +395,15 @@ mod tests {
         assert!(!ean13_is_valid("40063813339AB"));
         assert!(!ean13_is_valid(""));
     }
+    #[test]
+    fn leading_zero_barcode_is_returned_verbatim() {
+        assert!(ean13_is_valid("0012345678905"));
+        assert!(matches!(
+            classify("0012345678905", Weight).unwrap(),
+            Scanned::Barcode(b) if b == "0012345678905"
+        ));
+    }
+
     #[test]
     fn item_ref_drops_leading_zeros_but_keeps_a_five_digit_plu() {
         let code = with_check_digit("020401100734");
