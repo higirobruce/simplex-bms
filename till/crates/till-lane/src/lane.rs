@@ -18,8 +18,9 @@
 //! Nothing here panics. Every refusal does three things: sets
 //! [`Notice::Problem`] to a sentence the cashier can act on, clears the scan
 //! buffer (so the next scan is not appended to the last one's debris), and
-//! returns `Err(LaneError)`, the same fault in typed form for a caller that
-//! wants to log it. The basket is untouched by a refused scan; in particular a
+//! returns `Ok(())` when the cashier can act on it. Only faults they cannot
+//! act on (a store I/O failure) return `Err(LaneError)`, so the UI can treat an
+//! ordinary unknown barcode as a business outcome, not an error path. The basket is untouched by a refused scan; in particular a
 //! line that fails pricing is rejected BEFORE `push_line`, so it does not spend
 //! a sequence number.
 
@@ -31,12 +32,6 @@ use till_store::{CachedProduct, Counter, Store, StoreError};
 /// Longest scan buffer kept. Longer than any code (EAN-13 is 13); the excess
 /// is dropped so the resulting `BadLength` still tells the cashier it was wrong.
 const MAX_BUFFER: usize = 32;
-
-/// `itemClsCd` used when the catalogue has none for a product. This is the
-/// classification from RRA's own sample payload (also the one the till-core
-/// fixtures use), so it is a code the VSDC is known to accept. It is a
-/// placeholder: tax-relevant classification should come from the catalogue.
-pub const DEFAULT_ITEM_CLS_CD: &str = "5020230602";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
@@ -72,6 +67,10 @@ pub enum LaneError {
     NeedsWeightLabel { name: String },
     #[error("The scale label for {name} carries no weight. Weigh it again.")]
     ZeroWeight { name: String },
+    #[error(
+        "{name} is not fully set up (it has no item class). Do not sell it; ask the back office to fix the product."
+    )]
+    Unconfigured { name: String },
     #[error("{0}")]
     Basket(#[from] BasketError),
     #[error("{name} cannot be sold as set up: {source}. Ask a supervisor to fix the catalogue.")]
@@ -127,26 +126,26 @@ impl LaneState {
     }
 
     /// Terminates a scan. On refusal the notice is already set and the buffer
-    /// already cleared; the `Err` repeats the fault for callers that log it.
+    /// already cleared; `Err` is reserved for faults the cashier cannot act on.
     pub async fn enter(&mut self) -> Result<(), LaneError> {
         let raw = std::mem::take(&mut self.buffer);
         match self.try_enter(&raw).await {
             Ok(()) => Ok(()),
-            Err(e) => Err(self.refuse(e)),
+            Err(e) => self.refuse(e),
         }
     }
 
     pub async fn void_line(&mut self, item_seq: u16) -> Result<(), LaneError> {
         self.buffer.clear();
         if self.screen != Screen::Selling {
-            return Err(self.refuse(LaneError::NotSelling));
+            return self.refuse(LaneError::NotSelling);
         }
         match self.basket.void_line(item_seq) {
             Ok(()) => {
                 self.notice = Notice::Info(format!("Line {item_seq} removed."));
                 Ok(())
             }
-            Err(e) => Err(self.refuse(e.into())),
+            Err(e) => self.refuse(e.into()),
         }
     }
 
@@ -166,10 +165,16 @@ impl LaneState {
         &self.cfg
     }
 
-    fn refuse(&mut self, e: LaneError) -> LaneError {
+    /// Shows the cashier the problem and clears the buffer. Business outcomes
+    /// the cashier can act on return `Ok(())`; only faults they cannot act on
+    /// (store I/O, internal) return `Err`.
+    fn refuse(&mut self, e: LaneError) -> Result<(), LaneError> {
         self.buffer.clear();
         self.notice = Notice::Problem(e.to_string());
-        e
+        match e {
+            LaneError::Store(_) | LaneError::Internal(_) => Err(e),
+            _ => Ok(()),
+        }
     }
 
     async fn try_enter(&mut self, raw: &str) -> Result<(), LaneError> {
@@ -198,6 +203,16 @@ impl LaneState {
 /// Builds the line a scan stands for. A scale label's weight is the quantity;
 /// a label's price (price mode) beats the catalogue price, at quantity 1.
 fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneError> {
+    // itemClsCd is mandatory on the VSDC and drawn from RRA's controlled list;
+    // a guess would put a false tax classification on a tax document.
+    let item_cls_cd = match p.item_cls_cd.as_deref() {
+        Some(c) if !c.trim().is_empty() => c.to_string(),
+        _ => {
+            return Err(LaneError::Unconfigured {
+                name: p.name.clone(),
+            });
+        }
+    };
     let (qty, prc) = match scanned {
         Scanned::WeightEmbedded { qty: Some(q), .. } => {
             if !q.is_positive() {
@@ -223,10 +238,7 @@ fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneErro
     Ok(BasketLine {
         item_seq: 0, // assigned by Basket::push_line
         item_cd: p.sku.clone(),
-        item_cls_cd: p
-            .item_cls_cd
-            .clone()
-            .unwrap_or_else(|| DEFAULT_ITEM_CLS_CD.to_string()),
+        item_cls_cd,
         item_nm: p.name.clone(),
         bcd: p.barcode.clone(),
         qty,
@@ -259,7 +271,7 @@ mod tests {
             unit_price: Money::try_from_str("1250").unwrap(),
             tax_ty_cd: TaxType::B,
             is_weighed: weighed,
-            item_cls_cd: None,
+            item_cls_cd: Some("5020230602".into()),
         }
     }
 
@@ -297,14 +309,14 @@ mod tests {
         assert_eq!(lines[0].item_cd, "SKU-a");
         assert_eq!(lines[0].prc, Money::try_from_str("1250").unwrap());
         assert_eq!(lines[0].qty, Qty::try_from_str("1").unwrap());
-        assert_eq!(lines[0].item_cls_cd, DEFAULT_ITEM_CLS_CD);
+        assert_eq!(lines[0].item_cls_cd, "5020230602");
         assert_eq!(l.buffer(), "");
     }
 
     #[tokio::test]
     async fn an_unknown_barcode_tells_the_cashier_and_adds_nothing() {
         let mut l = lane_with(&[], EmbeddedMode::Weight).await;
-        assert!(scan(&mut l, EAN).await.is_err());
+        scan(&mut l, EAN).await.unwrap();
         assert!(l.basket().is_empty());
         match l.notice() {
             Notice::Problem(m) => assert!(m.contains(EAN), "{m}"),
@@ -320,7 +332,7 @@ mod tests {
         )
         .await;
         let bad = "4006381333932";
-        assert!(scan(&mut l, bad).await.is_err());
+        scan(&mut l, bad).await.unwrap();
         let want = ScanError::BadCheckDigit {
             expected: 1,
             got: 2,
@@ -353,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn a_weighed_product_scanned_without_a_label_is_refused() {
         let mut l = lane_with(&[product("w", Some(EAN), None, true)], EmbeddedMode::Weight).await;
-        assert!(scan(&mut l, EAN).await.is_err());
+        scan(&mut l, EAN).await.unwrap();
         assert!(l.basket().is_empty());
         assert!(matches!(l.notice(), Notice::Problem(_)));
     }
@@ -369,10 +381,7 @@ mod tests {
             scan(&mut l, EAN).await.unwrap();
         }
         assert_eq!(l.basket().len(), usize::from(MAX_ITEM_SEQ));
-        assert!(matches!(
-            scan(&mut l, EAN).await,
-            Err(LaneError::Basket(BasketError::TooManyLines { .. }))
-        ));
+        scan(&mut l, EAN).await.unwrap();
         match l.notice() {
             Notice::Problem(m) => assert!(m.contains("start another"), "{m}"),
             n => panic!("expected Problem, got {n:?}"),
@@ -399,7 +408,7 @@ mod tests {
     #[tokio::test]
     async fn voiding_a_missing_line_is_a_problem_not_a_panic() {
         let mut l = lane_with(&[], EmbeddedMode::Weight).await;
-        assert!(l.void_line(7).await.is_err());
+        l.void_line(7).await.unwrap();
         assert!(matches!(l.notice(), Notice::Problem(_)));
     }
 
@@ -412,7 +421,8 @@ mod tests {
             EmbeddedMode::Weight,
         )
         .await;
-        assert!(scan(&mut l, EAN).await.is_err());
+        scan(&mut l, EAN).await.unwrap();
+        assert!(l.basket().is_empty());
         scan(&mut l, "96385074").await.unwrap();
         assert_eq!(l.basket().lines().next().unwrap().item_seq, 1);
     }
@@ -428,5 +438,20 @@ mod tests {
         let line = l.basket().lines().next().unwrap();
         assert_eq!(line.prc, Money::try_from_str("1500").unwrap());
         assert_eq!(line.qty, Qty::try_from_str("1").unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_product_without_an_item_class_is_refused_by_name() {
+        let mut p = product("m", Some(EAN), None, false);
+        p.item_cls_cd = None;
+        p.name = "Fresh Milk 1L".into();
+        let mut l = lane_with(&[p], EmbeddedMode::Weight).await;
+        scan(&mut l, EAN).await.unwrap();
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("Fresh Milk 1L"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+        assert_eq!(l.buffer(), "");
     }
 }
