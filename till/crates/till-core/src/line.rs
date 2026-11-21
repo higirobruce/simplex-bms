@@ -83,10 +83,15 @@ impl BasketLine {
         if !self.qty.is_positive() {
             return Err(LineError::NonPositiveQty);
         }
+        // One rounding of the exact product. Going through `checked_times_qty`
+        // would round to 2 dp first and then to 0 dp, which is wrong by a franc
+        // whenever the first step lands on a midpoint (0.499 x 1001 = 499.499
+        // -> 499.50 -> 500, where rounding once gives 499).
         let sply_amt = self
             .prc
-            .checked_times_qty(self.qty)
-            .and_then(|m| whole_francs(m.amount()))
+            .amount()
+            .checked_mul(self.qty.amount())
+            .and_then(whole_francs)
             .ok_or(LineError::AmountOutOfRange)?;
 
         let (dc_rt, dc_amt) = match self.discount {
@@ -201,6 +206,15 @@ mod tests {
             .amounts()
             .unwrap();
         assert_eq!(a.sply_amt.to_string(), "501.00");
+    }
+    #[test]
+    fn the_product_is_rounded_once_not_twice() {
+        // 0.499 kg x 1001 = 499.499 exactly. Rounding to 2 dp first gives
+        // 499.50, which then rounds up to 500; rounding once gives 499.
+        let a = line("P-X", "0.499", "1001", TaxType::B, None)
+            .amounts()
+            .unwrap();
+        assert_eq!(a.sply_amt.to_string(), "499.00");
     }
     #[test]
     fn a_percent_discount_sets_both_dc_rt_and_dc_amt() {

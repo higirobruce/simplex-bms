@@ -147,6 +147,13 @@ impl Qty {
         parse_exact(s, QTY_DP).map(Qty)
     }
 
+    /// The inner decimal, read-only. Crate-private for the same reason as
+    /// [`Money::amount`]: callers may compute with it, but a new value can only
+    /// be built through a checked path.
+    pub(crate) fn amount(self) -> Decimal {
+        self.0
+    }
+
     pub fn is_positive(self) -> bool {
         self.0.is_sign_positive() && !self.0.is_zero()
     }
