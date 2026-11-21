@@ -119,6 +119,15 @@ model Org {
   purchaseOrders  PurchaseOrder[]
   goodsReceipts   GoodsReceiptNote[]
   auditLogs       AuditLog[]
+  batches         Batch[]
+  stockWriteOffs  StockWriteOff[]
+  promotions      Promotion[]
+  priceChanges    PriceChange[]
+  lanes           Lane[]
+  shifts          Shift[]
+  sales           Sale[]
+  saleLines       SaleLine[]
+  tenders         Tender[]
   createdAt       DateTime           @default(now())
 }
 
@@ -265,6 +274,7 @@ model Batch {
   receivedAt DateTime        @default(now())
   bestBefore DateTime?
   orgId      String
+  org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   movements  StockMovement[]
   writeOffs  StockWriteOff[]
 
@@ -284,6 +294,7 @@ model StockWriteOff {
   reason     WriteOffReason
   note       String?
   orgId      String
+  org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdAt  DateTime       @default(now())
 
   @@index([orgId, createdAt])
@@ -617,6 +628,7 @@ model Promotion {
   startsAt  DateTime
   endsAt    DateTime
   orgId     String
+  org        Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
 
   @@index([orgId, startsAt])
@@ -631,6 +643,7 @@ model PriceChange {
   changedAt   DateTime @default(now())
   changedById String
   orgId       String
+  org          Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([orgId, productId, changedAt])
 }
@@ -651,6 +664,7 @@ model Lane {
   locationId String
   location   Location  @relation(fields: [locationId], references: [id])
   orgId      String
+  org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   mrc        String?
   bhfId      String?
   lastInvcNo Int       @default(0)
@@ -672,6 +686,7 @@ model Shift {
   openingFloat Decimal   @db.Decimal(12, 2)
   declaredCash Decimal?  @db.Decimal(12, 2)
   orgId        String
+  org           Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   sales        Sale[]
 
   @@index([orgId, laneId])
@@ -693,12 +708,14 @@ model Sale {
   discountValue Decimal?      @db.Decimal(12, 2)
   voidedAt      DateTime?
   orgId         String
+  org            Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   soldAt        DateTime      @default(now())
   lines         SaleLine[]
   tenders       Tender[]
 
   @@unique([laneId, invcNo])
   @@index([orgId, soldAt])
+  @@index([shiftId])
 }
 
 model SaleLine {
@@ -714,6 +731,7 @@ model SaleLine {
   discountKind  DiscountKind?
   discountValue Decimal?      @db.Decimal(12, 2)
   orgId         String
+  org            Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@unique([saleId, itemSeq])
 }
@@ -727,6 +745,7 @@ model Tender {
   providerRef String?
   confirmed   Boolean      @default(false)
   orgId       String
+  org          Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([saleId])
 }

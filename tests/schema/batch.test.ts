@@ -38,3 +38,13 @@ test("deleting a batch does not delete its movements", async () => {
   expect(still).not.toBeNull();
   expect(still!.batchId).toBeNull();
 });
+
+test("a write-off quantity must be positive", async () => {
+  const { orgId, productId, locationId } = await seedOrg();
+  const make = (qty: string) =>
+    prisma.stockWriteOff.create({ data: { productId, locationId, qty, reason: "DAMAGE", orgId } });
+  // CHECK violations surface as PrismaClientUnknownRequestError with the Postgres text in .message
+  await expect(make("0")).rejects.toThrow(/stockwriteoff_qty_positive/);
+  await expect(make("-1.500")).rejects.toThrow(/stockwriteoff_qty_positive/);
+  expect((await make("0.001")).qty.toString()).toBe("0.001");
+});
