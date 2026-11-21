@@ -655,6 +655,7 @@ enum TenderMethod {
   BANK_CHECK
   CARD
   MOBILE_MONEY
+  OTHER
 }
 
 model Lane {
