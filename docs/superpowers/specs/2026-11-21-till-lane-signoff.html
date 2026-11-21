@@ -1,0 +1,294 @@
+<title>Till Lane Sign-off</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#F1F6FB; --surface:#FFFFFF; --surface-2:#F7FAFD; --ink:#0F1B2A;
+    --ink-soft:#41576E; --ink-mute:#546A7E; --line:#E2EBF4;
+    --accent:#176596; --accent-soft:#DDEBF6; --hi-vis:#3FA9E5;
+    --danger:#B5271F; --danger-soft:#FBE4E2; --ok:#15713F; --ok-soft:#DCF0E4;
+    --radius:14px;
+    --ui:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0B141F; --surface:#13202E; --surface-2:#18283A; --ink:#EAF2FA;
+      --ink-soft:#AFC3D6; --ink-mute:#8CA2B8; --line:#22354A;
+      --accent:#41ADEA; --accent-soft:#13334A; --hi-vis:#41ADEA;
+      --danger:#FF6369; --danger-soft:#3A1618; --ok:#3DD68C; --ok-soft:#10301F;
+      color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0B141F; --surface:#13202E; --surface-2:#18283A; --ink:#EAF2FA;
+    --ink-soft:#AFC3D6; --ink-mute:#8CA2B8; --line:#22354A;
+    --accent:#41ADEA; --accent-soft:#13334A; --hi-vis:#41ADEA;
+    --danger:#FF6369; --danger-soft:#3A1618; --ok:#3DD68C; --ok-soft:#10301F;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg); color:var(--ink); font-family:var(--ui); margin:0;
+    font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:68rem; margin:0 auto; padding-inline:16px; padding-block:36px 72px}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-mute); margin:0 0 12px}
+  h1{font-size:clamp(1.85rem,5vw,2.8rem); line-height:1.04; letter-spacing:-.028em;
+    font-weight:800; margin:0 0 15px; text-wrap:balance; max-width:22ch}
+  .stand{font-size:1.05rem; color:var(--ink-soft); margin:0 0 22px; max-width:62ch}
+  .pills{display:flex; gap:7px; flex-wrap:wrap; margin-bottom:42px}
+  .pill{font-size:11.5px; font-weight:700; padding:6px 12px; border-radius:999px;
+    background:var(--accent); color:#fff}
+  .pill.ghost{background:transparent; color:var(--ink-mute); border:1px solid var(--line)}
+  .pill.ok{background:var(--ok); color:#fff}
+  h2{font-size:clamp(1.15rem,2.7vw,1.5rem); font-weight:700; margin:0 0 7px;
+    letter-spacing:-.018em; text-wrap:balance}
+  .sec-no{font-family:var(--mono); font-size:10.5px; color:var(--accent);
+    font-weight:600; letter-spacing:.1em; display:block; margin-bottom:7px}
+  section{margin-bottom:46px}
+  p{margin:0 0 14px; max-width:66ch; color:var(--ink-soft)}
+  .lede{border-left:3px solid var(--danger); padding:3px 0 3px 16px;
+    font-size:1.02rem; color:var(--ink); max-width:64ch; margin-bottom:16px}
+  .grid3{display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr))}
+  .card{background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius); padding:15px 16px; min-width:0}
+  .card h3{font-size:.95rem; font-weight:700; margin:0 0 7px}
+  .card p{font-size:.87rem; margin:0}
+  .card.bad{border-left:3px solid var(--danger)}
+  .card.good{border-left:3px solid var(--ok)}
+  table{width:100%; border-collapse:collapse; font-size:.9rem}
+  .scroll{overflow-x:auto; margin-bottom:16px}
+  th{text-align:left; font-size:10px; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--ink-mute); border-bottom:1px solid var(--line);
+    padding:0 14px 8px 0; white-space:nowrap}
+  td{border-bottom:1px solid var(--line); padding:10px 14px 10px 0;
+    vertical-align:top; color:var(--ink-soft)}
+  td.n{font-family:var(--mono); font-size:.78rem; color:var(--accent);
+    font-weight:600; white-space:nowrap}
+  td strong{color:var(--ink); font-weight:600}
+  td .cost{display:block; font-size:.8rem; color:var(--ink-mute); margin-top:4px}
+  .m{font-family:var(--mono); font-size:.84em; background:var(--accent-soft);
+    color:var(--accent); padding:1px 6px; border-radius:5px}
+  ul{margin:0 0 14px; padding-left:19px; max-width:66ch; color:var(--ink-soft);
+    font-size:.93rem}
+  li{margin-bottom:7px}
+  ul strong{color:var(--ink)}
+  .flag{background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--accent); border-radius:var(--radius);
+    padding:15px 16px; margin-bottom:14px}
+  .flag strong{display:block; font-size:.93rem; margin-bottom:5px; color:var(--ink)}
+  .flag p{font-size:.89rem; margin:0}
+  footer{border-top:1px solid var(--line); padding-top:18px}
+  footer p{font-size:.88rem; color:var(--ink-mute); max-width:68ch}
+  .path{font-family:var(--mono); font-size:.8rem; word-break:break-all}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Branch sign-off · till-lane · 29 commits</p>
+  <h1>A till you can run on a desk</h1>
+  <p class="stand">Eleven tasks, each implemented and reviewed by a fresh pair of
+  eyes, then a whole-branch review and one fix wave. 405 tests green. Judged fit to
+  offer for merge — the merge itself is yours.</p>
+  <div class="pills">
+    <span class="pill ok">405 tests</span>
+    <span class="pill ghost">311 Rust · 94 TypeScript</span>
+    <span class="pill ghost">clippy + fmt + tsc clean</span>
+    <span class="pill ghost">41 rulings</span>
+    <span class="pill ghost">not merged</span>
+  </div>
+
+  <section>
+    <span class="sec-no">01 — Read this first</span>
+    <h2>The process missed the thing you found in a minute</h2>
+    <p class="lede">You ran it, and in about sixty seconds found that the basket
+    columns moved with the product name. 107 passing tests and three clean reviews
+    had not caught it — because nothing in the suite can see a screen.</p>
+    <p>That is the honest boundary of what this produced. It can prove the till does
+    not sell offline, does not burn invoice numbers, and prints a compliant receipt.
+    It could still hand you a table whose columns wander.</p>
+    <div class="flag">
+      <strong>What changed as a result</strong>
+      <p>The fix carries a non-visual pin: a test that renders a row in a real egui
+      frame with three different product names and asserts every cell's left edge is
+      identical. Verified against the old code, where the edges drifted 20–60px.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">02 — The worst defect was mine</span>
+    <h2>Reprint was printing a second original</h2>
+    <p class="lede">CIS §7.18, verbatim: <em>"print only one original receipt.
+    Reprint shall have a watermark with mention Copy."</em> Our reprint replayed the
+    retained bytes, so a duplicate printed as <span class="m">NS</span> with its own
+    verifiable QR. Two individually verifiable originals for one sale.</p>
+    <p>It came from my Task 9 brief — <em>"a reprint must emit byte-for-byte what the
+    original attempt composed"</em> — on the reasoning that the customer's copy must
+    match the fiscal record. That reasoning was wrong.</p>
+    <p><strong>It survived three reviews.</strong> The task review and the re-review
+    both confirmed "no path recomposes" — stating the defect as a success — because
+    both were checking the code against my brief. The final review caught it only
+    because I told it the specification outranks the plan and pointed it at the
+    vendored documents.</p>
+    <p>Task 5 had already built the COPY banner and the <span class="m">CS</span>
+    label. The capability existed; nothing ever called it.</p>
+  </section>
+
+  <section>
+    <span class="sec-no">03 — Also fixed before merge</span>
+    <h2>Two things the till was asserting without knowing</h2>
+    <div class="grid3">
+      <div class="card bad"><h3>A misleading error at the worst moment</h3>
+        <p>One <span class="m">Store</span> variant served six call sites with a
+        message written for scanning. A <span class="m">confirm_sale</span> failure —
+        customer paid, RRA holds the sale, nothing printed — told the cashier
+        "The catalogue could not be read. Try the scan again." Now eight distinct
+        operations; the confirm path says "Do not ring the items again."</p></div>
+      <div class="card bad"><h3>A status chip that knew nothing</h3>
+        <p>"VSDC ONLINE" was inferred from <span class="m">screen() != HardStop</span>,
+        not from contact. It stayed green through an entire basket during an outage.
+        It now reports the last known outcome in the past tense, and claims nothing
+        about current connectivity.</p></div>
+      <div class="card bad"><h3>Lint suppressions hiding real warnings</h3>
+        <p>Eight module-wide <span class="m">allow(dead_code)</span> were hiding 15
+        genuine warnings. Replaced with narrowly scoped
+        <span class="m">expect(dead_code)</span>, which the compiler retires once an
+        item gains a caller.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">04 — Rulings I made on your behalf</span>
+    <h2>Forty-one decisions, and what each costs if wrong</h2>
+    <p>Seven from the pre-flight scan of my own plan, thirty-four during execution.
+    Read the ones marked <strong>consequential</strong> first — those changed what
+    the software does rather than how it is arranged.</p>
+
+    <div class="scroll"><table>
+      <tr><th>#</th><th>Decision · why · cost if wrong</th></tr>
+
+      <tr><td class="n">R1</td><td><strong>Lane methods are async; the UI owns a tokio runtime.</strong>
+        till-store's API is async throughout, so my sync signatures physically could not call it.
+        <span class="cost">If wrong: the UI carries a block_on per transition it could have avoided.</span></td></tr>
+      <tr><td class="n">R2</td><td><strong>Task 11 defines <span class="m">Devices</span>.</strong> It is wiring; Task 3 owns the traits, not the aggregate.
+        <span class="cost">If wrong: the struct moves one file.</span></td></tr>
+      <tr><td class="n">R3</td><td><strong>Add <span class="m">SimMode::Overlapped</span></strong> so RRA's 994 is constructible rather than dead code.
+        <span class="cost">If wrong: one extra simulator branch.</span></td></tr>
+      <tr><td class="n">R4</td><td><strong>Task 8 consumes <span class="m">receipt::compose</span></strong> — my brief omitted the interface.
+        <span class="cost">If wrong: nothing; documentation.</span></td></tr>
+      <tr><td class="n">R5</td><td><strong>Task 10 also modifies <span class="m">lane.rs</span></strong>, which its own Files block omitted.
+        <span class="cost">If wrong: nothing.</span></td></tr>
+      <tr><td class="n">R6</td><td><strong><span class="m">Scale</span> and <span class="m">ScanSource</span> ship unwired.</strong> The design doc mandates the full 2b trait set; a keyboard wedge needs no polling.
+        <span class="cost">If wrong: two traits wait for hardware that never arrives and get deleted.</span></td></tr>
+      <tr><td class="n">R7</td><td><strong>Task 11 owns the demo catalogue</strong>, seeded with the mockup's products.
+        <span class="cost">If wrong: the seed moves to a fixtures module.</span></td></tr>
+
+      <tr><td class="n">8 ⚑</td><td><strong>Consequential — <span class="m">rwf</span> rounds half-up away from zero; it does not truncate, and never prints <span class="m">-0</span>.</strong>
+        till-core's <span class="m">whole_francs</span> is half-up, and that function produces the amount actually committed — truncating would show a figure one franc below what the database recorded.
+        <span class="cost">If wrong: display drift on an input that should not occur.</span></td></tr>
+      <tr><td class="n">9</td><td><strong><span class="m">init()</span> stays bare <span class="m">ESC @</span>; code page is a separate call.</strong> Without an explicit selection the output depends on each printer's power-on default.
+        <span class="cost">If wrong: two surplus bytes per receipt.</span></td></tr>
+      <tr><td class="n">10 ⚑</td><td><strong>Consequential — control characters in product names become <span class="m">?</span>.</strong> A raw ESC or GS in a staff-typed name would otherwise be executed by the printer as a command. Command injection via the catalogue; the implementer added this unasked.
+        <span class="cost">If wrong: a legitimate control character is lost.</span></td></tr>
+      <tr><td class="n">11</td><td><strong>QR module size 6 and error correction M stand as unconstrained.</strong> Checked the primary source: CIS §7.24.7 specifies only the payload. Recorded as a question for RRA, not as verified.
+        <span class="cost">If wrong: a scanner struggles; revisit on real hardware.</span></td></tr>
+      <tr><td class="n">12</td><td><strong><span class="m">double_height</span> = <span class="m">GS ! 0x01</span> is correct</strong> — the low bits select the height multiplier.
+        <span class="cost">If wrong: the banner prints at normal size.</span></td></tr>
+      <tr><td class="n">13 ⚑</td><td><strong>My brief was wrong: receipt types are <span class="m">SalesTyCd</span>, not <span class="m">RcptTyCd</span></strong> (Sale/Refund only), and the banner is PROFORMA not "PRO FORMA". The label is the §5.3 combination — NS, NR, CS, CR, TS, TR, PS — from both enums.
+        <span class="cost">If wrong: the receipt label is unreadable to the VSDC.</span></td></tr>
+      <tr><td class="n">14</td><td><strong>"THIS IS NOT AN OFFICIAL RECEIPT" goes below the totals.</strong> §11's normative text says below; only the sample puts it above. Text outranks sample.
+        <span class="cost">If wrong: a misplaced notice on non-official receipts.</span></td></tr>
+      <tr><td class="n">15 ⚑</td><td><strong>Consequential — refunds are refused outright.</strong> §14 requires a referenced receipt number the input cannot carry. A loud refusal beats a receipt missing a mandated field.
+        <span class="cost">If wrong: no refunds until a later slice — which is the truth either way.</span></td></tr>
+      <tr><td class="n">16</td><td><strong>The CIS date and time must print</strong> beside the CIS receipt number; every sample shows it.
+        <span class="cost">If wrong: one unused field.</span></td></tr>
+      <tr><td class="n">17 ⚑</td><td><strong>Consequential — <span class="m">compose</span> is fallible, and the panicking variant removed.</strong> Keeping both invited a caller to reach for the one that aborts the till mid-sale. My brief specified the infallible signature.
+        <span class="cost">If wrong: nothing; no caller existed yet.</span></td></tr>
+      <tr><td class="n">18</td><td><strong>The RRA logo (§7.29) and the watermark (§11) are deferred and documented.</strong> Both need raster support the encoder lacks.
+        <span class="cost">If wrong: certification meets two known, written-down gaps.</span></td></tr>
+      <tr><td class="n">19 ⚑</td><td><strong>Money prints as whole francs</strong> despite the spec's samples showing <span class="m">1000.00</span>. The sample illustrates; RWF has no subunit; the VSDC receives exact decimal strings in the Phase 3 payload, which is where format compliance bites. Logged as an RRA question.
+        <span class="cost">If wrong: a display-format change on the receipt.</span></td></tr>
+      <tr><td class="n">20</td><td><strong>Item rows carry the full tax label</strong> (<span class="m">A-EX</span>, <span class="m">B-18.00%</span>), not a bare letter. §7.22 requires "the tax label" and four samples render it so. Promoted from a Minor the reviewer called a sample convention.
+        <span class="cost">If wrong: a more verbose item row.</span></td></tr>
+      <tr><td class="n">21</td><td><strong>Bound the QR fields</strong> so the encoder's last reachable panic became provably unreachable.
+        <span class="cost">If wrong: an over-long signature is refused rather than printed.</span></td></tr>
+      <tr><td class="n">22 ⚑⚑</td><td><strong>Most consequential — a product with no RRA item classification is REFUSED, not defaulted.</strong> <span class="m">vsdc.txt:1086</span> marks <span class="m">itemClsCd</span> Required=Y from an RRA-managed vocabulary, so the sample default would have filed a false mandatory tax classification for every unconfigured product.
+        <span class="cost">If wrong: products cannot be sold until the back office fills the field — a data-quality problem surfaced rather than silently misreported.</span></td></tr>
+      <tr><td class="n">23 ⚑</td><td><strong>Consequential — <span class="m">Err</span> is only for faults the cashier cannot act on.</strong> Unknown barcode, bad scan, full basket return <span class="m">Ok</span> with a notice. "This milk is not in the catalogue" is a business outcome, not a program failure.
+        <span class="cost">If wrong: the UI inspects a notice where it might have matched a variant.</span></td></tr>
+      <tr><td class="n">24 ⚑</td><td><strong>Ratified four guards the implementer added unasked:</strong> refusing a weighed product scanned as a plain barcode (it would sell as exactly one kilo), a Price-mode label overriding the catalogue price, refusing a zero-weight label, and pricing a line before it spends a sequence number.
+        <span class="cost">If wrong: four refusals that could have been sales.</span></td></tr>
+      <tr><td class="n">25 ⚑⚑</td><td><strong>Most consequential — on RRA 994 the sale is abandoned and the lane KEEPS SELLING.</strong> 994 means the VSDC already recorded that number, so nothing is recoverable — but the device is plainly reachable, so C1's offline condition does not apply and halting would be wrong.
+        <span class="cost">If wrong: a shop keeps trading where it should have stopped, or one basket is re-keyed unnecessarily.</span></td></tr>
+      <tr><td class="n">26</td><td><strong><span class="m">settle</span> returns <span class="m">Ok(None)</span></strong> when no sale completed, rather than inventing a result.
+        <span class="cost">If wrong: callers match on an Option they need not.</span></td></tr>
+      <tr><td class="n">27 ⚑</td><td><strong>Consequential — the pending-sale freeze stays, and so does its escape hatch.</strong> A sale left awaiting holds a live invoice number, so trading over it would orphan the number; without an escape a permanent rejection wedges the lane. The hatch has no supervisor gate — logged for a later slice, and auditable today since the number is retired with a recorded reason.
+        <span class="cost">If wrong: a cashier can void a pending sale without a second party.</span></td></tr>
+      <tr><td class="n">28 ⚑</td><td><strong>A confirm retry never re-sends the sale.</strong> Re-sending returns 994 and burns the number for nothing. The implementer reasoned this out unprompted; a comment now records why.
+        <span class="cost">If wrong: a burned number per confirm failure.</span></td></tr>
+      <tr><td class="n">29</td><td><strong>A printer or drawer fault after confirmation leaves the sale confirmed.</strong> The fiscal record is the sale; paper is not.
+        <span class="cost">If wrong: a paid sale would be rolled back over a paper jam.</span></td></tr>
+      <tr><td class="n">30 ⚑</td><td><strong>Consequential — the hard stop needed an exit.</strong> Without one the lane recovered only by restarting. §24.7.9 requires stopping on the error AND resuming once cleared, so an exit is part of the requirement.
+        <span class="cost">If wrong: a cashier leaves the stop early and the next settle stops again.</span></td></tr>
+      <tr><td class="n">31 ⚑</td><td><strong>Consequential — the lane can serve a second customer.</strong> <span class="m">Settled</span> was terminal; no remaining task owned the transition, and my brief's own test hid it by building a second lane.
+        <span class="cost">If wrong: nothing; it was unusable without this.</span></td></tr>
+      <tr><td class="n">32 ⚑⚑</td><td><strong>Most consequential — a sale stranded by a crash is detected at startup and may only be CANCELLED, never retried.</strong> Without a "sent to VSDC" marker we cannot know whether RRA received it, so re-sending risks a duplicate fiscal record. Cancelling may leave a record at RRA with no local counterpart — a reconciliation problem, strictly better than a till nobody can use.
+        <span class="cost">If wrong: an abandoned sale that RRA did record needs manual reconciliation.</span></td></tr>
+      <tr><td class="n">33 ⚑</td><td><strong>A lane that cannot read its own database does not open.</strong> Rejected the alternative of showing the hard-stop screen: that means "the VSDC is unreachable, wait", which would send a shop to check a healthy network.
+        <span class="cost">If wrong: one more Result at construction.</span></td></tr>
+      <tr><td class="n">34</td><td><strong>sqlx as a dev-dependency</strong> so a test can read the sale row directly and prove <span class="m">Confirmed</span> — asserting the screen would pass even if the sale had been rolled back.
+        <span class="cost">If wrong: a test-only dependency.</span></td></tr>
+      <tr><td class="n">35</td><td><strong>The retained receipt survives the next customer.</strong> Clearing it earlier destroys the reprint exactly when it is wanted — the customer who returns a minute later.
+        <span class="cost">If wrong: a previous receipt is reprintable slightly too long.</span></td></tr>
+      <tr><td class="n">36</td><td><strong>A settle that completes no sale records no timing</strong>, and neither does one whose print failed. The budget is "tender to bytes out"; a run producing no bytes has nothing to time.
+        <span class="cost">If wrong: the measurement is polluted by faster failure paths.</span></td></tr>
+      <tr><td class="n">37</td><td><strong>The latency caveats are recorded, not just the numbers.</strong> Two of the four paths measure only a slice (no frame render, no process start), and the 300 ms budget was measured against a VSDC that answers instantly.
+        <span class="cost">If wrong: the numbers get quoted as if they measured the whole journey.</span></td></tr>
+      <tr><td class="n">38</td><td><strong>Quantity splits: the screen shows <span class="m">2</span>, the receipt keeps three places.</strong> RRA's own sample shows <span class="m">1.00</span> — a third convention — so the receipt keeps what a passing test pins and the question goes to RRA.
+        <span class="cost">If wrong: the receipt quantity format changes.</span></td></tr>
+      <tr><td class="n">39 ⚑</td><td><strong>If the original never reached the printer, the first reprint IS the original.</strong> §7.18 says print one original — if none printed, none has been — and §7.28 independently requires re-printing after a paper-out. The implementer proposed it; the final reviewer verified it is applied consistently through one flag.
+        <span class="cost">If wrong: a jammed customer receives only a COPY.</span></td></tr>
+      <tr><td class="n">40</td><td><strong>A COPY still carries its QR.</strong> The payload is the identity of the one fiscal record, so scanning a copy resolves to that record and correctly reports it valid. §15.1's COPY sample already prints the same data in readable form.
+        <span class="cost">If wrong: a scannable duplicate re-creates §7.18's problem in subtler form.</span></td></tr>
+      <tr><td class="n">41 ⚑</td><td><strong>The COPY counter deviation is deferred but WRITTEN INTO THE CODE.</strong> A reprint carries the original's counter under a <span class="m">CS</span> label where §7.25.1 wants a per-type series. A true CS series needs a VSDC round-trip, so it belongs with Phase 3 — but this workspace is deleted at merge, so <span class="m">receipt.rs</span> is the only durable home for a known deviation.
+        <span class="cost">If wrong: certification meets an undocumented CS counter.</span></td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <span class="sec-no">05 — Shipping with these known gaps</span>
+    <h2>Written into the code, not just this page</h2>
+    <ul>
+      <li><strong>No RRA logo and no watermark</strong> (§7.29, §11) — both need raster image support the encoder does not have.</li>
+      <li><strong>A reprint carries the original's receipt counter</strong> under a CS label. Phase 3 work.</li>
+      <li><strong>The retained receipt lives only in memory</strong> — a crash after a paper jam loses a paid customer's legal document. Closing it needs a column on the sale row, and this plan froze till-store.</li>
+      <li><strong>The hard stop fires only at settlement.</strong> §24.7.9 says "whenever a communication error appears"; §24.7.8's <span class="m">CMD: STATUS</span> heartbeat is a later slice.</li>
+      <li><strong><span class="m">SalePayload</span> carries 5 of roughly 30 fields</strong> <span class="m">saveSales</span> requires, and no item list — Phase 3 will re-cut the trait rather than implement it.</li>
+      <li><strong>F2–F7 are drawn muted</strong>: discount, suspend, resume, refund, buyer TIN, X/Z reports. Later 2d slices.</li>
+      <li><strong>Watch this one:</strong> resuming from a hard stop clears the tenders. Safe while cash is the only tender key — a double-charge risk the day a card tender lands.</li>
+    </ul>
+  </section>
+
+  <section>
+    <span class="sec-no">06 — Questions for RRA</span>
+    <h2>Five things I refused to guess</h2>
+    <ul>
+      <li>Does the printed receipt require money at two decimals, as the samples show, or are whole francs acceptable?</li>
+      <li>In the §7.24.7 QR, is "sdc_receipt_number" <span class="m">rcptNo</span> or <span class="m">totRcptNo</span>?</li>
+      <li>Are internal data and signature dashed or raw inside the QR?</li>
+      <li>What rates and labels do tax bands C and D carry? The samples show only A and B.</li>
+      <li>Does the receipt require quantity at two decimals, as <span class="m">cis.txt:298</span> shows?</li>
+    </ul>
+    <p>These join the four still open from the previous phase, including the sharpest
+    one: whether <span class="m">lastInvcNo</span> means last-used or next-to-issue.
+    An off-by-one there makes a reinstalled till fail its first sale unrecoverably.</p>
+  </section>
+
+  <footer>
+    <p>Branch <span class="m">till-lane</span>, 29 commits from
+      <span class="m">53123be</span>. Plan:
+      <span class="path">docs/superpowers/plans/2026-11-21-till-lane.md</span>.
+      Design: <span class="path">docs/superpowers/specs/2026-11-21-till-ui-toolkit-design.md</span>.
+      Nothing has been merged or pushed. If a ruling above is wrong, that is the
+      cheapest moment to say so.</p>
+  </footer>
+</div>
