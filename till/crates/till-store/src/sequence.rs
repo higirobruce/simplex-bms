@@ -34,19 +34,22 @@ pub struct PendingSale {
 
 impl Store {
     /// Starts a write transaction that holds SQLite's write lock from the
-    /// first statement. Anything that calls [`allocate_on`] must use this and
-    /// not `pool().begin()`, which issues a deferred `BEGIN`.
+    /// first statement. Anything that calls [`allocate_on`] must use this.
+    /// NEVER use `pool().begin()` for an allocation: it issues a deferred
+    /// `BEGIN`, which reintroduces the read-then-upgrade race and can collide
+    /// or fail under concurrency.
     pub(crate) async fn begin_immediate(&self) -> Result<Transaction<'static, Sqlite>, StoreError> {
         Ok(self.pool().begin_with("BEGIN IMMEDIATE").await?)
     }
 
     /// Allocates the next invoice number for `bhf_id` in its own transaction.
     ///
-    /// Caution: this commits the bump by itself. A number allocated here and
-    /// not followed by a sale insert is a gap. Production code must allocate
-    /// inside the sale transaction via [`allocate_on`]; this is for callers
-    /// that only need the number (tests, tooling).
-    pub async fn allocate_invc_no(&self, bhf_id: &str) -> Result<i64, StoreError> {
+    /// Caution: this commits the bump by itself, so a number allocated here and
+    /// not followed by a sale insert is a gap. It is crate-private and has no
+    /// production caller: production code allocates inside the sale transaction
+    /// via [`allocate_on`]. Kept for tests, hence the dead-code allowance.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn allocate_invc_no(&self, bhf_id: &str) -> Result<i64, StoreError> {
         let mut tx = self.begin_immediate().await?;
         let n = allocate_on(&mut tx, bhf_id).await?;
         tx.commit().await?;
