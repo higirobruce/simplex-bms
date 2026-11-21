@@ -50,22 +50,24 @@ const config: Config = {
         },
       },
       fontFamily: {
-        sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-        // "serif" slot repurposed for display headings (grotesque sans)
-        serif: ["var(--font-display)", "Archivo", "system-ui", "sans-serif"],
-        display: ["var(--font-display)", "Archivo", "system-ui", "sans-serif"],
-        mono: ["var(--font-mono)", "ui-monospace", "IBM Plex Mono", "monospace"],
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
+        // "serif" slot repurposed for display headings (neo-grotesque sans)
+        serif: ["var(--font-display)", "Inter", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "Inter", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "JetBrains Mono", "monospace"],
       },
       borderRadius: {
+        sm: "var(--radius-sm)",
         DEFAULT: "var(--radius)",
         lg: "var(--radius-lg)",
         xl: "var(--radius-xl)",
+        pill: "var(--radius-pill)",
       },
       boxShadow: {
         panel:
-          "0 1px 0 rgba(18,18,18,0.02), 0 1px 2px rgba(18,18,18,0.04), 0 8px 24px -12px rgba(18,18,18,0.08)",
+          "0 1px 0 rgba(15,27,42,0.02), 0 1px 2px rgba(15,27,42,0.04), 0 8px 24px -12px rgba(15,27,42,0.08)",
         lift:
-          "0 2px 4px rgba(18,18,18,0.04), 0 16px 40px -16px rgba(18,18,18,0.16)",
+          "0 2px 4px rgba(15,27,42,0.04), 0 16px 40px -16px rgba(15,27,42,0.14)",
       },
     },
   },

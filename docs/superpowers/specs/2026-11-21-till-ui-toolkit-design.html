@@ -1,0 +1,267 @@
+<title>Till UI Toolkit</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --canvas:#F3F3EF; --paper:#FFFFFF; --ink:#121212; --ink-soft:#4A4A44;
+    --ink-mute:#62625B; --rule:#121212; --hair:#D9D9D2;
+    --signal:#E01B20; --signal-text:#C2141A; --signal-wash:#FAE3E4;
+    --hivis:#FFD400; --radius:2px;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --canvas:#141412; --paper:#1D1D1A; --ink:#F2F2EC; --ink-soft:#BDBDB4;
+      --ink-mute:#95958C; --rule:#F2F2EC; --hair:#34342F;
+      --signal:#FF4A4F; --signal-text:#FF8A8D; --signal-wash:#3A1618;
+      --hivis:#FFD400; color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --canvas:#141412; --paper:#1D1D1A; --ink:#F2F2EC; --ink-soft:#BDBDB4;
+    --ink-mute:#95958C; --rule:#F2F2EC; --hair:#34342F;
+    --signal:#FF4A4F; --signal-text:#FF8A8D; --signal-wash:#3A1618;
+    --hivis:#FFD400; color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--canvas); color:var(--ink); font-family:var(--sans);
+    margin:0; font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:62rem; margin:0 auto; padding-inline:16px; padding-block:40px 72px}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--ink-mute); margin:0 0 14px}
+  h1{font-size:clamp(1.85rem,5.5vw,3.1rem); line-height:1.04; letter-spacing:-.022em;
+    font-weight:800; margin:0 0 18px; text-wrap:balance; max-width:30ch}
+  .stand{font-size:clamp(1rem,2.4vw,1.2rem); color:var(--ink-soft); margin:0 0 26px;
+    max-width:62ch; text-wrap:balance}
+  .metabar{display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+    border-top:3px solid var(--rule); border-bottom:1px solid var(--hair);
+    padding-block:12px; margin-bottom:46px}
+  .pill{font-family:var(--mono); font-size:11px; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; padding:5px 9px; border-radius:var(--radius);
+    background:var(--hivis); color:#121212}
+  .pill.ghost{background:transparent; color:var(--ink-mute);
+    border:1px solid var(--hair)}
+  h2{font-size:clamp(1.15rem,2.8vw,1.5rem); font-weight:700; letter-spacing:-.012em;
+    margin:0 0 6px; text-wrap:balance}
+  section{margin-bottom:46px}
+  .sec-no{font-family:var(--mono); font-size:11px; color:var(--signal-text);
+    font-weight:600; letter-spacing:.1em; display:block; margin-bottom:7px}
+  p{margin:0 0 14px; max-width:68ch}
+  .lede{border-left:4px solid var(--signal); padding:2px 0 2px 16px;
+    font-size:1.05rem; color:var(--ink); max-width:64ch}
+  .grid{display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr))}
+  .card{background:var(--paper); border:1px solid var(--hair);
+    border-bottom:4px solid var(--hair); border-radius:var(--radius);
+    padding:18px 16px; min-width:0; display:flex; flex-direction:column}
+  .card.pick{border-bottom-color:var(--rule)}
+  .card.out{opacity:.94}
+  .card h3{font-size:1rem; font-weight:700; margin:0 0 4px; letter-spacing:-.008em}
+  .card .num{font-family:var(--mono); font-size:11px; color:var(--ink-mute);
+    letter-spacing:.1em; margin-bottom:9px}
+  .card p{font-size:.9rem; color:var(--ink-soft); margin:0 0 10px}
+  .verdict{font-family:var(--mono); font-size:10.5px; font-weight:600;
+    letter-spacing:.09em; text-transform:uppercase; margin-top:auto;
+    padding-top:10px; border-top:1px solid var(--hair)}
+  .verdict.yes{color:#121212; background:var(--hivis); display:inline-block;
+    padding:5px 8px; border-radius:var(--radius); border:0; margin-top:auto}
+  .verdict.no{color:var(--signal-text)}
+  table{width:100%; border-collapse:collapse; font-size:.9rem;
+    font-variant-numeric:tabular-nums}
+  .scroll{overflow-x:auto; margin-bottom:14px}
+  th{text-align:left; font-family:var(--mono); font-size:10.5px; font-weight:600;
+    letter-spacing:.09em; text-transform:uppercase; color:var(--ink-mute);
+    border-bottom:2px solid var(--rule); padding:0 12px 7px 0; white-space:nowrap}
+  td{border-bottom:1px solid var(--hair); padding:9px 12px 9px 0; vertical-align:top}
+  td.n{font-family:var(--mono); font-weight:600; white-space:nowrap}
+  ul{margin:0 0 14px; padding-left:19px; max-width:68ch}
+  li{margin-bottom:7px}
+  code,.m{font-family:var(--mono); font-size:.86em; background:var(--signal-wash);
+    color:var(--signal-text); padding:1px 5px; border-radius:var(--radius)}
+  .flag{background:var(--paper); border:1px solid var(--hair);
+    border-left:4px solid var(--signal); border-radius:var(--radius);
+    padding:15px 16px; margin-bottom:14px}
+  .flag strong{display:block; font-size:.92rem; margin-bottom:5px}
+  .flag p{font-size:.9rem; color:var(--ink-soft); margin:0}
+  footer{border-top:3px solid var(--rule); padding-top:18px; margin-top:8px}
+  footer p{font-size:.88rem; color:var(--ink-mute)}
+  .path{font-family:var(--mono); font-size:.8rem; word-break:break-all}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Design decision · amends §6.4 and C9</p>
+  <h1>The lane is a pure-Rust desktop app</h1>
+  <p class="stand">Phase 2 was parked on a fact nobody can obtain. Rather than keep
+  waiting for it, this removes the dependency that made the fact matter.</p>
+  <div class="metabar">
+    <span class="pill">Awaiting your sign-off</span>
+    <span class="pill ghost">2026-11-21</span>
+    <span class="pill ghost">Unblocks 2a + 2d</span>
+    <span class="pill ghost">Skin: Cloud &amp; Azure</span>
+    <span class="pill ghost">Core already merged · f16913f</span>
+  </div>
+
+  <section>
+    <span class="sec-no">01 — Why now</span>
+    <h2>C9 is unanswerable, not just unanswered</h2>
+    <p class="lede">The spec made “verify C9 against real pilot hardware” the first
+    action of Phase 2a. But §9 Q7 is still open — there is no pilot shop. There is no
+    till to read an OS build number off, and no one to ask.</p>
+    <p>So the gate is not waiting on effort; it is waiting on a shop that does not
+    exist yet. Left alone, Phase 2 stays parked indefinitely while the decision it
+    guards — Tauri versus a native UI — keeps getting more expensive to reverse,
+    because the thing at risk is <strong>2d</strong>: scan, weighed items, voids,
+    discounts, suspend and resume, mixed tender, refunds, shift open and close, X and
+    Z reports. That is the largest surface in the project and the worst one to rebuild.</p>
+    <p>The way out is not to answer C9. It is to stop depending on the answer.</p>
+  </section>
+
+  <section>
+    <span class="sec-no">02 — Approaches</span>
+    <h2>Three ways to put a screen on that counter</h2>
+    <div class="grid">
+      <div class="card out">
+        <div class="num">OPTION 1</div>
+        <h3>Tauri 2 + Shelf Edge React</h3>
+        <p>Reuses the existing skin and idiom directly. But it needs WebView2 and a
+        Windows 10 floor we cannot verify, and it adds an IPC boundary to design
+        between webview and core.</p>
+        <p>The runtime can be bundled (<span class="m">offlineInstaller</span> ~127 MB,
+        <span class="m">fixedVersion</span> ~180 MB), which removes the missing-runtime
+        half of the risk — but not the OS floor.</p>
+        <div class="verdict no">Rejected — unquantifiable risk, landing on the
+        costliest phase</div>
+      </div>
+      <div class="card out">
+        <div class="num">OPTION 2</div>
+        <h3>Local agent, UI in the installed browser</h3>
+        <p>Our Rust process on the counter serves the lane UI from
+        <span class="m">127.0.0.1</span>. Kills C9 outright, reuses the skin as-is,
+        smaller install than Tauri, and keeps the locally-installed-invoicing-system
+        story §9 Q1 leans on.</p>
+        <p>Costs: a browser is weakly locked down — F11, tabs, navigating away — and a
+        localhost endpoint is a security surface needing a token and strict CORS.</p>
+        <div class="verdict no">Rejected — desktop chosen over a browser lane</div>
+      </div>
+      <div class="card pick">
+        <div class="num">OPTION 3</div>
+        <h3>Pure-Rust desktop UI</h3>
+        <p>No webview, no runtime, works below the Windows 10 floor, and one language
+        shared with the already-merged <span class="m">till-core</span> and
+        <span class="m">till-store</span> — which deletes the IPC seam §10 left open.</p>
+        <p>Costs a skin rebuild and hand-built layout instead of CSS. Affordable
+        exactly because Shelf Edge is flat.</p>
+        <div class="verdict yes">Chosen</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">03 — Why the rebuild is cheap</span>
+    <h2>The skin was never the expensive part</h2>
+    <p>§6.4 treated “the skin is rebuilt rather than reused” as the cost that made a
+    native UI the fallback rather than the default. That cost is mispriced — though
+    the argument had to be re-checked when the skin changed the next day.</p>
+    <div class="flag">
+      <strong>The original argument expired, so here is the replacement</strong>
+      <p>I first argued the port was cheap <em>because</em> Shelf Edge was flat: 2px
+      corners, no shadows. Cloud &amp; Azure is softer — 14px rounding — so inheriting
+      that argument would have been dishonest. Re-checked against what
+      <span class="m">egui</span> actually draws:</p>
+    </div>
+    <ul>
+      <li><strong>Rounding is free.</strong> Rounded rectangles are a primitive; a 14px
+      corner costs exactly what a 2px one does.</li>
+      <li><strong>Hairlines are free</strong>, and this skin leans on a 1px
+      <span class="m">#E2EBF4</span> border rather than heavy rules — which is the
+      grammar of the references it came from.</li>
+      <li><strong>Soft shadows are the one weak spot</strong>, so the panels carry
+      their depth in hairlines and a tinted second surface instead. More minimal
+      anyway.</li>
+      <li><strong>Two typefaces</strong> — Inter and JetBrains Mono — both TTFs that
+      embed straight into the binary.</li>
+    </ul>
+    <p>What would genuinely hurt is a shadow-heavy, layered-glass skin. That is the
+    one direction this decision rules out, and Cloud &amp; Azure is not it.</p>
+  </section>
+
+  <section>
+    <span class="sec-no">04 — Decided</span>
+    <h2>The how, as settled</h2>
+    <div class="scroll"><table>
+      <tr><th>Item</th><th>Decision</th></tr>
+      <tr><td class="n">Toolkit</td><td><strong>egui + eframe.</strong> Immediate mode,
+        mature, embeds fonts directly, and draws flat fills and tabular numerals well.</td></tr>
+      <tr><td class="n">Fonts</td><td>Archivo and IBM Plex Mono embedded as TTFs in the
+        binary — no font installation on the counter.</td></tr>
+      <tr><td class="n">Tokens</td><td>Ported to Rust constants from
+        <span class="m">globals.css</span>, so the lane and the back office cannot
+        drift silently.</td></tr>
+      <tr><td class="n">Not iced</td><td>A reasonable retained-mode fallback if
+        hand-built layout proves painful. Held in reserve, not chosen.</td></tr>
+      <tr><td class="n">Not Slint</td><td>Technically well suited to kiosk and touch,
+        but licence-encumbered for a commercial product (GPL or paid). Needs a
+        commercial decision, so it is flagged rather than chosen.</td></tr>
+      <tr><td class="n">Not Dioxus</td><td>Desktop renders in a webview — it
+        reintroduces precisely what this decision removes.</td></tr>
+      <tr><td class="n">2b hardware</td><td>Traits with simulated implementations
+        against a <strong>generic ESC/POS profile</strong>. No model-specific quirks
+        until a real shop exists.</td></tr>
+    </table></div>
+    <div class="flag">
+      <strong>§10’s open item resolves itself</strong>
+      <p>The spec says to find out which printers and scales Kigali supermarkets own
+      before choosing. With no pilot shop there is nothing to find out — so building
+      generic is the answer, not a deferral. This is what 2b already prescribed.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">05 — The gate we lose</span>
+    <h2>Beating Microinvest is unmeasurable right now</h2>
+    <p>§4’s sharpest quality bar — scan-to-tender must beat Microinvest on the same
+    hardware — needs a pilot shop <em>and</em> a running Microinvest (§9 Q7). We have
+    neither, so the gate cannot be run. I am not dropping it; I am proposing a proxy we
+    can measure on any machine today, so the real gate is a comparison rather than a
+    rebuild when a shop appears.</p>
+    <div class="scroll"><table>
+      <tr><th>Path</th><th>Budget</th><th>Why this one</th></tr>
+      <tr><td>Keystroke → line on screen</td><td class="n">&lt; 50 ms</td>
+        <td>A cashier keying a PLU feels anything slower as lag.</td></tr>
+      <tr><td>Scan → line committed</td><td class="n">&lt; 100 ms</td>
+        <td>Covers the catalogue lookup and the basket arithmetic.</td></tr>
+      <tr><td>Tender → receipt bytes out</td><td class="n">&lt; 300 ms</td>
+        <td>The queue at the till is what the shop actually judges us on.</td></tr>
+      <tr><td>Cold start</td><td class="n">&lt; 2 s</td>
+        <td>Shift open happens under pressure; it is also where a webview taxes you.</td></tr>
+    </table></div>
+    <div class="flag">
+      <strong>These four numbers are my proposal, not the spec’s</strong>
+      <p>Nothing in the spec sets them. They are mine to be corrected — the point is
+      that they are instrumented from the first screen, so there is a number to argue
+      with instead of an impression.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">06 — Left to the builder</span>
+    <h2>Open, deliberately</h2>
+    <ul>
+      <li>egui widget decomposition, and where lane state lives relative to
+      <span class="m">till-store</span>.</li>
+      <li>The token and font port mechanics, and how drift from
+      <span class="m">globals.css</span> gets caught.</li>
+      <li>Table rendering for the X and Z reports.</li>
+      <li>Touch target sizing, subject to the latency budget above.</li>
+      <li>Which generic ESC/POS profile is the default, and how the simulated devices
+      are driven in CI.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Source of record:
+      <span class="path">docs/superpowers/specs/2026-11-21-till-ui-toolkit-design.md</span>
+      — amends <span class="path">2026-11-20-supermarket-retail-design.md</span> §6.4 and C9.
+      Nothing gets built from this until you approve it. The two things worth your eye:
+      <strong>egui over Tauri</strong>, and the <strong>four latency numbers</strong> in §05.</p>
+  </footer>
+</div>

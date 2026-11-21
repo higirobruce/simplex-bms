@@ -2,8 +2,11 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { expect, test } from "vitest";
 
+// Retired skins' vocabulary. JetBrains Mono left this list on 2026-11-21: it was
+// Workshop Steel's mono, and is now deliberately Cloud & Azure's.
 const DEAD = ["Workbench", "Hardware Operations", "hardware.shop",
-              "HW-OPS", "workshop", "Higiro Hardware", "Space Grotesk", "JetBrains Mono"];
+              "HW-OPS", "workshop", "Higiro Hardware", "Space Grotesk",
+              "Archivo", "IBM Plex Mono"];
 
 // Atelier-era vocabulary; regexes with boundaries so "the house(s)" does not match "warehouse".
 const DEAD_RE: [string, RegExp][] = [
@@ -26,7 +29,7 @@ function walk(dir: string, exts: string[]): string[] {
   return out;
 }
 
-test("no Workshop Steel vocabulary survives in src/", () => {
+test("no retired skin vocabulary survives in src/", () => {
   const found: string[] = [];
   for (const file of walk("src", [".ts", ".tsx", ".css", ".svg"])) {
     const body = readFileSync(file, "utf8");
@@ -40,9 +43,14 @@ test("no Workshop Steel vocabulary survives in src/", () => {
   expect(found).toEqual([]);
 });
 
-const DEAD_HEX = ["#ECEAE3", "#1A1B1E", "#E8651F", "#D2CFC6", "#2D3035", "#15161A", "#1F2125"];
+const DEAD_HEX = [
+  // Workshop Steel
+  "#ECEAE3", "#1A1B1E", "#E8651F", "#D2CFC6", "#2D3035", "#15161A", "#1F2125",
+  // Shelf Edge
+  "#121212", "#FFD400", "#E01B20", "#F3F3EF", "#C2141A", "#E8E8E2",
+];
 
-test("no Workshop Steel hex literal survives anywhere under src/", () => {
+test("no retired skin hex literal survives anywhere under src/", () => {
   const found: string[] = [];
   for (const file of walk("src", [".ts", ".tsx", ".css", ".svg", ".js", ".jsx", ".json", ".html"])) {
     const body = readFileSync(file, "utf8").toLowerCase();

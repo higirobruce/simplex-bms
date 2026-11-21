@@ -1,25 +1,26 @@
 import type { Metadata } from "next";
-import localFont from "next/font/local";
-import { Archivo, IBM_Plex_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/lib/providers";
 import { getPlatformSettings } from "@/lib/platform";
 
-const geistSans = localFont({
-  src: "./fonts/GeistVF.woff",
-  variable: "--font-geist-sans",
-  weight: "100 900",
+// Inter fills both the body and the display slot: one neo-grotesque, two roles.
+const inter = Inter({
+  weight: ["400", "500", "600", "700", "800"],
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
 });
 
-const archivo = Archivo({
-  weight: ["400", "500", "600", "700"],
+const interDisplay = Inter({
+  weight: ["600", "700", "800"],
   subsets: ["latin"],
   variable: "--font-display",
   display: "swap",
 });
 
-const plexMono = IBM_Plex_Mono({
-  weight: ["400", "500", "600"],
+const jetbrainsMono = JetBrains_Mono({
+  weight: ["400", "500", "600", "700"],
   subsets: ["latin"],
   variable: "--font-mono",
   display: "swap",
@@ -41,7 +42,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${archivo.variable} ${plexMono.variable} font-sans antialiased`}
+        className={`${inter.variable} ${interDisplay.variable} ${jetbrainsMono.variable} font-sans antialiased`}
       >
         <Providers>{children}</Providers>
       </body>

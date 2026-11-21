@@ -1,0 +1,452 @@
+<title>Lane Skin Directions</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<style>
+  /* ---------- page chrome: follows the viewer's theme ---------- */
+  :root{
+    --pg-bg:#FAFAF9; --pg-surface:#FFFFFF; --pg-ink:#1A1A18; --pg-soft:#55554F;
+    --pg-mute:#84847C; --pg-hair:#E6E6E0; --pg-accent:#15161A;
+    --ui:"Plus Jakarta Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --pg-bg:#111110; --pg-surface:#1A1A18; --pg-ink:#F2F2EC; --pg-soft:#BDBDB4;
+      --pg-mute:#8E8E86; --pg-hair:#2B2B27; --pg-accent:#F2F2EC; color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --pg-bg:#111110; --pg-surface:#1A1A18; --pg-ink:#F2F2EC; --pg-soft:#BDBDB4;
+    --pg-mute:#8E8E86; --pg-hair:#2B2B27; --pg-accent:#F2F2EC; color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--pg-bg); color:var(--pg-ink); font-family:var(--ui);
+    margin:0; font-size:16px; line-height:1.5; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:80rem; margin:0 auto; padding-inline:16px; padding-block:34px 70px}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--pg-mute); margin:0 0 12px}
+  h1{font-size:clamp(1.7rem,4.6vw,2.5rem); line-height:1.06; letter-spacing:-.025em;
+    font-weight:800; margin:0 0 13px; text-wrap:balance; max-width:26ch}
+  .stand{font-size:1.02rem; color:var(--pg-soft); margin:0 0 26px; max-width:60ch}
+  h2{font-size:clamp(1.05rem,2.5vw,1.3rem); font-weight:700; margin:0 0 5px;
+    letter-spacing:-.015em}
+  .sec-no{font-family:var(--mono); font-size:10.5px; color:var(--pg-mute);
+    font-weight:600; letter-spacing:.1em; display:block; margin-bottom:6px}
+  section{margin-bottom:42px}
+  .note{font-size:.92rem; color:var(--pg-soft); margin:0 0 16px; max-width:64ch}
+
+  /* ---------- switcher ---------- */
+  .switch{display:flex; gap:7px; flex-wrap:wrap; margin-bottom:8px}
+  .sw{appearance:none; font-family:var(--ui); font-size:.85rem; font-weight:600;
+    background:var(--pg-surface); color:var(--pg-ink); border:1px solid var(--pg-hair);
+    border-radius:8px; padding:9px 13px; cursor:pointer; display:flex;
+    align-items:center; gap:8px; min-width:0}
+  .sw[aria-pressed="true"]{background:var(--pg-accent);
+    color:var(--pg-bg); border-color:var(--pg-accent)}
+  .dot{width:11px; height:11px; border-radius:50%; flex:none;
+    box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
+  .sw small{display:block; font-weight:500; font-size:.72rem; opacity:.72}
+  .toggle{margin-left:auto}
+  @media (max-width:620px){ .toggle{margin-left:0} }
+
+  /* ================= SKIN PALETTES ================= */
+  .lane-host{ --radius:10px; }
+  .lane-host[data-skin="a"]{
+    --ui-f:"Plus Jakarta Sans",system-ui,sans-serif; --radius:10px;
+    --canvas:#FAFAFA; --surf:#FFFFFF; --surf2:#F4F4F5; --ink:#15161A;
+    --soft:#4A4C53; --mute:#84868E; --hair:#E9EAEC;
+    --accent:#C8F000; --on-accent:#15161A; --rail:#15161A; --on-rail:#F4F4F5;
+    --warn:#E5484D; --ok:#16A34A;
+  }
+  .lane-host[data-skin="a"][data-mode="dark"]{
+    --canvas:#0E0F11; --surf:#17181B; --surf2:#1F2024; --ink:#F4F4F5;
+    --soft:#BDBFC4; --mute:#8A8C92; --hair:#26282C;
+    --accent:#CCF000; --on-accent:#15161A; --rail:#08090A; --on-rail:#F4F4F5;
+    --warn:#FF6369; --ok:#3DD68C;
+  }
+  .lane-host[data-skin="b"]{
+    --ui-f:"Inter",system-ui,sans-serif; --radius:14px;
+    --canvas:#F1F6FB; --surf:#FFFFFF; --surf2:#F7FAFD; --ink:#0F1B2A;
+    --soft:#41576E; --mute:#7A8CA0; --hair:#E2EBF4;
+    --accent:#2E9BDB; --on-accent:#FFFFFF; --rail:#0F1B2A; --on-rail:#EAF2FA;
+    --warn:#E5484D; --ok:#16A34A;
+  }
+  .lane-host[data-skin="b"][data-mode="dark"]{
+    --canvas:#0B141F; --surf:#13202E; --surf2:#18283A; --ink:#EAF2FA;
+    --soft:#AFC3D6; --mute:#7E93A8; --hair:#22354A;
+    --accent:#41ADEA; --on-accent:#06131F; --rail:#06101A; --on-rail:#EAF2FA;
+    --warn:#FF6369; --ok:#3DD68C;
+  }
+  .lane-host[data-skin="c"]{
+    --ui-f:"Manrope",system-ui,sans-serif; --radius:6px;
+    --canvas:#F6F5F1; --surf:#FFFFFF; --surf2:#F1EFE9; --ink:#1A1917;
+    --soft:#55514A; --mute:#857F74; --hair:#E7E3DA;
+    --accent:#0F6B4F; --on-accent:#FFFFFF; --rail:#1A1917; --on-rail:#F2F0EA;
+    --warn:#B3321C; --ok:#0F6B4F;
+  }
+  .lane-host[data-skin="c"][data-mode="dark"]{
+    --canvas:#141411; --surf:#1C1C18; --surf2:#232320; --ink:#F2F0EA;
+    --soft:#BEB9AE; --mute:#8E897E; --hair:#2E2E29;
+    --accent:#3E9E7C; --on-accent:#0B1A14; --rail:#0C0C0A; --on-rail:#F2F0EA;
+    --warn:#E0674D; --ok:#3E9E7C;
+  }
+
+  /* ================= THE LANE ================= */
+  .lane-host{font-family:var(--ui-f); background:var(--canvas); color:var(--ink);
+    border:1px solid var(--pg-hair); border-radius:12px; overflow:hidden;
+    transition:background .18s ease}
+  .statusbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--rail); color:var(--on-rail); padding:11px 14px}
+  .mark{width:20px; height:20px; border-radius:6px; background:var(--accent); flex:none}
+  .lane-id{font-weight:700; font-size:13px; letter-spacing:.01em}
+  .sb-sep{flex:1 1 auto}
+  .sb-item{font-size:12px; color:var(--on-rail); opacity:.62; white-space:nowrap}
+  .chip{font-size:11px; font-weight:700; letter-spacing:.02em; padding:5px 10px;
+    border-radius:999px; background:var(--accent); color:var(--on-accent); flex:none}
+
+  .lane{display:grid; grid-template-columns:1.6fr 1fr; gap:14px; padding:14px}
+  @media (max-width:880px){ .lane{grid-template-columns:1fr} }
+  .panel{background:var(--surf); border:1px solid var(--hair);
+    border-radius:var(--radius); min-width:0; display:flex; flex-direction:column;
+    overflow:hidden}
+  .ptitle{font-size:.78rem; font-weight:600; letter-spacing:.02em; color:var(--mute);
+    padding:12px 14px 9px}
+
+  .bhead,.brow{display:grid; grid-template-columns:1.9rem 1fr 3.9rem 4.3rem 1.8rem 5.2rem;
+    gap:9px; align-items:baseline; padding:9px 14px}
+  @media (max-width:560px){
+    .bhead,.brow{grid-template-columns:1.7rem 1fr 4rem 4.8rem}
+    .bhead .hide,.brow .hide{display:none}
+  }
+  .bhead{font-size:10.5px; font-weight:600; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--mute); border-bottom:1px solid var(--hair)}
+  .brow{border-bottom:1px solid var(--hair); font-size:.93rem}
+  .brow:last-of-type{border-bottom:0}
+  .brow.live{background:var(--surf2); position:relative}
+  .brow.live::before{content:""; position:absolute; left:0; top:0; bottom:0;
+    width:3px; background:var(--accent)}
+  .n{font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right;
+    font-weight:500; white-space:nowrap; font-size:.88rem}
+  .seq{font-family:var(--mono); font-size:.74rem; color:var(--mute)}
+  .nm{min-width:0; overflow-wrap:anywhere; font-weight:600; letter-spacing:-.005em}
+  .sub{display:block; font-family:var(--mono); font-size:.7rem; color:var(--mute);
+    font-weight:400; margin-top:2px}
+  .band{font-size:.72rem; font-weight:700; text-align:center; color:var(--mute)}
+  .tag{font-size:.62rem; font-weight:700; letter-spacing:.04em; background:var(--surf2);
+    color:var(--soft); padding:2px 6px; border-radius:999px; margin-left:6px;
+    white-space:nowrap; border:1px solid var(--hair)}
+  .disc{display:grid; grid-template-columns:1.9rem 1fr 5.2rem; gap:9px;
+    padding:0 14px 9px; font-size:.76rem; color:var(--warn);
+    border-bottom:1px solid var(--hair)}
+  .disc .n{color:var(--warn)}
+  .basket-foot{margin-top:auto; padding:11px 14px; border-top:1px solid var(--hair);
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    font-family:var(--mono); font-size:10.5px; color:var(--mute)}
+
+  .rail{display:flex; flex-direction:column; gap:10px; min-width:0}
+  .tile{background:var(--surf); border:1px solid var(--hair);
+    border-radius:var(--radius); padding:13px 14px}
+  .tile .lbl{font-size:10.5px; font-weight:600; letter-spacing:.05em;
+    text-transform:uppercase; color:var(--mute); margin-bottom:5px}
+  .tile .big{font-variant-numeric:tabular-nums; font-weight:700;
+    font-size:clamp(1.9rem,5vw,2.45rem); line-height:1; letter-spacing:-.035em}
+  .tile .cur{font-size:.78rem; font-weight:600; color:var(--mute); margin-left:6px;
+    letter-spacing:0}
+  .tile.hero{background:var(--accent); border-color:var(--accent)}
+  .tile.hero .lbl,.tile.hero .big,.tile.hero .cur{color:var(--on-accent)}
+  .tile.hero .cur{opacity:.7}
+  .bands{width:100%; border-collapse:collapse; font-size:.8rem;
+    font-variant-numeric:tabular-nums}
+  .bands th{text-align:left; font-size:9.5px; font-weight:600; letter-spacing:.07em;
+    text-transform:uppercase; color:var(--mute); padding:0 0 6px;
+    border-bottom:1px solid var(--hair)}
+  .bands td{padding:6px 0; border-bottom:1px solid var(--hair);
+    font-family:var(--mono); font-size:.78rem}
+  .bands td:first-child{font-family:var(--ui-f); font-weight:600; font-size:.8rem}
+  .bands td:not(:first-child){text-align:right}
+  .bands tr:last-child td{border-bottom:0; font-weight:700; color:var(--ink)}
+  .split{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  @media (max-width:420px){ .split{grid-template-columns:1fr} }
+  .scanin{background:var(--surf); border:1px solid var(--hair);
+    border-radius:var(--radius); padding:12px 14px; font-family:var(--mono);
+    font-size:.92rem; color:var(--mute); display:flex; align-items:center; gap:8px}
+  .scanin .car{width:2px; height:1.05em; background:var(--accent); display:inline-block}
+  .keys{display:grid; grid-template-columns:repeat(auto-fit,minmax(5.2rem,1fr)); gap:7px}
+  .key{background:var(--surf); border:1px solid var(--hair);
+    border-radius:var(--radius); padding:9px 6px; text-align:center; min-width:0}
+  .key .fk{display:block; font-family:var(--mono); font-size:9px; font-weight:600;
+    color:var(--mute); letter-spacing:.06em}
+  .key .kn{display:block; font-size:.76rem; font-weight:600; margin-top:2px;
+    letter-spacing:-.005em}
+  .key.hot{background:var(--accent); border-color:var(--accent)}
+  .key.hot .kn{color:var(--on-accent)} .key.hot .fk{color:var(--on-accent); opacity:.65}
+
+  /* ---------- spec strip ---------- */
+  .spec{display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr));
+    gap:12px; margin-top:14px}
+  .scard{background:var(--pg-surface); border:1px solid var(--pg-hair);
+    border-radius:10px; padding:14px 15px; min-width:0}
+  .scard h3{font-size:.84rem; font-weight:700; margin:0 0 9px; letter-spacing:.01em}
+  .swatches{display:flex; gap:5px; flex-wrap:wrap; margin-bottom:9px}
+  .sw-c{width:30px; height:30px; border-radius:6px; border:1px solid var(--pg-hair);
+    flex:none}
+  .scard p{font-size:.8rem; color:var(--pg-soft); margin:0 0 6px}
+  .scard .mono{font-family:var(--mono); font-size:.72rem; color:var(--pg-mute);
+    word-break:break-all}
+  .flag{background:var(--pg-surface); border:1px solid var(--pg-hair);
+    border-left:3px solid var(--pg-ink); border-radius:8px; padding:15px 16px;
+    margin-top:16px}
+  .flag strong{display:block; font-size:.92rem; margin-bottom:5px}
+  .flag p{font-size:.89rem; color:var(--pg-soft); margin:0 0 8px; max-width:66ch}
+  .flag p:last-child{margin-bottom:0}
+  .m{font-family:var(--mono); font-size:.85em; background:var(--pg-bg);
+    border:1px solid var(--pg-hair); padding:1px 5px; border-radius:4px}
+  ul{margin:0 0 14px; padding-left:19px; max-width:66ch; color:var(--pg-soft);
+    font-size:.92rem}
+  li{margin-bottom:6px}
+  li strong{color:var(--pg-ink)}
+  footer{border-top:1px solid var(--pg-hair); padding-top:17px}
+  footer p{font-size:.88rem; color:var(--pg-mute); max-width:68ch}
+  .path{font-family:var(--mono); font-size:.8rem; word-break:break-all}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Skin directions · decided 2026-11-21</p>
+  <h1>Minimal, modern, and still readable at arm's length</h1>
+  <p style="display:inline-flex;align-items:center;gap:8px;background:#2E9BDB;
+    color:#fff;font-size:.8rem;font-weight:700;padding:7px 13px;border-radius:999px;
+    margin:0 0 16px">Locked: Cloud &amp; Azure</p>
+  <p class="stand">Your three references share a grammar: near-white ground, white
+  surfaces, hairline borders instead of heavy rules, and exactly one saturated colour.
+  Here it is applied to our lane — switch between them.</p>
+
+  <section>
+    <div class="switch">
+      <button class="sw" data-pick="a" aria-pressed="true">
+        <span class="dot" style="background:#C8F000"></span>
+        <span>Graphite &amp; Lime<small>Plus Jakarta Sans</small></span>
+      </button>
+      <button class="sw" data-pick="b" aria-pressed="false">
+        <span class="dot" style="background:#2E9BDB"></span>
+        <span>Cloud &amp; Azure<small>Inter</small></span>
+      </button>
+      <button class="sw" data-pick="c" aria-pressed="false">
+        <span class="dot" style="background:#0F6B4F"></span>
+        <span>Bone &amp; Forest<small>Manrope</small></span>
+      </button>
+      <button class="sw toggle" id="mode" aria-pressed="false">
+        <span>◐</span><span>Dark lane</span>
+      </button>
+    </div>
+
+    <div class="lane-host" id="host" data-skin="a" data-mode="light">
+      <div class="statusbar">
+        <span class="mark"></span>
+        <span class="lane-id">Lane 02</span>
+        <span class="sb-item">M. Uwase</span>
+        <span class="sb-sep"></span>
+        <span class="sb-item">Shift 3 · open 06:58</span>
+        <span class="sb-item">14:22</span>
+        <span class="chip">VSDC online</span>
+      </div>
+
+      <div class="lane">
+        <div class="panel">
+          <div class="bhead">
+            <span>#</span><span>Item</span><span class="n">Qty</span>
+            <span class="n hide">Price</span><span class="band hide">Bnd</span>
+            <span class="n">Amount</span>
+          </div>
+          <div class="brow">
+            <span class="seq">001</span>
+            <span class="nm">Inyange Fresh Milk 1L<span class="sub">6001 · 5612345000017</span></span>
+            <span class="n">2</span><span class="n hide">1,200</span>
+            <span class="band hide">B</span><span class="n">2,400</span>
+          </div>
+          <div class="brow">
+            <span class="seq">002</span>
+            <span class="nm">Kabuye Sugar 1kg<span class="sub">6014 · 5612345000024</span></span>
+            <span class="n">1</span><span class="n hide">1,500</span>
+            <span class="band hide">B</span><span class="n">1,500</span>
+          </div>
+          <div class="brow">
+            <span class="seq">003</span>
+            <span class="nm">Tomatoes<span class="tag">Weighed</span><span class="sub">PLU 4087 · 1.250 kg @ 800</span></span>
+            <span class="n">1.250</span><span class="n hide">800</span>
+            <span class="band hide">A</span><span class="n">1,000</span>
+          </div>
+          <div class="brow" style="border-bottom:0">
+            <span class="seq">004</span>
+            <span class="nm">Coca-Cola 500ml<span class="sub">5449000000996</span></span>
+            <span class="n">3</span><span class="n hide">500</span>
+            <span class="band hide">B</span><span class="n">1,500</span>
+          </div>
+          <div class="disc"><span></span><span>Line discount 10%</span><span class="n">−150</span></div>
+          <div class="brow live">
+            <span class="seq">005</span>
+            <span class="nm">Mutzig 650ml<span class="sub">5612345000031</span></span>
+            <span class="n">1</span><span class="n hide">1,200</span>
+            <span class="band hide">B</span><span class="n">1,200</span>
+          </div>
+          <div class="basket-foot">
+            <span>DVC 1234567890 · BHF 00</span>
+            <span class="sb-sep"></span><span>INVC 1182</span>
+          </div>
+        </div>
+
+        <div class="rail">
+          <div class="tile hero">
+            <div class="lbl">Total due</div>
+            <div class="big">7,450<span class="cur">RWF</span></div>
+          </div>
+          <div class="tile">
+            <div class="lbl">Tax bands</div>
+            <table class="bands">
+              <tr><th>Band</th><th>Taxable</th><th>VAT</th></tr>
+              <tr><td>B 18%</td><td>6,450</td><td>983.89</td></tr>
+              <tr><td>A exempt</td><td>1,000</td><td>0.00</td></tr>
+              <tr><td>Total</td><td>7,450</td><td>983.89</td></tr>
+            </table>
+          </div>
+          <div class="split">
+            <div class="tile">
+              <div class="lbl">Cash in</div>
+              <div class="big" style="font-size:1.5rem">10,000</div>
+            </div>
+            <div class="tile">
+              <div class="lbl">Change</div>
+              <div class="big" style="font-size:1.5rem">2,550</div>
+            </div>
+          </div>
+          <div class="scanin">Scan or key PLU<span class="car"></span></div>
+          <div class="keys">
+            <div class="key"><span class="fk">F1</span><span class="kn">Void</span></div>
+            <div class="key"><span class="fk">F2</span><span class="kn">Discount</span></div>
+            <div class="key"><span class="fk">F3</span><span class="kn">Suspend</span></div>
+            <div class="key"><span class="fk">F6</span><span class="kn">Buyer TIN</span></div>
+            <div class="key hot"><span class="fk">Enter</span><span class="kn">Tender</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="spec" id="spec"></div>
+  </section>
+
+  <section>
+    <span class="sec-no">Outcome</span>
+    <h2>Cloud &amp; Azure was chosen; my pick was Graphite &amp; Lime</h2>
+    <p class="note">Kept as written, so the reasoning that lost is still legible. The
+    tokens now live in <span class="m">src/app/globals.css</span> and the contrast
+    contracts are asserted in <span class="m">tests/skin/tokens.test.ts</span>.</p>
+    <ul>
+      <li><strong>It keeps a thread to what exists.</strong> Shelf Edge already uses
+      hi-vis yellow <span class="m">#FFD400</span>. Acid lime is that idea grown up, so
+      the back office we already shipped doesn't become a stranger to the lane.</li>
+      <li><strong>One saturated colour is functionally right here.</strong> On a till,
+      exactly one thing must be findable without looking — the total. Give it the only
+      chromatic colour on screen and the cashier's eye has nowhere else to go.</li>
+      <li><strong>It isn't the default.</strong> Two of your three references are blue,
+      and blue POS dashboards are everywhere. Azure is the safe one; it is also the one
+      nobody remembers.</li>
+      <li><strong>Bone &amp; Forest is the genuinely quiet option</strong> — the most
+      minimal of the three and the most grown-up. If "minimal" matters more to you than
+      "modern", pick that one; it is the only direction here that would still look
+      right in five years.</li>
+    </ul>
+    <div class="flag">
+      <strong>The rule: lime touches one element per screen.</strong>
+      <p>Used twice it stops meaning anything, and an acid colour used loosely reads as
+      a toy — which is fatal for something that prints tax receipts. Total tile, active
+      line marker, primary key. Never all three at once.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">Cost check</span>
+    <h2>What this does to the egui decision</h2>
+    <p class="note">I argued yesterday that the port was cheap <em>because</em> Shelf
+    Edge was flat — 2px corners, no shadows. This skin is softer, so I owe you the
+    revised number rather than letting that argument quietly expire.</p>
+    <ul>
+      <li><strong>Rounding is free.</strong> egui draws rounded rectangles natively; a
+      10px corner costs the same as a 2px one.</li>
+      <li><strong>Hairlines are free.</strong> 1px strokes are what it is best at, and
+      this grammar leans on borders rather than heavy rules.</li>
+      <li><strong>Soft shadows are the weak spot.</strong> egui's shadow support is
+      limited, so I have built these panels with hairlines and a tinted second surface
+      instead — which is more minimal anyway, and closer to your first reference than
+      a drop-shadow would be.</li>
+      <li><strong>Fonts embed fine.</strong> All four families here are TTFs that go
+      straight into the binary.</li>
+    </ul>
+    <p class="note">Net: the port stays cheap. The one thing I would not sign up for is
+    a shadow-heavy, layered-glass skin — that is where a native UI starts fighting you.</p>
+  </section>
+
+  <footer>
+    <p>Pick a direction and I will rewrite the tokens in
+      <span class="path">src/app/globals.css</span>, update
+      <span class="path">tests/skin/tokens.test.ts</span>, and restate the skin section
+      of the design doc. The back office and the lane move together — that is the whole
+      point of keeping one token set.</p>
+  </footer>
+</div>
+
+<script>
+  const SPECS = {
+    a:{name:"Graphite & Lime", ui:"Plus Jakarta Sans", radius:"10px",
+       cols:["#FAFAFA","#FFFFFF","#15161A","#84868E","#E9EAEC","#C8F000"],
+       why:"A near-black rail, a neutral grey ground, and one acid accent carrying the total. Highest energy, most memorable, closest to your PikkoPay reference.",
+       car:"Confident. Reads as a tool built this year."},
+    b:{name:"Cloud & Azure", ui:"Inter", radius:"14px",
+       cols:["#F1F6FB","#FFFFFF","#0F1B2A","#7A8CA0","#E2EBF4","#2E9BDB"],
+       why:"Cool blue-tinted ground, generous 14px rounding, sky-blue primary. This is the grammar of both the PosFood and FastCart references.",
+       car:"Friendly and calm. Also the most generic — you have seen this exact till before."},
+    c:{name:"Bone & Forest", ui:"Manrope", radius:"6px",
+       cols:["#F6F5F1","#FFFFFF","#1A1917","#857F74","#E7E3DA","#0F6B4F"],
+       why:"Warm paper ground, tight 6px corners, a deep green that nods at fresh produce without being literal about it.",
+       car:"The quiet one. Editorial rather than app-like; ages best."}
+  };
+  const host = document.getElementById('host');
+  const spec = document.getElementById('spec');
+  const names = ["Canvas","Surface","Ink","Muted","Hairline","Accent"];
+
+  function paint(k){
+    const s = SPECS[k];
+    spec.innerHTML =
+      '<div class="scard"><h3>Palette</h3><div class="swatches">' +
+        s.cols.map(c=>'<span class="sw-c" style="background:'+c+'" title="'+c+'"></span>').join('') +
+      '</div><p class="mono">' + s.cols.map((c,i)=>names[i]+' '+c).join(' · ') + '</p></div>' +
+      '<div class="scard"><h3>Type &amp; shape</h3><p><strong>' + s.ui +
+        '</strong> for the interface, <strong>JetBrains Mono</strong> for amounts, codes and the receipt.</p>' +
+        '<p class="mono">radius ' + s.radius + ' · tabular-nums on every figure</p></div>' +
+      '<div class="scard"><h3>Why it works</h3><p>' + s.why + '</p></div>' +
+      '<div class="scard"><h3>Character</h3><p>' + s.car + '</p></div>';
+  }
+
+  document.querySelectorAll('.sw[data-pick]').forEach(b=>{
+    b.addEventListener('click',()=>{
+      document.querySelectorAll('.sw[data-pick]').forEach(o=>o.setAttribute('aria-pressed','false'));
+      b.setAttribute('aria-pressed','true');
+      host.dataset.skin = b.dataset.pick;
+      paint(b.dataset.pick);
+      try{ localStorage.setItem('skin', b.dataset.pick); }catch(e){}
+    });
+  });
+
+  const modeBtn = document.getElementById('mode');
+  modeBtn.addEventListener('click',()=>{
+    const dark = host.dataset.mode === 'dark';
+    host.dataset.mode = dark ? 'light' : 'dark';
+    modeBtn.setAttribute('aria-pressed', String(!dark));
+    modeBtn.lastElementChild.textContent = dark ? 'Dark lane' : 'Light lane';
+    try{ localStorage.setItem('mode', host.dataset.mode); }catch(e){}
+  });
+
+  try{
+    const k = localStorage.getItem('skin');
+    if(k && SPECS[k]){ document.querySelector('.sw[data-pick="'+k+'"]').click(); }
+    if(localStorage.getItem('mode') === 'dark'){ modeBtn.click(); }
+  }catch(e){}
+  paint(host.dataset.skin);
+</script>

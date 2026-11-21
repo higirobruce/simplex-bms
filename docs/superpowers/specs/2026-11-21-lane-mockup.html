@@ -1,0 +1,426 @@
+<title>Shelf Edge Lane</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+<style>
+  :root{
+    --canvas:#F1F6FB; --paper:#FFFFFF; --ink:#0F1B2A; --ink-soft:#41576E;
+    --ink-mute:#546A7E; --hair:#E2EBF4; --hair-2:#EDF4FA;
+    --signal:#176596; --signal-text:#176596; --signal-wash:#DDEBF6;
+    --hivis:#3FA9E5; --radius:14px;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --canvas:#0B141F; --paper:#13202E; --ink:#EAF2FA; --ink-soft:#AFC3D6;
+      --ink-mute:#8CA2B8; --hair:#22354A; --hair-2:#1A2A3B;
+      --signal:#41ADEA; --signal-text:#7CC6F0; --signal-wash:#13334A;
+      --hivis:#41ADEA; color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --canvas:#0B141F; --paper:#13202E; --ink:#EAF2FA; --ink-soft:#AFC3D6;
+    --ink-mute:#8CA2B8; --hair:#22354A; --hair-2:#1A2A3B;
+    --signal:#41ADEA; --signal-text:#7CC6F0; --signal-wash:#13334A;
+    --hivis:#41ADEA; color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--canvas); color:var(--ink); font-family:var(--sans);
+    margin:0; font-size:16px; line-height:1.5; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:78rem; margin:0 auto; padding-inline:16px; padding-block:34px 70px}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--ink-mute); margin:0 0 12px}
+  h1{font-size:clamp(1.7rem,4.6vw,2.6rem); line-height:1.05; letter-spacing:-.022em;
+    font-weight:800; margin:0 0 14px; text-wrap:balance; max-width:28ch}
+  .stand{font-size:1.02rem; color:var(--ink-soft); margin:0 0 30px; max-width:62ch}
+  h2{font-size:clamp(1.1rem,2.6vw,1.35rem); font-weight:700; margin:0 0 5px;
+    letter-spacing:-.012em}
+  .sec-no{font-family:var(--mono); font-size:11px; color:var(--signal-text);
+    font-weight:600; letter-spacing:.1em; display:block; margin-bottom:7px}
+  section{margin-bottom:44px}
+  .note{font-size:.92rem; color:var(--ink-soft); margin:0 0 16px; max-width:66ch}
+
+  /* ---------- the lane screen ---------- */
+  .screen{background:var(--canvas); border:1px solid var(--hair);
+    border-radius:var(--radius); overflow:hidden;
+    box-shadow:0 1px 0 var(--hair)}
+  .statusbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--ink); color:#EAF2FA; padding:11px 14px}
+  .mark{width:20px; height:20px; background:var(--hivis); border-radius:7px;
+    flex:none}
+  .lane-id{font-family:var(--sans); font-weight:700; font-size:13px;
+    letter-spacing:.01em}
+  .sb-sep{flex:1 1 auto}
+  .sb-item{font-family:var(--sans); font-size:12px; letter-spacing:0;
+    color:#AFC3D6; white-space:nowrap}
+  .chip{font-family:var(--mono); font-size:10.5px; font-weight:700;
+    letter-spacing:.09em; text-transform:uppercase; padding:4px 8px;
+    border-radius:999px; background:var(--hivis); color:#0F1B2A; flex:none}
+  .chip.bad{background:var(--signal); color:#fff}
+
+  .lane{display:grid; grid-template-columns:1.62fr 1fr; gap:0; align-items:stretch}
+  @media (max-width:860px){ .lane{grid-template-columns:1fr} }
+  .basket{border-right:1px solid var(--hair); min-width:0;
+    background:var(--paper); display:flex; flex-direction:column}
+  @media (max-width:860px){ .basket{border-right:0; border-bottom:1px solid var(--hair)} }
+
+  .bhead,.brow{display:grid; grid-template-columns:2.1rem 1fr 4.4rem 4.6rem 2rem 5.4rem;
+    gap:8px; align-items:baseline; padding:8px 12px}
+  @media (max-width:560px){
+    .bhead,.brow{grid-template-columns:1.8rem 1fr 4.2rem 5rem; }
+    .bhead .hide,.brow .hide{display:none}
+  }
+  .bhead{font-family:var(--sans); font-size:10px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; color:var(--ink-mute);
+    border-bottom:1px solid var(--hair)}
+  .brow{border-bottom:1px solid var(--hair-2); font-size:.94rem}
+  .brow.live{background:var(--signal-wash); box-shadow:inset 3px 0 0 var(--signal)}
+  .brow.live .n,.brow.live .nm,.brow.live .band{color:var(--ink)}
+  .n{font-family:var(--mono); font-variant-numeric:tabular-nums; text-align:right;
+    font-weight:600; white-space:nowrap}
+  .seq{font-family:var(--mono); font-size:.8rem; color:var(--ink-mute)}
+  .nm{min-width:0; overflow-wrap:anywhere; font-weight:500}
+  .sub{display:block; font-family:var(--mono); font-size:.72rem; color:var(--ink-mute);
+    letter-spacing:.03em; margin-top:1px}
+  .brow.live .sub{color:var(--ink-soft)}
+  .band{font-family:var(--mono); font-size:.78rem; font-weight:700; text-align:center;
+    color:var(--ink-soft)}
+  .tag{font-family:var(--sans); font-size:.64rem; font-weight:600; letter-spacing:.04em;
+    background:var(--signal-wash); color:var(--signal-text); padding:2px 7px;
+    border-radius:999px; margin-left:6px; white-space:nowrap}
+  .disc{display:grid; grid-template-columns:2.1rem 1fr 5.4rem; gap:8px;
+    padding:4px 12px 7px; border-bottom:1px solid var(--hair-2);
+    font-family:var(--sans); font-size:.78rem; color:#C0392B}
+  .basket-foot{margin-top:auto; padding:11px 14px; border-top:1px solid var(--hair);
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    font-family:var(--mono); font-size:11px; color:var(--ink-mute)}
+
+  .rail{background:var(--canvas); padding:12px; display:flex; flex-direction:column;
+    gap:10px; min-width:0}
+  .tile{background:var(--paper); border:1px solid var(--hair);
+    border-radius:var(--radius); padding:14px 15px}
+  .tile .lbl{font-family:var(--mono); font-size:10px; font-weight:600;
+    letter-spacing:.11em; text-transform:uppercase; color:var(--ink-mute);
+    margin-bottom:3px}
+  .tile .big{font-family:var(--mono); font-variant-numeric:tabular-nums;
+    font-weight:700; font-size:clamp(1.9rem,5.2vw,2.5rem); line-height:1;
+    letter-spacing:-.025em}
+  .tile .cur{font-size:.8rem; font-weight:600; color:var(--ink-mute); margin-left:5px}
+  .tile.change{background:var(--signal); border-color:var(--signal)}
+  .tile.change .lbl,.tile.change .big,.tile.change .cur{color:#FFFFFF}
+  .bands{width:100%; border-collapse:collapse; font-size:.82rem;
+    font-variant-numeric:tabular-nums; font-family:var(--mono)}
+  .bands th{text-align:left; font-size:9.5px; font-weight:600; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--ink-mute); padding:0 0 6px;
+    border-bottom:1px solid var(--hair)}
+  .bands td{padding:5px 0; border-bottom:1px solid var(--hair-2)}
+  .bands td:not(:first-child){text-align:right}
+  .bands tr:last-child td{border-bottom:0; font-weight:700}
+  .scanbar{display:flex; gap:8px; align-items:stretch; flex-wrap:wrap}
+  .scanin{flex:1 1 11rem; min-width:0; background:var(--paper);
+    border:1px solid var(--hair); border-radius:var(--radius); padding:10px 11px;
+    font-family:var(--mono); font-size:1rem; color:var(--ink-mute)}
+  .scanin b{color:var(--ink); font-weight:700}
+  .keys{display:grid; grid-template-columns:repeat(auto-fit,minmax(5.6rem,1fr));
+    gap:6px}
+  .key{background:var(--paper); border:1px solid var(--hair);
+    border-radius:var(--radius); padding:8px 6px;
+    text-align:center; min-width:0}
+  .key .fk{display:block; font-family:var(--mono); font-size:9.5px; font-weight:700;
+    color:var(--signal-text); letter-spacing:.08em}
+  .key .kn{display:block; font-size:.76rem; font-weight:600; letter-spacing:.01em;
+    margin-top:1px}
+  .key.hot{background:var(--signal); border-color:var(--signal)}
+  .key.hot .kn{color:#FFFFFF} .key.hot .fk{color:#FFFFFF; opacity:.7}
+
+  /* ---------- hard stop ---------- */
+  .stopframe{position:relative; border:1px solid var(--hair);
+    border-radius:var(--radius); overflow:hidden; background:var(--paper)}
+  .stopveil{background:var(--ink); padding:clamp(20px,5vw,40px) 18px; text-align:center}
+  .stopveil .kicker{font-family:var(--sans); font-size:10.5px; font-weight:700;
+    letter-spacing:.14em; text-transform:uppercase; color:var(--hivis);
+    margin:0 0 12px}
+  .stopveil h3{font-size:clamp(1.3rem,4vw,2rem); font-weight:800; color:var(--canvas);
+    margin:0 0 12px; letter-spacing:-.02em; text-wrap:balance}
+  .stopveil p{color:#AFC3D6; font-size:.95rem; max-width:48ch; margin:0 auto 7px}
+  .stopveil .cite{font-family:var(--mono); font-size:.76rem; color:#7E93A8;
+    margin-top:14px}
+  .stopbar{display:flex; gap:8px; justify-content:center; flex-wrap:wrap;
+    margin-top:18px}
+  .stopbar .chip{background:#E5484D; color:#fff}
+  .stopbar .chip.ghost{background:transparent; color:#AFC3D6;
+    border:1px solid #41576E}
+
+  /* ---------- receipt ---------- */
+  .receipt-grid{display:grid; grid-template-columns:auto 1fr; gap:20px;
+    align-items:start}
+  @media (max-width:760px){ .receipt-grid{grid-template-columns:1fr} }
+  .receipt{background:#fff; color:#121212; width:min(100%,21.5rem);
+    border:1px solid var(--hair); border-radius:var(--radius);
+    padding:16px 15px; font-family:var(--mono); font-size:11.5px; line-height:1.45;
+    font-variant-numeric:tabular-nums}
+  .receipt .ctr{text-align:center}
+  .receipt .big{font-size:14px; font-weight:700; letter-spacing:.04em}
+  .receipt hr{border:0; border-top:1px dashed #9A9A92; margin:8px 0}
+  .receipt .row{display:flex; justify-content:space-between; gap:8px}
+  .receipt .sdc{font-weight:700; letter-spacing:.09em; text-align:center;
+    border-top:1px solid #121212; border-bottom:1px solid #121212;
+    padding:4px 0; margin:9px 0}
+  .receipt .wrapme{overflow-wrap:anywhere}
+  .qrbox{width:116px; height:116px; margin:10px auto 4px; border:2px solid #0F1B2A;
+    border-radius:var(--radius); display:flex; align-items:center;
+    justify-content:center; text-align:center; font-size:9.5px; font-weight:700;
+    letter-spacing:.08em; color:#62625B; padding:6px}
+  .rnote{min-width:0}
+  .rnote h3{font-size:1rem; margin:0 0 7px; font-weight:700}
+  .rnote p{font-size:.9rem; color:var(--ink-soft); margin:0 0 11px; max-width:52ch}
+  .rnote ul{margin:0 0 11px; padding-left:18px; font-size:.88rem;
+    color:var(--ink-soft); max-width:52ch}
+  .rnote li{margin-bottom:5px}
+  .m{font-family:var(--mono); font-size:.85em; background:var(--signal-wash);
+    color:var(--signal-text); padding:1px 5px; border-radius:var(--radius)}
+  .flag{background:var(--paper); border:1px solid var(--hair);
+    border-left:3px solid var(--signal); border-radius:var(--radius);
+    padding:14px 15px; margin-top:16px}
+  .flag strong{display:block; font-size:.92rem; margin-bottom:4px}
+  .flag p{font-size:.89rem; color:var(--ink-soft); margin:0; max-width:64ch}
+  footer{border-top:1px solid var(--hair); padding-top:17px}
+  footer p{font-size:.88rem; color:var(--ink-mute); max-width:68ch}
+  .path{font-family:var(--mono); font-size:.8rem; word-break:break-all}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Mockup · Cloud &amp; Azure · Phase 2d lane, 2b printing, C1 hard-stop</p>
+  <h1>What the cashier sees</h1>
+  <p class="stand">Cloud &amp; Azure at the counter — the skin locked on 2026-11-21. Drawn here in
+  HTML, but it is built from flat fills, hairlines and tabular numbers, which is what a
+  native Rust UI draws cheaply.</p>
+
+  <section>
+    <span class="sec-no">01 — The lane, mid-sale</span>
+    <h2>Five lines, one discount, cash tendered</h2>
+    <p class="note">The numbers are real: VAT extracted at 18/118 per line and summed,
+    whole francs at the line, change capped by cash received. This is the arithmetic
+    already merged in <span class="m">till-core</span>.</p>
+
+    <div class="screen">
+      <div class="statusbar">
+        <span class="mark"></span>
+        <span class="lane-id">LANE&nbsp;02</span>
+        <span class="sb-item">M. UWASE</span>
+        <span class="sb-sep"></span>
+        <span class="sb-item">SHIFT 3 · OPEN 06:58</span>
+        <span class="sb-item">14:22</span>
+        <span class="chip">VSDC online</span>
+      </div>
+
+      <div class="lane">
+        <div class="basket">
+          <div class="bhead">
+            <span>#</span><span>Item</span><span class="n">Qty</span>
+            <span class="n hide">Price</span><span class="band hide">Bnd</span>
+            <span class="n">Amount</span>
+          </div>
+
+          <div class="brow">
+            <span class="seq">001</span>
+            <span class="nm">Inyange Fresh Milk 1L<span class="sub">6001 · 5612345000017</span></span>
+            <span class="n">2</span><span class="n hide">1,200</span>
+            <span class="band hide">B</span><span class="n">2,400</span>
+          </div>
+
+          <div class="brow">
+            <span class="seq">002</span>
+            <span class="nm">Kabuye Sugar 1kg<span class="sub">6014 · 5612345000024</span></span>
+            <span class="n">1</span><span class="n hide">1,500</span>
+            <span class="band hide">B</span><span class="n">1,500</span>
+          </div>
+
+          <div class="brow">
+            <span class="seq">003</span>
+            <span class="nm">Tomatoes<span class="tag">WEIGHED</span><span class="sub">PLU 4087 · 1.250 kg @ 800</span></span>
+            <span class="n">1.250</span><span class="n hide">800</span>
+            <span class="band hide">A</span><span class="n">1,000</span>
+          </div>
+
+          <div class="brow">
+            <span class="seq">004</span>
+            <span class="nm">Coca-Cola 500ml<span class="sub">5449000000996</span></span>
+            <span class="n">3</span><span class="n hide">500</span>
+            <span class="band hide">B</span><span class="n">1,500</span>
+          </div>
+          <div class="disc">
+            <span></span><span>↳ line discount 10%</span><span class="n">−150</span>
+          </div>
+
+          <div class="brow live">
+            <span class="seq">005</span>
+            <span class="nm">Mutzig 650ml<span class="sub">5612345000031</span></span>
+            <span class="n">1</span><span class="n hide">1,200</span>
+            <span class="band hide">B</span><span class="n">1,200</span>
+          </div>
+
+          <div class="basket-foot">
+            <span>DVC 1234567890 · BHF 00</span>
+            <span class="sb-sep"></span>
+            <span>INVC 1182</span>
+          </div>
+        </div>
+
+        <div class="rail">
+          <div class="tile">
+            <div class="lbl">Total due</div>
+            <div class="big">7,450<span class="cur">RWF</span></div>
+          </div>
+
+          <div class="tile">
+            <div class="lbl">Tax bands</div>
+            <table class="bands">
+              <tr><th>Band</th><th>Taxable</th><th>VAT</th></tr>
+              <tr><td>B 18%</td><td>6,450</td><td>983.89</td></tr>
+              <tr><td>A EX</td><td>1,000</td><td>0.00</td></tr>
+              <tr><td>Total</td><td>7,450</td><td>983.89</td></tr>
+            </table>
+          </div>
+
+          <div class="tile">
+            <div class="lbl">Tendered · 01 Cash</div>
+            <div class="big">10,000<span class="cur">RWF</span></div>
+          </div>
+
+          <div class="tile change">
+            <div class="lbl">Change</div>
+            <div class="big">2,550<span class="cur">RWF</span></div>
+          </div>
+
+          <div class="scanbar">
+            <div class="scanin">Scan or key PLU <b>▏</b></div>
+          </div>
+
+          <div class="keys">
+            <div class="key"><span class="fk">F1</span><span class="kn">Void line</span></div>
+            <div class="key"><span class="fk">F2</span><span class="kn">Discount</span></div>
+            <div class="key"><span class="fk">F3</span><span class="kn">Suspend</span></div>
+            <div class="key"><span class="fk">F4</span><span class="kn">Resume</span></div>
+            <div class="key"><span class="fk">F5</span><span class="kn">Refund</span></div>
+            <div class="key"><span class="fk">F6</span><span class="kn">Buyer TIN</span></div>
+            <div class="key"><span class="fk">F7</span><span class="kn">X / Z report</span></div>
+            <div class="key hot"><span class="fk">ENTER</span><span class="kn">Tender</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="flag">
+      <strong>983.89, not 983.90</strong>
+      <p>Band B taxable is 6,450. Extract 18/118 from that figure and you get 983.90;
+      sum the four line taxes and you get 983.89. RRA wants the sum of lines, and the
+      one-franc difference is what a load-bearing test in
+      <span class="m">basket.rs</span> exists to protect.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">02 — When the VSDC drops</span>
+    <h2>The lane stops selling. That is the feature.</h2>
+    <p class="note">C1 is not an error state we degrade through — offline selling is
+    prohibited outright, so the lane must refuse. This is the screen that costs us a
+    sale and keeps the certification.</p>
+
+    <div class="stopframe">
+      <div class="stopveil">
+        <p class="kicker">Selling suspended</p>
+        <h3>No connection to the VSDC</h3>
+        <p>This till cannot issue a receipt until the connection is restored. The
+        basket is held — nothing is lost.</p>
+        <p>Call the supervisor if this persists.</p>
+        <div class="stopbar">
+          <span class="chip">VSDC unreachable</span>
+          <span class="chip ghost">Basket held · 5 lines</span>
+          <span class="chip ghost">Invoice 1182 not issued</span>
+          <span class="chip ghost">Retrying · 4s</span>
+        </div>
+        <p class="cite">CIS spec §24.7.9 — a Certified Invoicing System must stop
+        operating whenever a communication error appears</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">03 — What comes out of the printer</span>
+    <h2>80mm, ESC/POS, and RRA&rsquo;s block verbatim</h2>
+    <div class="receipt-grid">
+      <div class="receipt">
+        <div class="ctr big">LA GARDIENNE</div>
+        <div class="ctr">Kigali · Nyarugenge</div>
+        <div class="ctr">TIN 102938475</div>
+        <hr>
+        <div class="row"><span>Milk 1L</span><span>2,400</span></div>
+        <div class="row"><span>&nbsp;&nbsp;2 x 1,200</span><span>B</span></div>
+        <div class="row"><span>Sugar 1kg</span><span>1,500</span></div>
+        <div class="row"><span>&nbsp;&nbsp;1 x 1,500</span><span>B</span></div>
+        <div class="row"><span>Tomatoes</span><span>1,000</span></div>
+        <div class="row"><span>&nbsp;&nbsp;1.250kg x 800</span><span>A</span></div>
+        <div class="row"><span>Coca-Cola 500ml</span><span>1,500</span></div>
+        <div class="row"><span>&nbsp;&nbsp;3 x 500</span><span>B</span></div>
+        <div class="row"><span>&nbsp;&nbsp;DISCOUNT 10%</span><span>-150</span></div>
+        <div class="row"><span>Mutzig 650ml</span><span>1,200</span></div>
+        <div class="row"><span>&nbsp;&nbsp;1 x 1,200</span><span>B</span></div>
+        <hr>
+        <div class="row"><span>TOTAL</span><span class="big">7,450</span></div>
+        <div class="row"><span>TOTAL B-18.00%</span><span>6,450</span></div>
+        <div class="row"><span>TOTAL VAT B</span><span>983.89</span></div>
+        <div class="row"><span>TOTAL A-EX</span><span>1,000</span></div>
+        <div class="row"><span>TOTAL TAX</span><span>983.89</span></div>
+        <hr>
+        <div class="row"><span>CASH</span><span>10,000</span></div>
+        <div class="row"><span>CHANGE</span><span>2,550</span></div>
+        <hr>
+        <div class="row"><span>ITEMS</span><span>5</span></div>
+        <div class="row"><span>MRC</span><span>WIS00123456</span></div>
+        <div class="sdc">SDC INFORMATION</div>
+        <div class="row"><span>DATE</span><span>21/11/2026</span></div>
+        <div class="row"><span>TIME</span><span>14:22:41</span></div>
+        <div class="row"><span>SDC ID</span><span>SDC0010000123</span></div>
+        <div class="row"><span>RECEIPT NO</span><span>1182/1182 NS</span></div>
+        <div>INTERNAL DATA</div>
+        <div class="wrapme">A4F2-9C01-77BD-2E50-18AA-3C7F</div>
+        <div>RECEIPT SIGNATURE</div>
+        <div class="wrapme">5K2M-9XQ4-7T1B-C8ZD</div>
+        <div class="qrbox">QR — COMPOSED<br>IN PHASE 3</div>
+        <div class="ctr">THANK YOU</div>
+      </div>
+
+      <div class="rnote">
+        <h3>What this mockup is claiming, and what it isn't</h3>
+        <p>The layout above is C5's mandated shape: the <strong>SDC INFORMATION</strong>
+        block with date, time, SDC ID, receipt number, internal data and receipt
+        signature — the last two dashed every four characters — plus the CIS receipt
+        number and the MRC.</p>
+        <ul>
+          <li><strong>Phase 2b builds the pipe:</strong> ESC/POS bytes, codepage, the
+          QR command, paper cut and the drawer kick, behind a trait with a simulated
+          implementation so CI needs no printer.</li>
+          <li><strong>Phase 3 fills the content:</strong> the signature, internal data
+          and QR payload all come from the VSDC's response. We cannot invent them —
+          the values shown are placeholders.</li>
+          <li><strong>Not yet decided:</strong> whether the QR is drawn with the
+          printer's native command or rasterised by us, which is a per-model question
+          and therefore waits for a real shop.</li>
+        </ul>
+        <div class="flag">
+          <strong>COPY, TRAINING and PRO FORMA must look different</strong>
+          <p>C5 requires those three receipt types to be visually distinguishable from
+          NORMAL. Our <span class="m">RcptTyCd</span> already carries them; the
+          printer layer owns making them look it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>Mockup for the decision in
+      <span class="path">docs/superpowers/specs/2026-11-21-till-ui-toolkit-design.md</span>.
+      Drawn in HTML to be read on a phone; the lane itself targets a 1280×1024 touch
+      screen at the counter. Tell me what is wrong here before it becomes Rust.</p>
+  </footer>
+</div>

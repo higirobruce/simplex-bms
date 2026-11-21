@@ -2,47 +2,56 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== SHELF EDGE — Supermarket Retail ===== */
+/* ===== CLOUD & AZURE — Supermarket Retail =====
+   Near-white blue-tinted ground, white surfaces, hairline borders, generous
+   rounding, and ONE saturated colour used sparingly.
+
+   Two azures, deliberately. --accent (#176596) is dark enough to carry white
+   text at body size; --hi-vis (#3FA9E5) is the bright brand blue and is only
+   ever a ground for dark text, never text itself on a light surface. Mixing
+   them up is the one way to break this palette's contrast guarantees. */
 :root {
-  /* Surfaces — shelf-label paper */
-  --bg: #F3F3EF;            /* canvas */
-  --bg-tint: #E8E8E2;       /* deeper edge */
+  /* Surfaces — cool paper */
+  --bg: #F1F6FB;            /* canvas */
+  --bg-tint: #E2EBF4;       /* deeper edge */
   --surface: #FFFFFF;       /* primary panel */
-  --surface-2: #F8F8F5;     /* paper wash */
-  --surface-3: #E8E8E2;     /* subtle wash */
+  --surface-2: #F7FAFD;     /* panel wash */
+  --surface-3: #E9F1F8;     /* subtle wash */
 
-  /* Ink — near-black */
-  --ink: #121212;
-  --ink-soft: #4A4A44;
-  --ink-mute: #62625B;
+  /* Ink — deep navy rather than neutral black */
+  --ink: #0F1B2A;
+  --ink-soft: #41576E;
+  --ink-mute: #546A7E;
 
-  /* Accents — ink primary, price-tag red "gold" slot */
-  --accent: #121212;        /* ink primary */
-  --accent-hover: #2B2B28;
-  --accent-soft: #E8E8E2;
-  --signal: #E01B20;        /* signal red: fills and white-text chips */
-  --hi-vis: #FFD400;        /* hi-vis yellow: pills and one tile, only behind dark text */
-  --gold: #C2141A;          /* legacy name: text-weight signal red, AA at 10px */
-  --gold-soft: #FAE3E4;     /* signal wash */
+  /* Accent — azure */
+  --accent: #176596;        /* fills carrying white text at body size */
+  --accent-hover: #12527A;
+  --accent-soft: #DDEBF6;   /* accent wash */
+  --signal: #176596;        /* saturated fill, white text */
+  --hi-vis: #3FA9E5;        /* bright azure: a GROUND for dark text only */
+  --gold: #176596;          /* accent-weight text on light grounds */
+  --gold-soft: #DDEBF6;
 
   /* Lines */
-  --line: #D7D7D2;
-  --line-strong: #8A8A82;
+  --line: #E2EBF4;
+  --line-strong: #6E8CA6;
 
   /* Status */
-  --success: #1F6B3A;
-  --success-soft: #DDEDDF;
-  --warning: #8E560A;
-  --warning-soft: #F8E5C5;
-  --danger: #C2141A;        /* same text-weight red as gold */
-  --danger-soft: #FAE3E4;
-  --info: #2C547D;
-  --info-soft: #DCE5EE;
+  --success: #15713F;
+  --success-soft: #DCF0E4;
+  --warning: #85540A;
+  --warning-soft: #F8E8C8;
+  --danger: #B5271F;
+  --danger-soft: #FBE4E2;
+  --info: #176596;
+  --info-soft: #DDEBF6;
 
-  /* Near-square corners */
-  --radius: 2px;
-  --radius-lg: 4px;
-  --radius-xl: 6px;
+  /* Generous corners */
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
 }
 
 html,
@@ -58,7 +67,7 @@ body {
 
 /* "font-serif" Tailwind class is repurposed as the display heading font */
 .font-serif {
-  font-family: var(--font-display), "Archivo", system-ui, sans-serif;
+  font-family: var(--font-display), "Inter", system-ui, sans-serif;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -67,7 +76,7 @@ body {
 .font-mono,
 code,
 .tabular-mono {
-  font-family: var(--font-mono), ui-monospace, "IBM Plex Mono", "Menlo",
+  font-family: var(--font-mono), ui-monospace, "JetBrains Mono", "Menlo",
     monospace;
 }
 
@@ -86,7 +95,7 @@ code,
 }
 
 @layer components {
-  /* Flat white label card: a price label has no depth */
+  /* Panels lean on a hairline, not a shadow */
   .panel {
     background: var(--surface);
     border-radius: var(--radius);
@@ -103,13 +112,12 @@ code,
     border-color: var(--line);
   }
 
-  /* The motif: white card, heavy ink bottom rule, heavy tabular numerals */
+  /* The motif: white card, tinted footer wash, heavy tabular numerals */
   .price-card {
     background: var(--surface);
     color: var(--ink);
     border-radius: var(--radius);
     border: 1px solid var(--line);
-    border-bottom: 4px solid var(--ink);
     font-family: var(--font-mono), ui-monospace, "Menlo", monospace;
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
@@ -120,44 +128,44 @@ code,
   .dept-chip {
     display: inline-flex;
     align-items: center;
-    padding: 0.2rem 0.5rem;
-    border-radius: 0;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius-pill);
     background: var(--dept, var(--ink));
     color: var(--surface);
     font-size: 0.7rem;
-    font-weight: 700;
+    font-weight: 600;
     line-height: 1;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
-  /* Solid uppercase label */
+  /* Soft rounded label */
   .pill {
     display: inline-flex;
     align-items: center;
-    padding: 0.2rem 0.55rem;
-    border-radius: var(--radius);
+    padding: 0.2rem 0.6rem;
+    border-radius: var(--radius-pill);
     font-size: 0.7rem;
-    font-weight: 700;
+    font-weight: 600;
     line-height: 1;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
-  /* Brand mark: flat ink block */
+  /* Brand mark: rounded azure block */
   .shelf-mark {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--ink);
+    background: var(--accent);
     color: var(--surface);
     font-family: var(--font-display), system-ui, sans-serif;
     font-weight: 700;
     letter-spacing: -0.02em;
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
   }
 
-  /* Dark hero panel on auth pages: flat ink, no texture */
+  /* Dark hero panel on auth pages */
   .brushed {
     background: var(--ink);
     color: var(--surface);
@@ -171,7 +179,7 @@ code,
   .eyebrow {
     font-size: 0.65rem;
     font-weight: 600;
-    letter-spacing: 0.22em;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--ink-mute);
   }
@@ -190,7 +198,7 @@ code,
 }
 ::-webkit-scrollbar-thumb {
   background: var(--line-strong);
-  border-radius: 2px;
+  border-radius: var(--radius-pill);
   border: 2px solid var(--bg);
 }
 ::-webkit-scrollbar-thumb:hover {

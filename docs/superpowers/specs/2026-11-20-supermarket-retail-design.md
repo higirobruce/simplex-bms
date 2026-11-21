@@ -174,13 +174,16 @@ no longer reachable by simply opening a URL.
 
 ### 6.3 Skin
 
-Direction **A, "Shelf Edge"**, chosen from three presented. **Workshop Steel is
-retired on `main`**, confirmed by the user, exactly as Workshop Steel retired Atelier.
-Simplex carries one skin at a time; the two live orgs move with it. Price-label motif: white
-card, heavy black numerals, one hi-vis accent, department colour chips. Chosen over
-"Cold Chain" (better story, but every figure in it needs expiry and waste data that
-does not exist yet) and "Market Hall" (too close to the retired Atelier palette to
-read as a new vertical).
+**Superseded 2026-11-21 — see `2026-11-21-till-ui-toolkit-design.md` §Skin.**
+Shelf Edge is retired; the skin is now **"Cloud & Azure"**. Simplex still carries one
+skin at a time and the live orgs still move with it.
+
+*Original decision, kept for the record:* Direction **A, "Shelf Edge"**, chosen from
+three presented. **Workshop Steel is retired on `main`**, confirmed by the user,
+exactly as Workshop Steel retired Atelier. Price-label motif: white card, heavy black
+numerals, one hi-vis accent, department colour chips. Chosen over "Cold Chain" (better
+story, but every figure in it needs expiry and waste data that does not exist yet) and
+"Market Hall" (too close to the retired Atelier palette to read as a new vertical).
 
 ### 6.4 Implementation language for the till
 
