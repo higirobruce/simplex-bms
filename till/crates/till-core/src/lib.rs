@@ -14,6 +14,7 @@
 //! separate types that cannot be added to one another; the only operation that
 //! crosses between them is [`Money::checked_times_qty`].
 
+pub mod codes;
 pub mod money;
 
 pub use money::{Money, MoneyError, Qty, round_half_up};
