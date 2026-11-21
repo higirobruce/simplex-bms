@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
+import { addQty, toQty } from "@/lib/qty";
 import {
   requirePermission,
   handleRouteError,
@@ -27,11 +29,11 @@ export async function POST(
     }
 
     // Aggregate qty per product for stock increment.
-    const productTotals = new Map<string, number>();
+    const productTotals = new Map<string, Prisma.Decimal>();
     for (const l of note.lines) {
       productTotals.set(
         l.productId,
-        (productTotals.get(l.productId) || 0) + l.qty
+        addQty(productTotals.get(l.productId) ?? 0, l.qty)
       );
     }
 
@@ -74,7 +76,7 @@ export async function POST(
         include: { lines: true },
       });
       const fully =
-        refreshed?.lines.every((l) => l.qtyReceived >= l.qty) ?? false;
+        refreshed?.lines.every((l) => toQty(l.qtyReceived).gte(l.qty)) ?? false;
       if (fully) {
         await tx.purchaseOrder.update({
           where: { id: note.orderId },

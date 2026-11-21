@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
-import { Space_Grotesk, JetBrains_Mono } from "next/font/google";
+import { Archivo, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/lib/providers";
 import { getPlatformSettings } from "@/lib/platform";
@@ -11,14 +11,14 @@ const geistSans = localFont({
   weight: "100 900",
 });
 
-const spaceGrotesk = Space_Grotesk({
+const archivo = Archivo({
   weight: ["400", "500", "600", "700"],
   subsets: ["latin"],
   variable: "--font-display",
   display: "swap",
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const plexMono = IBM_Plex_Mono({
   weight: ["400", "500", "600"],
   subsets: ["latin"],
   variable: "--font-mono",
@@ -28,8 +28,8 @@ const jetbrainsMono = JetBrains_Mono({
 export async function generateMetadata(): Promise<Metadata> {
   const { platformName } = await getPlatformSettings();
   return {
-    title: `${platformName} — Workbench`,
-    description: "Hardware operations management",
+    title: `${platformName} — The Floor`,
+    description: "Supermarket retail operations",
   };
 }
 
@@ -41,7 +41,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${spaceGrotesk.variable} ${jetbrainsMono.variable} font-sans antialiased`}
+        className={`${geistSans.variable} ${archivo.variable} ${plexMono.variable} font-sans antialiased`}
       >
         <Providers>{children}</Providers>
       </body>

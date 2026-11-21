@@ -65,7 +65,7 @@ export default function VendorsPage() {
       <PageHeader
         eyebrow="Relationships"
         title="Vendors"
-        description="The houses you source from — payment terms, contacts, and standing."
+        description="Who you buy from — payment terms, contacts, and standing."
         actions={
           <div className="flex items-center gap-3">
             <Button variant="outline" size="lg" onClick={() => setShowImport(true)}>

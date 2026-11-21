@@ -1,0 +1,27 @@
+-- AlterTable
+ALTER TABLE "DeliveryNoteLine" ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "GoodsReceiptLine" ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "InvoiceLineItem" ALTER COLUMN "qty" SET DEFAULT 1,
+ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "Product" ALTER COLUMN "reorderLevel" SET DEFAULT 10,
+ALTER COLUMN "reorderLevel" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "PurchaseOrderLine" ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "SalesOrderLine" ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "StockLevel" ALTER COLUMN "qty" SET DEFAULT 0,
+ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+
+-- AlterTable
+ALTER TABLE "StockMovement" ALTER COLUMN "qty" SET DATA TYPE DECIMAL(12,3);
+

@@ -20,6 +20,8 @@ export async function GET(req: Request) {
         { name: { contains: search, mode: "insensitive" } },
         { sku: { contains: search, mode: "insensitive" } },
         { category: { contains: search, mode: "insensitive" } },
+        { barcode: { contains: search } },
+        { plu: { contains: search } },
       ];
     }
 
@@ -68,6 +70,10 @@ export async function POST(req: Request) {
     return NextResponse.json(product);
   } catch (error: any) {
     if (error?.code === "P2002") {
+      const target = JSON.stringify(error?.meta?.target ?? "");
+      if (target.includes("barcode")) {
+        return errorResponse("A product with this barcode already exists", 409);
+      }
       return errorResponse("A product with this SKU already exists", 409);
     }
     return handleRouteError(error);

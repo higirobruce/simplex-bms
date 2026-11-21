@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
+import { addQty, lineAmount, toQty } from "@/lib/qty";
 import {
   requirePermission,
   handleRouteError,
@@ -35,11 +37,11 @@ export async function POST(
     }
 
     // Aggregate qty per product for stock check.
-    const productTotals = new Map<string, number>();
+    const productTotals = new Map<string, Prisma.Decimal>();
     for (const l of note.lines) {
       productTotals.set(
         l.productId,
-        (productTotals.get(l.productId) || 0) + l.qty
+        addQty(productTotals.get(l.productId) ?? 0, l.qty)
       );
     }
 
@@ -54,8 +56,8 @@ export async function POST(
 
     const insufficient: string[] = [];
     for (const [productId, qtyNeeded] of Array.from(productTotals.entries())) {
-      const onHand = stockMap.get(productId) ?? 0;
-      if (onHand < qtyNeeded) {
+      const onHand = stockMap.get(productId) ?? toQty(0);
+      if (onHand.lessThan(qtyNeeded)) {
         const product = note.order.lines.find(
           (ol) => ol.productId === productId
         )?.product;
@@ -111,7 +113,7 @@ export async function POST(
         include: { lines: true },
       });
       const fully =
-        refreshed?.lines.every((l) => l.qtyDelivered >= l.qty) ?? false;
+        refreshed?.lines.every((l) => toQty(l.qtyDelivered).gte(l.qty)) ?? false;
       if (fully) {
         await tx.salesOrder.update({
           where: { id: note.orderId },
@@ -154,8 +156,8 @@ export async function POST(
         );
         const fallbackProduct = productById.get(dnLine.productId);
         const unitPrice = orderLine
-          ? Number(orderLine.unitPrice)
-          : Number(fallbackProduct?.unitPrice ?? 0);
+          ? orderLine.unitPrice
+          : fallbackProduct?.unitPrice ?? 0;
         const productName =
           orderLine?.product.name ?? fallbackProduct?.name ?? null;
         return {
@@ -163,11 +165,11 @@ export async function POST(
           description: productName,
           qty: dnLine.qty,
           unitPrice,
-          amount: dnLine.qty * unitPrice,
+          amount: lineAmount(dnLine.qty, unitPrice),
         };
       });
 
-      const subtotal = invoiceLines.reduce((s, l) => s + l.amount, 0);
+      const subtotal = addQty(...invoiceLines.map((l) => l.amount));
 
       const dueDate = new Date();
       dueDate.setDate(dueDate.getDate() + 30);

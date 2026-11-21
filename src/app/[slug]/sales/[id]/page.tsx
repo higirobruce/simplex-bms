@@ -20,6 +20,7 @@ import { PageHeader } from "@/components/page-header";
 import { formatDate } from "@/lib/utils";
 import { useMoney } from "@/lib/currency";
 import { ArrowLeft, Plus, Check, Truck, X } from "lucide-react";
+import { isFullyDelivered, remainingQty } from "@/lib/qty-display";
 
 const statusVariant: Record<string, any> = {
   DRAFT: "secondary",
@@ -207,18 +208,18 @@ export default function SalesOrderDetailPage() {
                     {l.product.sku}
                   </p>
                 </td>
-                <td className="px-6 py-4 text-right tabular">{l.qty}</td>
+                <td className="px-6 py-4 text-right tabular">{Number(l.qty)}</td>
                 <td className="px-6 py-4 text-right tabular">
                   <span
                     className={
-                      l.qtyDelivered >= l.qty
+                      isFullyDelivered(l.qtyDelivered, l.qty)
                         ? "text-success font-medium"
-                        : l.qtyDelivered > 0
+                        : Number(l.qtyDelivered) > 0
                         ? "text-warning"
                         : "text-ink-mute"
                     }
                   >
-                    {l.qtyDelivered}
+                    {Number(l.qtyDelivered)}
                   </span>
                 </td>
                 <td className="px-6 py-4 text-right tabular">
@@ -327,7 +328,7 @@ export default function SalesOrderDetailPage() {
             <Label>Lines to deliver</Label>
             <div className="space-y-2 rounded-[var(--radius)] border border-line p-3">
               {order.lines.map((l: any) => {
-                const remaining = l.qty - l.qtyDelivered;
+                const remaining = remainingQty(l.qty, l.qtyDelivered);
                 return (
                   <div
                     key={l.id}
@@ -342,13 +343,14 @@ export default function SalesOrderDetailPage() {
                     <Input
                       type="number"
                       min="0"
+                      step="any"
                       max={remaining}
                       placeholder="0"
                       value={dnLines[l.id] ?? ""}
                       onChange={(e) =>
                         setDnLines({
                           ...dnLines,
-                          [l.id]: parseInt(e.target.value) || 0,
+                          [l.id]: parseFloat(e.target.value) || 0,
                         })
                       }
                       disabled={remaining === 0}

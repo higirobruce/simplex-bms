@@ -17,8 +17,8 @@ import { Pagination } from "@/components/ui/pagination";
 import { useMoney } from "@/lib/currency";
 import { CsvImportDialog } from "@/components/csv-import-dialog";
 import { Plus, Search, Package, Pencil, Trash2, Upload } from "lucide-react";
-
-const IMPORT_TEMPLATE = "sku,name,category,unitPrice,costPrice,reorderLevel\nWGT-001,Widget,Hardware,12000,9000,10\n";
+import { sumQty } from "@/lib/qty-display";
+import { PRODUCT_IMPORT_TEMPLATE } from "@/lib/product-import-template";
 
 export default function ProductsPage() {
   const fmt = useMoney();
@@ -101,7 +101,7 @@ export default function ProductsPage() {
       ...form,
       unitPrice: parseFloat(form.unitPrice),
       costPrice: form.costPrice ? parseFloat(form.costPrice) : null,
-      reorderLevel: parseInt(form.reorderLevel),
+      reorderLevel: parseFloat(form.reorderLevel),
     });
   };
 
@@ -115,7 +115,7 @@ export default function ProductsPage() {
         unitPrice: parseFloat(editing.unitPrice),
         costPrice: editing.costPrice ? parseFloat(editing.costPrice) : null,
         category: editing.category,
-        reorderLevel: parseInt(editing.reorderLevel),
+        reorderLevel: parseFloat(editing.reorderLevel),
         description: editing.description || null,
       },
     });
@@ -128,7 +128,7 @@ export default function ProductsPage() {
       unitPrice: String(product.unitPrice),
       costPrice: product.costPrice ? String(product.costPrice) : "",
       category: product.category,
-      reorderLevel: String(product.reorderLevel),
+      reorderLevel: String(Number(product.reorderLevel)),
       description: product.description || "",
     });
   };
@@ -144,8 +144,8 @@ export default function ProductsPage() {
             Products
           </h1>
           <p className="mt-3 text-ink-soft max-w-xl leading-relaxed">
-            Curate your offering — pricing, inventory thresholds, and
-            availability across the house.
+            Your shelf catalogue — prices, reorder points, and what is
+            stocked where.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -173,7 +173,7 @@ export default function ProductsPage() {
 
       {isLoading ? (
         <div className="text-center py-16 font-mono text-[0.7rem] uppercase tracking-[0.18em] text-ink-mute">
-          Curating products…
+          Loading products…
         </div>
       ) : products?.data?.length === 0 ? (
         <div className="text-center py-20 rounded-[var(--radius-lg)] border border-dashed border-line">
@@ -183,7 +183,7 @@ export default function ProductsPage() {
           />
           <p className="font-display font-bold text-xl uppercase tracking-tight text-ink">No products yet</p>
           <p className="text-sm text-ink-soft mt-1">
-            Begin by adding your first piece.
+            Begin by adding your first product.
           </p>
         </div>
       ) : (
@@ -202,8 +202,8 @@ export default function ProductsPage() {
             </TableHeader>
             <TableBody>
               {products?.data?.map((product: any) => {
-                const totalQty = product.stockLevels?.reduce((sum: number, sl: any) => sum + sl.qty, 0) || 0;
-                const isLow = totalQty <= product.reorderLevel;
+                const totalQty = sumQty(product.stockLevels?.map((sl: any) => sl.qty) ?? []);
+                const isLow = totalQty <= Number(product.reorderLevel);
                 return (
                   <TableRow key={product.id}>
                     <TableCell className="font-mono text-xs text-ink-soft tabular">
@@ -287,7 +287,7 @@ export default function ProductsPage() {
           </div>
           <div className="space-y-2">
             <Label>Reorder Level</Label>
-            <Input type="number" value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} />
+            <Input type="number" step="any" min="0" value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} />
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <Button type="button" variant="outline" onClick={() => setShowAdd(false)}>Cancel</Button>
@@ -323,7 +323,7 @@ export default function ProductsPage() {
             </div>
             <div className="space-y-2">
               <Label>Reorder Level</Label>
-              <Input type="number" value={editing?.reorderLevel || ""} onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })} />
+              <Input type="number" step="any" min="0" value={editing?.reorderLevel || ""} onChange={(e) => setEditing({ ...editing, reorderLevel: e.target.value })} />
             </div>
           </div>
           <div className="flex justify-end gap-3 pt-2">
@@ -341,8 +341,8 @@ export default function ProductsPage() {
         onClose={() => setShowImport(false)}
         title="Import products from CSV"
         endpoint={`/api/${slug}/products/import`}
-        columns="sku, name, category, unitPrice, costPrice, reorderLevel"
-        template={IMPORT_TEMPLATE}
+        columns="sku, name, category, unitPrice, costPrice, reorderLevel, barcode, plu, taxTyCd (A, B, C or D; blank = B, 18% VAT; use A for VAT-exempt goods), department, isWeighed (true/yes/y/1 for weighed goods; blank = no), packSize, shelfLifeDays"
+        template={PRODUCT_IMPORT_TEMPLATE}
         templateName="products-template.csv"
         onImported={(s) => {
           queryClient.invalidateQueries({ queryKey: ["products", slug] });

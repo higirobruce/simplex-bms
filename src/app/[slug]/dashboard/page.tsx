@@ -41,14 +41,14 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
       {emphasis && (
         <div
           className="absolute top-0 right-0 h-1 w-full"
-          style={{ background: "var(--gold)" }}
+          style={{ background: "var(--hi-vis)" }}
         />
       )}
       <div className="relative">
         <p
           className={
             "font-mono text-[0.62rem] tracking-[0.22em] uppercase font-semibold " +
-            (emphasis ? "text-gold" : "text-ink-mute")
+            (emphasis ? "text-hi-vis" : "text-ink-mute")
           }
         >
           {label}
@@ -68,9 +68,11 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
                 className={
                   delta.positive
                     ? emphasis
-                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-gold"
+                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-hi-vis"
                       : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-success"
-                    : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-danger"
+                    : emphasis
+                      ? "inline-flex items-center gap-1 text-xs font-mono font-semibold text-surface"
+                      : "inline-flex items-center gap-1 text-xs font-mono font-semibold text-danger"
                 }
               >
                 {delta.positive ? (
@@ -163,7 +165,7 @@ export default function DashboardPage() {
             <Bell className="h-4 w-4 text-ink-soft" strokeWidth={2} />
           </button>
           <div className="h-10 px-3 rounded-[var(--radius)] border border-line bg-surface flex items-center gap-2.5">
-            <div className="stencil-block h-6 w-6 text-[0.7rem]">{initial}</div>
+            <div className="shelf-mark h-6 w-6 text-[0.7rem]">{initial}</div>
             <span className="text-sm text-ink hidden sm:inline font-medium">
               {displayName}
             </span>
@@ -193,14 +195,14 @@ export default function DashboardPage() {
       <div className="mb-8">
         <p className="font-mono text-[0.65rem] tracking-[0.22em] uppercase text-gold font-semibold mb-3 flex items-center gap-2">
           <span className="inline-block h-[2px] w-6 bg-gold" />
-          Operations Overview
+          Trading Today
         </p>
         <h1 className="font-display text-5xl sm:text-6xl font-bold tracking-tight uppercase leading-[1.0] text-ink">
-          The Workbench.
+          The Floor.
         </h1>
         <p className="mt-3 text-ink-soft max-w-xl leading-relaxed">
-          Stock on hand, money in motion, and what needs your attention this
-          shift.
+          What is on the shelf, what the tills took, and what needs you
+          before close.
         </p>
       </div>
 

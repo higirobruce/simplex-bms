@@ -90,7 +90,7 @@ export function SideNav({ slug, platformName = "Simplex" }: { slug: string; plat
         <div className="flex h-full flex-col">
           {/* Brand */}
           <div className="flex items-center gap-3 px-6 pt-7 pb-5">
-            <div className="stencil-block h-10 w-10 text-lg">
+            <div className="shelf-mark h-10 w-10 text-lg">
               ◼
             </div>
             <div className="flex flex-col leading-tight">
@@ -98,7 +98,7 @@ export function SideNav({ slug, platformName = "Simplex" }: { slug: string; plat
                 {platformName}
               </span>
               <span className="font-mono text-[0.62rem] tracking-[0.16em] uppercase text-ink-mute mt-1.5">
-                Workbench / {slug}
+                The Floor / {slug}
               </span>
             </div>
           </div>

@@ -95,47 +95,47 @@ export default function SignupPage() {
 
         <div className="relative">
           <div className="flex items-center gap-3">
-            <div className="stencil-block h-11 w-11 text-lg bg-surface/10 border border-surface/20">
+            <div className="shelf-mark h-11 w-11 text-lg bg-surface/10 border border-surface/20">
               ◼
             </div>
             <div className="leading-tight">
               <p className="font-display font-bold text-xl text-surface uppercase tracking-tight">
                 {platformName}
               </p>
-              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-gold mt-1">
-                / Workbench
+              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-hi-vis mt-1">
+                / The Floor
               </p>
             </div>
           </div>
         </div>
 
         <div className="relative max-w-lg">
-          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-gold font-semibold mb-4 flex items-center gap-2">
-            <span className="inline-block h-[2px] w-8 bg-gold" />
-            New shop setup
+          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-hi-vis font-semibold mb-4 flex items-center gap-2">
+            <span className="inline-block h-[2px] w-8 bg-hi-vis" />
+            New store setup
           </p>
           <h2 className="font-display text-5xl sm:text-6xl font-bold uppercase leading-[1.0] tracking-tight text-surface">
             Open the
             <br />
-            shop.
+            store.
           </h2>
           <p className="mt-6 text-surface/70 leading-relaxed max-w-md">
-            Set up your workspace in a few minutes — products, warehouses,
-            and the counter all wired up for you.
+            Set up your store in a few minutes — departments, shelf stock,
+            and the tills all wired up for you.
           </p>
         </div>
 
         <div className="relative grid grid-cols-3 gap-px bg-surface/10 font-mono text-[0.62rem] tracking-[0.18em] uppercase">
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
-            <p className="text-surface/40">Build</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Build</p>
             <p className="text-surface mt-0.5">v1.0</p>
           </div>
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
-            <p className="text-surface/40">Module</p>
-            <p className="text-surface mt-0.5">HW-OPS</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Module</p>
+            <p className="text-surface mt-0.5">RETAIL</p>
           </div>
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
-            <p className="text-surface/40">Status</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Status</p>
             <p className="text-success mt-0.5">● Online</p>
           </div>
         </div>
@@ -145,7 +145,7 @@ export default function SignupPage() {
       <div className="flex items-center justify-center p-6 lg:p-12">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="stencil-block h-10 w-10 text-base">◼</div>
+            <div className="shelf-mark h-10 w-10 text-base">◼</div>
             <p className="font-display font-bold text-xl text-ink uppercase tracking-tight">
               {platformName}
             </p>
@@ -156,7 +156,7 @@ export default function SignupPage() {
             Set up
           </p>
           <h1 className="font-display text-4xl font-bold uppercase tracking-tight text-ink leading-[1.05]">
-            New shop.
+            New store.
           </h1>
           <p className="mt-3 text-sm text-ink-soft">
             A few details and you&apos;re open for business.
@@ -209,7 +209,7 @@ export default function SignupPage() {
                 id="email"
                 name="email"
                 type="email"
-                placeholder="you@hardware.shop"
+                placeholder="you@supermarket.rw"
                 value={formData.email}
                 onChange={handleChange}
                 required
@@ -229,11 +229,11 @@ export default function SignupPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="orgName">Shop Name</Label>
+              <Label htmlFor="orgName">Store Name</Label>
               <Input
                 id="orgName"
                 name="orgName"
-                placeholder="Higiro Hardware Co."
+                placeholder="Kigali Fresh Market"
                 value={formData.orgName}
                 onChange={handleChange}
                 required
@@ -248,7 +248,7 @@ export default function SignupPage() {
                 <input
                   id="orgSlug"
                   name="orgSlug"
-                  placeholder="higiro-hardware"
+                  placeholder="kigali-fresh"
                   value={formData.orgSlug}
                   onChange={handleChange}
                   required
@@ -263,7 +263,7 @@ export default function SignupPage() {
               className="w-full"
               disabled={loading}
             >
-              {loading ? "Setting up…" : "Open shop"}
+              {loading ? "Setting up…" : "Open store"}
             </Button>
 
             <p className="text-center text-sm text-ink-soft pt-2 font-mono uppercase tracking-wider text-[0.7rem]">

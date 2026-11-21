@@ -22,6 +22,8 @@ const config: Config = {
           hover: "var(--accent-hover)",
           soft: "var(--accent-soft)",
         },
+        signal: "var(--signal)",
+        "hi-vis": "var(--hi-vis)",
         gold: {
           DEFAULT: "var(--gold)",
           soft: "var(--gold-soft)",
@@ -49,10 +51,10 @@ const config: Config = {
       },
       fontFamily: {
         sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-        // "serif" slot repurposed for display headings (industrial sans)
-        serif: ["var(--font-display)", "Space Grotesk", "system-ui", "sans-serif"],
-        display: ["var(--font-display)", "Space Grotesk", "system-ui", "sans-serif"],
-        mono: ["var(--font-mono)", "ui-monospace", "JetBrains Mono", "monospace"],
+        // "serif" slot repurposed for display headings (grotesque sans)
+        serif: ["var(--font-display)", "Archivo", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "Archivo", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "ui-monospace", "IBM Plex Mono", "monospace"],
       },
       borderRadius: {
         DEFAULT: "var(--radius)",
@@ -61,9 +63,9 @@ const config: Config = {
       },
       boxShadow: {
         panel:
-          "0 1px 0 rgba(21,17,13,0.02), 0 1px 2px rgba(21,17,13,0.04), 0 8px 24px -12px rgba(21,17,13,0.08)",
+          "0 1px 0 rgba(18,18,18,0.02), 0 1px 2px rgba(18,18,18,0.04), 0 8px 24px -12px rgba(18,18,18,0.08)",
         lift:
-          "0 2px 4px rgba(21,17,13,0.04), 0 16px 40px -16px rgba(21,17,13,0.16)",
+          "0 2px 4px rgba(18,18,18,0.04), 0 16px 40px -16px rgba(18,18,18,0.16)",
       },
     },
   },

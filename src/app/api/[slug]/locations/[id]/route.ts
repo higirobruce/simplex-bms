@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { addQty, toQty } from "@/lib/qty";
 import {
   requirePermission,
   handleRouteError,
@@ -96,8 +97,8 @@ export async function DELETE(
       );
     }
 
-    const totalQty = existing.stockLevels.reduce((sum, s) => sum + s.qty, 0);
-    if (totalQty > 0) {
+    const totalQty = existing.stockLevels.reduce((sum, s) => addQty(sum, s.qty), toQty(0));
+    if (totalQty.greaterThan(0)) {
       return errorResponse(
         "Cannot delete a location that still holds stock.",
         422

@@ -119,6 +119,15 @@ model Org {
   purchaseOrders  PurchaseOrder[]
   goodsReceipts   GoodsReceiptNote[]
   auditLogs       AuditLog[]
+  batches         Batch[]
+  stockWriteOffs  StockWriteOff[]
+  promotions      Promotion[]
+  priceChanges    PriceChange[]
+  lanes           Lane[]
+  shifts          Shift[]
+  sales           Sale[]
+  saleLines       SaleLine[]
+  tenders         Tender[]
   createdAt       DateTime           @default(now())
 }
 
@@ -143,11 +152,23 @@ model Product {
   category           String              @default("General")
   unitPrice          Decimal             @db.Decimal(12, 2)
   costPrice          Decimal?            @db.Decimal(12, 2)
-  reorderLevel       Int                 @default(10)
+  reorderLevel       Decimal             @db.Decimal(12, 3) @default(10)
+  barcode            String?
+  plu                String?
+  isWeighed          Boolean             @default(false)
+  taxTyCd            TaxType             @default(B)
+  department         String              @default("General")
+  packSize           String?
+  shelfLifeDays      Int?
   orgId              String
   org                Org                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
   stockLevels        StockLevel[]
   movements          StockMovement[]
+  batches            Batch[]
+  promotions         Promotion[]
+  priceChanges       PriceChange[]
+  saleLines          SaleLine[]
+  writeOffs          StockWriteOff[]
   lineItems          InvoiceLineItem[]
   salesOrderLines    SalesOrderLine[]
   deliveryNoteLines  DeliveryNoteLine[]
@@ -158,7 +179,17 @@ model Product {
   deletedAt          DateTime?
 
   @@unique([sku, orgId])
+  @@unique([barcode, orgId])
+  @@index([plu, orgId])
   @@index([orgId])
+}
+
+// RRA EBM 2.1 tax codes: A = A-EX (exempt), B = B-18.00%, C, D.
+enum TaxType {
+  A
+  B
+  C
+  D
 }
 
 model Location {
@@ -174,6 +205,8 @@ model Location {
   stockLevels   StockLevel[]
   movementsFrom StockMovement[]    @relation("from")
   movementsTo   StockMovement[]    @relation("to")
+  writeOffs     StockWriteOff[]
+  lanes         Lane[]
   deliveryNotes DeliveryNote[]
   goodsReceipts GoodsReceiptNote[]
   createdAt     DateTime           @default(now())
@@ -188,7 +221,7 @@ model StockLevel {
   product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
   locationId String
   location   Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
-  qty        Int      @default(0)
+  qty        Decimal  @db.Decimal(12, 3) @default(0)
   updatedAt  DateTime @updatedAt
 
   @@unique([productId, locationId])
@@ -203,15 +236,69 @@ model StockMovement {
   fromLocation   Location?    @relation("from", fields: [fromLocationId], references: [id])
   toLocationId   String?
   toLocation     Location?    @relation("to", fields: [toLocationId], references: [id])
-  qty            Int
+  qty            Decimal @db.Decimal(12, 3)
   type           MovementType
   reason         String?
   referenceId    String?
+  // Batch is a label on stock, not its owner: deleting a batch keeps the movement.
+  batchId        String?
+  batch          Batch?       @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  ebmSyncState   EbmSyncState @default(PENDING)
   orgId          String
   createdAt      DateTime     @default(now())
 
   @@index([orgId, productId])
   @@index([orgId, createdAt])
+  @@index([batchId])
+}
+
+enum EbmSyncState {
+  PENDING
+  SENT
+  ACKNOWLEDGED
+  FAILED
+}
+
+enum WriteOffReason {
+  EXPIRY
+  DAMAGE
+  THEFT
+  MARKDOWN
+}
+
+model Batch {
+  id         String          @id @default(cuid())
+  productId  String
+  product    Product         @relation(fields: [productId], references: [id])
+  lot        String
+  receivedAt DateTime        @default(now())
+  bestBefore DateTime?
+  orgId      String
+  org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  movements  StockMovement[]
+  writeOffs  StockWriteOff[]
+
+  @@index([orgId, productId])
+  @@index([orgId, bestBefore])
+}
+
+model StockWriteOff {
+  id         String         @id @default(cuid())
+  productId  String
+  product    Product        @relation(fields: [productId], references: [id])
+  locationId String
+  location   Location       @relation(fields: [locationId], references: [id])
+  batchId    String?
+  batch      Batch?         @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  qty        Decimal        @db.Decimal(12, 3)
+  reason     WriteOffReason
+  note       String?
+  orgId      String
+  org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdAt  DateTime       @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([orgId, productId])
 }
 
 // ===== CUSTOMERS =====
@@ -298,7 +385,7 @@ model InvoiceLineItem {
   productId   String?
   product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
   description String?
-  qty         Int      @default(1)
+  qty         Decimal  @db.Decimal(12, 3) @default(1)
   unitPrice   Decimal  @db.Decimal(12, 2)
   amount      Decimal  @db.Decimal(12, 2)
 
@@ -382,8 +469,8 @@ model SalesOrderLine {
   order        SalesOrder         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId    String
   product      Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
-  qty          Int
-  qtyDelivered Int                @default(0)
+  qty          Decimal @db.Decimal(12, 3)
+  qtyDelivered Decimal            @db.Decimal(12, 3) @default(0)
   unitPrice    Decimal            @db.Decimal(12, 2)
   amount       Decimal            @db.Decimal(12, 2)
   dnLines      DeliveryNoteLine[]
@@ -424,7 +511,7 @@ model DeliveryNoteLine {
   product     Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
   orderLineId String?
   orderLine   SalesOrderLine? @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
-  qty         Int
+  qty         Decimal @db.Decimal(12, 3)
 
   @@index([noteId])
 }
@@ -461,8 +548,8 @@ model PurchaseOrderLine {
   order       PurchaseOrder      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   productId   String
   product     Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
-  qty         Int
-  qtyReceived Int                @default(0)
+  qty         Decimal @db.Decimal(12, 3)
+  qtyReceived Decimal            @db.Decimal(12, 3) @default(0)
   unitPrice   Decimal            @db.Decimal(12, 2)
   amount      Decimal            @db.Decimal(12, 2)
   grnLines    GoodsReceiptLine[]
@@ -501,7 +588,7 @@ model GoodsReceiptLine {
   product     Product            @relation(fields: [productId], references: [id], onDelete: Restrict)
   orderLineId String?
   orderLine   PurchaseOrderLine? @relation(fields: [orderLineId], references: [id], onDelete: SetNull)
-  qty         Int
+  qty         Decimal @db.Decimal(12, 3)
 
   @@index([noteId])
 }
@@ -521,4 +608,144 @@ model AuditLog {
 
   @@index([orgId, entityType, entityId])
   @@index([orgId, createdAt])
+}
+
+// Till-level discounts (Task 12 SaleLine/Sale carry discountKind + discountValue).
+// v1 scope is price overrides and percent/amount discounts only; no multi-buy,
+// mix-and-match or loyalty-conditional pricing.
+enum DiscountKind {
+  PERCENT
+  AMOUNT
+}
+
+// A time-boxed price override. The database enforces endsAt > startsAt and, per
+// product, non-overlapping [startsAt, endsAt) ranges (see the migration).
+model Promotion {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  price     Decimal  @db.Decimal(12, 2)
+  startsAt  DateTime
+  endsAt    DateTime
+  orgId     String
+  org        Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([orgId, startsAt])
+}
+
+model PriceChange {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id])
+  oldPrice    Decimal  @db.Decimal(12, 2)
+  newPrice    Decimal  @db.Decimal(12, 2)
+  changedAt   DateTime @default(now())
+  changedById String
+  orgId       String
+  org          Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, productId, changedAt])
+}
+
+enum TenderMethod {
+  CASH
+  CREDIT
+  CASH_CREDIT
+  BANK_CHECK
+  CARD
+  MOBILE_MONEY
+}
+
+model Lane {
+  id         String    @id @default(cuid())
+  code       String
+  name       String
+  locationId String
+  location   Location  @relation(fields: [locationId], references: [id])
+  orgId      String
+  org         Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  mrc        String?
+  bhfId      String?
+  lastInvcNo Int       @default(0)
+  createdAt  DateTime  @default(now())
+  deletedAt  DateTime?
+  shifts     Shift[]
+  sales      Sale[]
+
+  @@unique([code, orgId])
+}
+
+model Shift {
+  id           String    @id @default(cuid())
+  laneId       String
+  lane         Lane      @relation(fields: [laneId], references: [id])
+  openedById   String
+  openedAt     DateTime  @default(now())
+  closedAt     DateTime?
+  openingFloat Decimal   @db.Decimal(12, 2)
+  declaredCash Decimal?  @db.Decimal(12, 2)
+  orgId        String
+  org           Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sales        Sale[]
+
+  @@index([orgId, laneId])
+}
+
+model Sale {
+  id            String        @id @default(cuid())
+  shiftId       String
+  shift         Shift         @relation(fields: [shiftId], references: [id])
+  laneId        String
+  lane          Lane          @relation(fields: [laneId], references: [id])
+  invcNo        Int
+  rcptNo        Int?
+  totAmt        Decimal       @db.Decimal(12, 2)
+  totTaxblAmt   Decimal       @db.Decimal(12, 2)
+  totTaxAmt     Decimal       @db.Decimal(12, 2)
+  buyerTin      String?
+  discountKind  DiscountKind?
+  discountValue Decimal?      @db.Decimal(12, 2)
+  voidedAt      DateTime?
+  orgId         String
+  org            Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  soldAt        DateTime      @default(now())
+  lines         SaleLine[]
+  tenders       Tender[]
+
+  @@unique([laneId, invcNo])
+  @@index([orgId, soldAt])
+  @@index([shiftId])
+}
+
+model SaleLine {
+  id            String        @id @default(cuid())
+  saleId        String
+  sale          Sale          @relation(fields: [saleId], references: [id])
+  productId     String
+  product       Product       @relation(fields: [productId], references: [id])
+  itemSeq       Int
+  qty           Decimal       @db.Decimal(12, 3)
+  prc           Decimal       @db.Decimal(12, 2)
+  taxTyCd       TaxType
+  discountKind  DiscountKind?
+  discountValue Decimal?      @db.Decimal(12, 2)
+  orgId         String
+  org            Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([saleId, itemSeq])
+}
+
+model Tender {
+  id          String       @id @default(cuid())
+  saleId      String
+  sale        Sale         @relation(fields: [saleId], references: [id])
+  pmtTyCd     TenderMethod
+  amount      Decimal      @db.Decimal(12, 2)
+  providerRef String?
+  confirmed   Boolean      @default(false)
+  orgId       String
+  org          Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([saleId])
 }

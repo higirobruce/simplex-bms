@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { subQty, toQty } from "@/lib/qty";
 import {
   getTenantContext,
   requirePermission,
@@ -92,8 +93,8 @@ export async function POST(req: Request) {
             422
           );
         }
-        const remaining = ol.qty - ol.qtyDelivered;
-        if (line.qty > remaining) {
+        const remaining = subQty(ol.qty, ol.qtyDelivered);
+        if (toQty(line.qty).greaterThan(remaining)) {
           return errorResponse(
             `Cannot deliver more than remaining (${remaining}) on order line`,
             422

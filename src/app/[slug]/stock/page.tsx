@@ -32,6 +32,7 @@ import {
   type TreeNode,
 } from "@/components/warehouse-tree";
 import { Warehouse, Plus, Search, Pencil, Trash2, Upload } from "lucide-react";
+import { parseQtyInput } from "@/lib/qty-display";
 
 const STOCK_TEMPLATE = "sku,location,qty\nLAP-001,Main Warehouse,10\n";
 export default function InventoryPage() {
@@ -156,7 +157,7 @@ export default function InventoryPage() {
       <PageHeader
         eyebrow="Workspace"
         title="Inventory"
-        description="Stock by warehouse — every piece accounted for."
+        description="Stock by warehouse — every unit accounted for."
         actions={
           <>
             <Button
@@ -459,10 +460,12 @@ export default function InventoryPage() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            adjust.mutate({
-              ...adjustForm,
-              qty: parseInt(adjustForm.qty),
-            });
+            const qty = parseQtyInput(adjustForm.qty);
+            if (qty === null) {
+              toast.error("Enter a quantity, e.g. 10, 2.5 or -0.734");
+              return;
+            }
+            adjust.mutate({ ...adjustForm, qty });
           }}
           className="space-y-4"
         >
@@ -504,6 +507,7 @@ export default function InventoryPage() {
               <Label>Qty (+ add, − remove)</Label>
               <Input
                 type="number"
+                step="any"
                 value={adjustForm.qty}
                 onChange={(e) =>
                   setAdjustForm({ ...adjustForm, qty: e.target.value })

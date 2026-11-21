@@ -1,3 +1,4 @@
+import { addQty, lineAmount } from "@/lib/qty";
 import { prisma } from "@/lib/prisma";
 import {
   getTenantContext,
@@ -77,7 +78,7 @@ export async function POST(req: Request) {
       return errorResponse("One or more products not found", 404);
     }
 
-    const subtotal = lines.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+    const subtotal = addQty(...lines.map((l) => lineAmount(l.qty, l.unitPrice)));
 
     const order = await prisma.$transaction(async (tx) => {
       const orderNo = await nextDocNo(tx, orgId, "PO", "PurchaseOrder", "PO");
@@ -96,7 +97,7 @@ export async function POST(req: Request) {
               productId: l.productId,
               qty: l.qty,
               unitPrice: l.unitPrice,
-              amount: l.qty * l.unitPrice,
+              amount: lineAmount(l.qty, l.unitPrice),
             })),
           },
         },

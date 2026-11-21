@@ -1,3 +1,4 @@
+import { addQty, lineAmount } from "@/lib/qty";
 import { prisma } from "@/lib/prisma";
 import { requirePermission, getTenantContext, handleRouteError, errorResponse } from "@/lib/api";
 import { InvoiceCreateSchema } from "@/lib/validations";
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
     const customer = await prisma.customer.findFirst({ where: { id: customerId, orgId, deletedAt: null } });
     if (!customer) return errorResponse("Customer not found", 404);
 
-    const subtotal = lineItems.reduce((sum, item) => sum + item.qty * item.unitPrice, 0);
+    const subtotal = addQty(...lineItems.map((item) => lineAmount(item.qty, item.unitPrice)));
 
     const invoice = await prisma.$transaction(async (tx) => {
       const seq = await tx.$queryRaw<[{ lastSeq: number }]>`
@@ -80,7 +81,7 @@ export async function POST(req: Request) {
               productId: item.productId || null,
               description: item.description || null,
               qty: item.qty, unitPrice: item.unitPrice,
-              amount: item.qty * item.unitPrice,
+              amount: lineAmount(item.qty, item.unitPrice),
             })),
           },
         },

@@ -1,4 +1,32 @@
 import { z } from "zod";
+import { toQty } from "@/lib/qty";
+
+// ===== Quantities (Decimal(12,3)) =====
+// Accepts a JSON number or a decimal string; yields a Prisma.Decimal.
+// Excess precision is rejected, not rounded, so the caller finds out.
+const QTY_MESSAGE = "Quantity must be positive, to at most 3 decimal places";
+const SIGNED_QTY_MESSAGE = "Quantity must be non-zero, to at most 3 decimal places";
+
+function qtySchema(message: string, accept: (d: ReturnType<typeof toQty>) => boolean) {
+  return z.union([z.string().trim().min(1), z.number().finite()], { message }).transform((v, ctx) => {
+    try {
+      const d = toQty(v);
+      if (d.isFinite() && d.decimalPlaces() <= 3 && accept(d)) return d;
+    } catch {
+      // fall through to the issue below
+    }
+    ctx.addIssue({ code: "custom", message });
+    return z.NEVER;
+  });
+}
+
+export const QtySchema = qtySchema(QTY_MESSAGE, (d) => d.greaterThan(0));
+export const SignedQtySchema = qtySchema(SIGNED_QTY_MESSAGE, (d) => !d.isZero());
+// A threshold rather than a line quantity, so zero is allowed.
+export const NonNegativeQtySchema = qtySchema(
+  "Must be zero or more, to at most 3 decimal places",
+  (d) => !d.isNegative()
+);
 
 // ===== Org =====
 export const OrgPatchSchema = z.object({
@@ -58,6 +86,14 @@ export const UserPatchSchema = z.object({
 });
 
 // ===== Products =====
+// RRA EBM 2.1 tax codes: A = A-EX (exempt), B = B-18.00%, C, D.
+export const TaxTypeSchema = z.enum(["A", "B", "C", "D"]);
+// Optional trimmed text; a blank string becomes null so it never collides in a unique index.
+const optionalTrimmed = z.string().trim().transform((v) => (v === "" ? null : v)).nullable().optional();
+
+// 1..3650 days (ten years) keeps the value far inside Postgres INTEGER.
+const ShelfLifeSchema = z.number().int().min(1, "Shelf life must be a positive number of days").max(3650, "Shelf life cannot exceed 3650 days");
+
 export const ProductCreateSchema = z.object({
   sku: z.string().min(1, "SKU is required"),
   name: z.string().min(1, "Product name is required"),
@@ -65,7 +101,14 @@ export const ProductCreateSchema = z.object({
   unitPrice: z.number().positive("Unit price must be positive"),
   costPrice: z.number().positive("Cost price must be positive").optional().nullable(),
   category: z.string().default("General"),
-  reorderLevel: z.number().int().min(0).default(10),
+  reorderLevel: NonNegativeQtySchema.default(toQty(10)),
+  barcode: optionalTrimmed,
+  plu: optionalTrimmed,
+  isWeighed: z.boolean().default(false),
+  taxTyCd: TaxTypeSchema.default("B"),
+  department: z.string().trim().min(1).default("General"),
+  packSize: optionalTrimmed,
+  shelfLifeDays: ShelfLifeSchema.optional().nullable(),
 });
 
 export const ProductPatchSchema = z.object({
@@ -74,7 +117,14 @@ export const ProductPatchSchema = z.object({
   unitPrice: z.number().positive().optional(),
   costPrice: z.number().positive().optional().nullable(),
   category: z.string().optional(),
-  reorderLevel: z.number().int().min(0).optional(),
+  reorderLevel: NonNegativeQtySchema.optional(),
+  barcode: optionalTrimmed,
+  plu: optionalTrimmed,
+  isWeighed: z.boolean().optional(),
+  taxTyCd: TaxTypeSchema.optional(),
+  department: z.string().trim().min(1).optional(),
+  packSize: optionalTrimmed,
+  shelfLifeDays: ShelfLifeSchema.optional().nullable(),
 });
 // SKU excluded — immutable after creation
 
@@ -87,7 +137,20 @@ export const ProductImportRowSchema = z.object({
   category: z.preprocess(blankToUndef, z.string().trim().default("General")),
   unitPrice: z.coerce.number().positive("Unit price must be positive"),
   costPrice: z.preprocess(blankToUndef, z.coerce.number().positive().optional()),
-  reorderLevel: z.preprocess(blankToUndef, z.coerce.number().int().min(0).default(10)),
+  reorderLevel: z.preprocess(blankToUndef, NonNegativeQtySchema.default(toQty(10))),
+  barcode: optionalTrimmed,
+  plu: optionalTrimmed,
+  isWeighed: z.preprocess(
+    (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : ["true", "yes", "y", "1"].includes(v.trim().toLowerCase())) : blankToUndef(v)),
+    z.boolean().default(false)
+  ),
+  taxTyCd: z.preprocess(
+    (v) => (typeof v === "string" ? (v.trim() === "" ? undefined : v.trim().toUpperCase()) : blankToUndef(v)),
+    TaxTypeSchema.default("B")
+  ),
+  department: z.preprocess(blankToUndef, z.string().trim().min(1).default("General")),
+  packSize: optionalTrimmed,
+  shelfLifeDays: z.preprocess(blankToUndef, z.coerce.number().pipe(ShelfLifeSchema).optional()),
 });
 
 // Generic envelope for any CSV import — an array of raw row objects.
@@ -108,7 +171,7 @@ export const CustomerImportRowSchema = z.object({
 export const StockImportRowSchema = z.object({
   sku: z.string().trim().min(1, "SKU is required"),
   location: z.string().trim().min(1, "Location is required"),
-  qty: z.coerce.number().int().positive("Qty must be a positive whole number"),
+  qty: QtySchema,
 });
 
 export const VendorImportRowSchema = z.object({
@@ -184,7 +247,7 @@ export const ExpensePatchSchema = z.object({
 const InvoiceLineItemSchema = z.object({
   productId: z.string().optional().nullable(),
   description: z.string().optional().nullable(),
-  qty: z.number().int().min(1, "Quantity must be at least 1"),
+  qty: QtySchema,
   unitPrice: z.number().min(0, "Unit price cannot be negative"),
 });
 
@@ -211,7 +274,7 @@ export const PaymentCreateSchema = z.object({
 export const StockAdjustSchema = z.object({
   productId: z.string().min(1, "Product is required"),
   locationId: z.string().min(1, "Location is required"),
-  qty: z.number().int().refine((v) => v !== 0, "Quantity cannot be zero"),
+  qty: SignedQtySchema,
   type: z.enum(["RECEIPT", "ISSUE", "TRANSFER", "ADJUSTMENT", "RETURN"]),
   reason: z.string().optional().nullable(),
 });
@@ -249,7 +312,7 @@ export const LocationPatchSchema = z.object({
 // ===== Sales =====
 const OrderLineSchema = z.object({
   productId: z.string().min(1, "Product is required"),
-  qty: z.number().int().positive("Qty must be positive"),
+  qty: QtySchema,
   unitPrice: z.number().min(0, "Unit price cannot be negative"),
 });
 
@@ -270,7 +333,7 @@ export const SalesOrderPatchSchema = z.object({
 const DeliveryNoteLineSchema = z.object({
   productId: z.string().min(1),
   orderLineId: z.string().optional().nullable(),
-  qty: z.number().int().positive(),
+  qty: QtySchema,
 });
 
 export const DeliveryNoteCreateSchema = z.object({
@@ -298,7 +361,7 @@ export const PurchaseOrderPatchSchema = z.object({
 const GoodsReceiptLineSchema = z.object({
   productId: z.string().min(1),
   orderLineId: z.string().optional().nullable(),
-  qty: z.number().int().positive(),
+  qty: QtySchema,
 });
 
 export const GoodsReceiptCreateSchema = z.object({

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { requirePermission, handleRouteError, errorResponse } from "@/lib/api";
 import { StockAdjustSchema } from "@/lib/validations";
+import { addQty, formatQty, isNegative, toQty } from "@/lib/qty";
 import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
@@ -31,12 +32,12 @@ export async function POST(req: Request) {
         where: { productId_locationId: { productId, locationId } },
       });
 
-      const currentQty = current?.qty ?? 0;
-      const newQty = currentQty + qty;
+      const currentQty = toQty(current?.qty ?? 0);
+      const newQty = addQty(currentQty, qty);
 
-      if (newQty < 0) {
+      if (isNegative(newQty)) {
         throw new Error(
-          `Insufficient stock. Available: ${currentQty}, requested: ${Math.abs(qty)}`
+          `Insufficient stock. Available: ${formatQty(currentQty, product.isWeighed)}, requested: ${formatQty(qty.abs(), product.isWeighed)}`
         );
       }
 
@@ -49,9 +50,9 @@ export async function POST(req: Request) {
       const movement = await tx.stockMovement.create({
         data: {
           productId,
-          toLocationId: qty > 0 ? locationId : null,
-          fromLocationId: qty < 0 ? locationId : null,
-          qty: Math.abs(qty),
+          toLocationId: qty.greaterThan(0) ? locationId : null,
+          fromLocationId: qty.isNegative() ? locationId : null,
+          qty: qty.abs(),
           type,
           reason: reason || null,
           orgId,

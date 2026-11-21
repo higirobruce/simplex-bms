@@ -2,45 +2,47 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== WORKSHOP STEEL — Hardware Operations ===== */
+/* ===== SHELF EDGE — Supermarket Retail ===== */
 :root {
-  /* Surfaces — concrete + brushed paper */
-  --bg: #ECEAE3;            /* concrete canvas */
-  --bg-tint: #DCD9CF;       /* deeper edge */
+  /* Surfaces — shelf-label paper */
+  --bg: #F3F3EF;            /* canvas */
+  --bg-tint: #E8E8E2;       /* deeper edge */
   --surface: #FFFFFF;       /* primary panel */
-  --surface-2: #F4F2EC;     /* paper / brushed */
-  --surface-3: #E8E5DD;     /* subtle wash */
+  --surface-2: #F8F8F5;     /* paper wash */
+  --surface-3: #E8E8E2;     /* subtle wash */
 
-  /* Ink — graphite */
-  --ink: #1A1B1E;           /* graphite */
-  --ink-soft: #4F535A;      /* steel */
-  --ink-mute: #8E939B;      /* light steel */
+  /* Ink — near-black */
+  --ink: #121212;
+  --ink-soft: #4A4A44;
+  --ink-mute: #62625B;
 
-  /* Accents — graphite primary, workshop orange "gold" slot */
-  --accent: #1A1B1E;        /* graphite primary */
-  --accent-hover: #2D3035;
-  --accent-soft: #E0DFDA;   /* steel wash */
-  --gold: #E8651F;          /* WORKSHOP ORANGE */
-  --gold-soft: #FAE3D2;     /* orange wash */
+  /* Accents — ink primary, price-tag red "gold" slot */
+  --accent: #121212;        /* ink primary */
+  --accent-hover: #2B2B28;
+  --accent-soft: #E8E8E2;
+  --signal: #E01B20;        /* signal red: fills and white-text chips */
+  --hi-vis: #FFD400;        /* hi-vis yellow: pills and one tile, only behind dark text */
+  --gold: #C2141A;          /* legacy name: text-weight signal red, AA at 10px */
+  --gold-soft: #FAE3E4;     /* signal wash */
 
-  /* Lines — cool steel */
-  --line: #D2CFC6;
-  --line-strong: #B6B2A8;
+  /* Lines */
+  --line: #D7D7D2;
+  --line-strong: #8A8A82;
 
-  /* Status — hi-vis */
-  --success: #1F6B3A;       /* OK green */
+  /* Status */
+  --success: #1F6B3A;
   --success-soft: #DDEDDF;
-  --warning: #C77A0F;       /* hi-vis amber */
+  --warning: #8E560A;
   --warning-soft: #F8E5C5;
-  --danger: #B23F2E;        /* alert red */
-  --danger-soft: #F5DDD7;
+  --danger: #C2141A;        /* same text-weight red as gold */
+  --danger-soft: #FAE3E4;
   --info: #2C547D;
   --info-soft: #DCE5EE;
 
-  /* Sharp corners */
-  --radius: 4px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  /* Near-square corners */
+  --radius: 2px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
 }
 
 html,
@@ -56,7 +58,7 @@ body {
 
 /* "font-serif" Tailwind class is repurposed as the display heading font */
 .font-serif {
-  font-family: var(--font-display), "Space Grotesk", system-ui, sans-serif;
+  font-family: var(--font-display), "Archivo", system-ui, sans-serif;
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -65,7 +67,7 @@ body {
 .font-mono,
 code,
 .tabular-mono {
-  font-family: var(--font-mono), ui-monospace, "JetBrains Mono", "Menlo",
+  font-family: var(--font-mono), ui-monospace, "IBM Plex Mono", "Menlo",
     monospace;
 }
 
@@ -74,8 +76,8 @@ code,
     border-color: var(--line);
   }
   ::selection {
-    background: var(--gold);
-    color: #ffffff;
+    background: var(--signal);
+    color: var(--surface);
   }
   .tabular {
     font-variant-numeric: tabular-nums;
@@ -84,18 +86,16 @@ code,
 }
 
 @layer components {
+  /* Flat white label card: a price label has no depth */
   .panel {
     background: var(--surface);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius);
     border: 1px solid var(--line);
-    box-shadow:
-      0 1px 0 rgba(26, 27, 30, 0.02),
-      0 1px 2px rgba(26, 27, 30, 0.04);
   }
 
   .panel-flat {
     background: var(--surface);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius);
     border: 1px solid var(--line);
   }
 
@@ -103,68 +103,71 @@ code,
     border-color: var(--line);
   }
 
-  /* Industrial pill — sharp-ish corners, dot indicator */
-  .pill {
+  /* The motif: white card, heavy ink bottom rule, heavy tabular numerals */
+  .price-card {
+    background: var(--surface);
+    color: var(--ink);
+    border-radius: var(--radius);
+    border: 1px solid var(--line);
+    border-bottom: 4px solid var(--ink);
+    font-family: var(--font-mono), ui-monospace, "Menlo", monospace;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    font-weight: 700;
+  }
+
+  /* Department colour chip: set --dept inline on the element */
+  .dept-chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.2rem 0.55rem;
-    border-radius: var(--radius);
+    padding: 0.2rem 0.5rem;
+    border-radius: 0;
+    background: var(--dept, var(--ink));
+    color: var(--surface);
     font-size: 0.7rem;
-    font-weight: 600;
+    font-weight: 700;
     line-height: 1;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
-  .pill::before {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-radius: 1px;
-    background: currentColor;
-    opacity: 0.95;
+
+  /* Solid uppercase label */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius);
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
   }
 
-  /* Stencil block — used for brand mark */
-  .stencil-block {
+  /* Brand mark: flat ink block */
+  .shelf-mark {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background:
-      linear-gradient(135deg, var(--ink) 0%, #2D3035 100%);
+    background: var(--ink);
     color: var(--surface);
     font-family: var(--font-display), system-ui, sans-serif;
     font-weight: 700;
     letter-spacing: -0.02em;
     border-radius: var(--radius);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
-  /* Brushed-metal subtle texture for emphasis cards */
+  /* Dark hero panel on auth pages: flat ink, no texture */
   .brushed {
-    background:
-      linear-gradient(180deg, #1F2125 0%, #15161A 100%);
+    background: var(--ink);
     color: var(--surface);
     border-radius: var(--radius-lg);
-    border: 1px solid #0E0F12;
+    border: 1px solid var(--ink);
     position: relative;
     overflow: hidden;
   }
-  .brushed::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background-image: repeating-linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0.018) 0px,
-      rgba(255, 255, 255, 0.018) 1px,
-      transparent 1px,
-      transparent 2px
-    );
-    pointer-events: none;
-  }
 
-  /* Eyebrow / caption — uppercase technical label */
+  /* Eyebrow / caption: uppercase label */
   .eyebrow {
     font-size: 0.65rem;
     font-weight: 600;

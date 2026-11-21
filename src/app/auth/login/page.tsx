@@ -64,50 +64,49 @@ export default function LoginPage() {
 
         <div className="relative">
           <div className="flex items-center gap-3">
-            <div className="stencil-block h-11 w-11 text-lg bg-surface/10 border border-surface/20">
+            <div className="shelf-mark h-11 w-11 text-lg bg-surface/10 border border-surface/20">
               ◼
             </div>
             <div className="leading-tight">
               <p className="font-display font-bold text-xl text-surface uppercase tracking-tight">
                 {platformName}
               </p>
-              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-gold mt-1">
-                / Workbench
+              <p className="font-mono text-[0.6rem] tracking-[0.22em] uppercase text-hi-vis mt-1">
+                / The Floor
               </p>
             </div>
           </div>
         </div>
 
         <div className="relative max-w-lg">
-          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-gold font-semibold mb-4 flex items-center gap-2">
-            <span className="inline-block h-[2px] w-8 bg-gold" />
-            Hardware Operations
+          <p className="font-mono text-[0.7rem] tracking-[0.22em] uppercase text-hi-vis font-semibold mb-4 flex items-center gap-2">
+            <span className="inline-block h-[2px] w-8 bg-hi-vis" />
+            Supermarket Retail
           </p>
           <h2 className="font-display text-5xl sm:text-6xl font-bold uppercase leading-[1.0] tracking-tight text-surface">
-            Stock.
+            Scan.
             <br />
             Sell.
             <br />
             Restock.
           </h2>
           <p className="mt-6 text-surface/70 leading-relaxed max-w-md">
-            A no-nonsense system for hardware shops — inventory across
-            warehouses, sales orders, goods receipts, and the daily counter
-            work.
+            Everything a supermarket runs on — shelf stock, the tills,
+            suppliers, and what today actually took.
           </p>
         </div>
 
         <div className="relative grid grid-cols-3 gap-px bg-surface/10 font-mono text-[0.62rem] tracking-[0.18em] uppercase">
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
-            <p className="text-surface/40">Build</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Build</p>
             <p className="text-surface mt-0.5">v1.0</p>
           </div>
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
-            <p className="text-surface/40">Module</p>
-            <p className="text-surface mt-0.5">HW-OPS</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Module</p>
+            <p className="text-surface mt-0.5">RETAIL</p>
           </div>
-          <div className="bg-[#1A1B1E] px-3 py-2.5">
-            <p className="text-surface/40">Status</p>
+          <div className="bg-surface/10 px-3 py-2.5">
+            <p className="text-surface/60">Status</p>
             <p className="text-success mt-0.5">● Online</p>
           </div>
         </div>
@@ -117,7 +116,7 @@ export default function LoginPage() {
       <div className="flex items-center justify-center p-6 lg:p-12">
         <div className="w-full max-w-sm">
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="stencil-block h-10 w-10 text-base">◼</div>
+            <div className="shelf-mark h-10 w-10 text-base">◼</div>
             <p className="font-display font-bold text-xl text-ink uppercase tracking-tight">
               {platformName}
             </p>
@@ -128,10 +127,10 @@ export default function LoginPage() {
             Sign in
           </p>
           <h1 className="font-display text-4xl font-bold uppercase tracking-tight text-ink leading-[1.05]">
-            Workbench access.
+            Open the floor.
           </h1>
           <p className="mt-3 text-sm text-ink-soft">
-            Enter your credentials to clock in.
+            Enter your credentials to start a shift.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-8 space-y-5">
@@ -145,7 +144,7 @@ export default function LoginPage() {
               <Input
                 id="email"
                 type="email"
-                placeholder="you@hardware.shop"
+                placeholder="you@supermarket.rw"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
@@ -169,7 +168,7 @@ export default function LoginPage() {
               className="w-full"
               disabled={loading}
             >
-              {loading ? "Authenticating…" : "Clock in"}
+              {loading ? "Authenticating…" : "Start shift"}
             </Button>
 
             {platform?.allowSignups !== false && (
@@ -179,7 +178,7 @@ export default function LoginPage() {
                   href="/auth/signup"
                   className="text-gold font-semibold hover:underline underline-offset-4"
                 >
-                  Set up shop
+                  Set up store
                 </Link>
               </p>
             )}
