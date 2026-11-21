@@ -152,6 +152,12 @@ pub enum LaneError {
         "The VSDC has already recorded this sale, so it cannot be cancelled. Press pay to finish it."
     )]
     AlreadyRecorded,
+    #[error(
+        "A sale from a previous session is still outstanding with the VSDC. It cannot be retried safely; ask a supervisor to cancel it before trading continues."
+    )]
+    OutstandingSale,
+    #[error("There is no completed sale to move on from.")]
+    NotSettled,
     #[error("The lane is not stopped.")]
     NotStopped,
     #[error("There is no pending sale to cancel.")]
@@ -164,6 +170,9 @@ struct Pending {
     handle: SaleHandle,
     /// Set once the VSDC has answered, so a retry never asks it again.
     receipt: Option<VsdcReceipt>,
+    /// Found in the store at startup rather than begun this session. It is
+    /// never retried (see `LaneState::new`), only cancelled.
+    recovered: bool,
 }
 
 pub struct LaneState {
@@ -179,16 +188,58 @@ pub struct LaneState {
 
 impl LaneState {
     pub async fn new(store: Store, cfg: LaneConfig) -> LaneState {
+        // A sale left `AwaitingVsdc` by a previous session (a crash between a
+        // rejection and its retry) holds an invoice number, and the store
+        // refuses to issue another while it exists: without this the till
+        // would be wedged for good. The store has no "sent to the VSDC"
+        // marker, so we cannot tell whether the VSDC received it; re-sending
+        // risks a 994 or a duplicate fiscal record. So it is held as
+        // `recovered` and can only be CANCELLED (`abandon_pending`), never
+        // retried. Cancelling may leave a record at RRA with no local
+        // counterpart. That is a reconciliation problem for Phase 3
+        // (`Store::reconcile_counter_from_vsdc`), not illegal trading, and it
+        // is strictly better than a till nobody can use.
+        let mut pending = None;
+        let mut notice = Notice::None;
+        match store.pending_sale(&cfg.dvc_srl_no, cfg.counter).await {
+            Ok(Some(p)) => {
+                pending = Some(Pending {
+                    handle: SaleHandle {
+                        id: p.id,
+                        invc_no: p.invc_no,
+                    },
+                    receipt: None,
+                    recovered: true,
+                });
+                notice = Notice::Problem(LaneError::OutstandingSale.to_string());
+            }
+            Ok(None) => {}
+            Err(e) => notice = Notice::Problem(LaneError::Store(e).to_string()),
+        }
         LaneState {
             store,
             cfg,
             buffer: String::new(),
-            notice: Notice::None,
+            notice,
             screen: Screen::Selling,
             basket: Basket::new(),
             tenders: TenderSet::default(),
-            pending: None,
+            pending,
         }
+    }
+
+    /// The next customer: leaves `Settled`, clearing the finished basket and
+    /// tenders so a fresh sale (and the next invoice number) can begin.
+    pub fn next_customer(&mut self) -> Result<(), LaneError> {
+        self.buffer.clear();
+        if !matches!(self.screen, Screen::Settled { .. }) {
+            return self.refuse(LaneError::NotSettled);
+        }
+        self.basket = Basket::new();
+        self.tenders = TenderSet::default();
+        self.screen = Screen::Selling;
+        self.notice = Notice::None;
+        Ok(())
     }
 
     /// A character from the wedge. Starting a new scan clears the previous notice.
@@ -318,9 +369,12 @@ impl LaneState {
             None => Err(LaneError::NothingPending),
             Some(p) if p.receipt.is_some() => Err(LaneError::AlreadyRecorded),
             Some(p) => {
-                self.store
-                    .abandon_sale(&p.handle, "cancelled by supervisor after VSDC rejection")
-                    .await?;
+                let reason = if p.recovered {
+                    "cancelled at startup: left AwaitingVsdc by a previous session; not known whether the VSDC received it, so not retried (may leave an RRA record with no local counterpart; reconcile in Phase 3)"
+                } else {
+                    "cancelled by supervisor after VSDC rejection"
+                };
+                self.store.abandon_sale(&p.handle, reason).await?;
                 self.pending = None;
                 Ok(())
             }
@@ -332,10 +386,11 @@ impl LaneState {
         if self.screen != Screen::Selling {
             return Err(LaneError::NotSelling);
         }
-        if self.pending.is_some() {
-            return Err(LaneError::SalePending);
+        match &self.pending {
+            Some(p) if p.recovered => Err(LaneError::OutstandingSale),
+            Some(_) => Err(LaneError::SalePending),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     async fn try_settle(
@@ -346,6 +401,9 @@ impl LaneState {
     ) -> Result<Settled, LaneError> {
         if self.screen != Screen::Selling {
             return Err(LaneError::NotSelling);
+        }
+        if self.pending.as_ref().is_some_and(|p| p.recovered) {
+            return Err(LaneError::OutstandingSale);
         }
         if self.basket.is_empty() {
             return Err(LaneError::EmptyBasket);
@@ -373,6 +431,7 @@ impl LaneState {
                 Pending {
                     handle,
                     receipt: None,
+                    recovered: false,
                 }
             }
         };
@@ -1104,6 +1163,81 @@ mod tests {
         f.mode = SimMode::Succeed;
         l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
         assert!(l.settle(&mut f, &mut p, &mut d).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn the_next_customer_rings_a_second_sale_on_the_next_number() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        let mut f = fiscal(SimMode::Succeed);
+        l.settle(&mut f, &mut p, &mut d).await.unwrap().unwrap();
+        assert_eq!(printed_invc(&p), "1");
+        // Terminal until told otherwise, and only from Settled.
+        scan(&mut l, EAN).await.unwrap();
+        assert_eq!(l.basket().len(), 1);
+
+        l.next_customer().unwrap();
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert!(l.basket().is_empty());
+        assert_eq!(l.tender_total(), Some(Money::zero()));
+
+        scan(&mut l, EAN).await.unwrap();
+        assert_eq!(l.basket().len(), 1);
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        p.written.clear();
+        l.settle(&mut f, &mut p, &mut d).await.unwrap().unwrap();
+        assert_eq!(printed_invc(&p), "2");
+        assert_eq!(d.kicks, 2);
+
+        // Not allowed mid-sale.
+        l.next_customer().unwrap();
+        l.next_customer().unwrap();
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+        assert_eq!(l.screen(), &Screen::Selling);
+    }
+
+    #[tokio::test]
+    async fn a_sale_left_pending_by_a_crash_is_detected_and_can_only_be_cancelled() {
+        let mut l = lane_with_item().await;
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(
+            &mut fiscal(SimMode::Reject("894 No".into())),
+            &mut p,
+            &mut d,
+        )
+        .await
+        .unwrap();
+        assert_eq!(awaiting(&l).await, Some(1));
+        let (store, cfg) = (l.store.clone(), l.cfg.clone());
+        drop(l); // the "crash"
+
+        let mut l2 = LaneState::new(store, cfg).await;
+        match l2.notice() {
+            Notice::Problem(m) => assert!(m.contains("previous session"), "{m}"),
+            n => panic!("expected Problem, got {n:?}"),
+        }
+        // Frozen, and never retried: settle does not reach the VSDC.
+        scan(&mut l2, EAN).await.unwrap();
+        assert!(l2.basket().is_empty());
+        let r = l2
+            .settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap();
+        assert!(r.is_none());
+        assert!(p.written.is_empty());
+        assert_eq!(awaiting(&l2).await, Some(1));
+
+        l2.abandon_pending().await.unwrap();
+        assert_eq!(awaiting(&l2).await, None);
+        scan(&mut l2, EAN).await.unwrap();
+        l2.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        l2.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(printed_invc(&p), "2", "the retired number is not reused");
     }
 
     #[tokio::test]
