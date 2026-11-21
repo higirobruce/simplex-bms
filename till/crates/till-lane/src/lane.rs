@@ -2011,12 +2011,14 @@ mod tests {
                 "Internal Data",
                 "Receipt Signature",
                 "RECEIPT NUMBER",
-                "MRC:",
                 "THANK YOU",
             ] {
                 assert!(!t.contains(banned), "{banned} in\n{t}");
             }
             assert!(t.contains("NOT A TAX RECEIPT"));
+            // The MRC is required content (CIS 18.1.4/19.1.4), not part of the
+            // SDC block: matched on its value, so punctuation may change.
+            assert!(t.contains("SIM_MRC"), "MRC value in\n{t}");
         }
     }
 
