@@ -177,6 +177,13 @@ fn migrator() -> Migrator {
             Cow::Borrowed(include_str!("../migrations/0002_shift.sql")),
             false,
         ),
+        Migration::new(
+            3,
+            Cow::Borrowed("sync"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0003_sync.sql")),
+            false,
+        ),
     ]);
     m
 }
@@ -724,7 +731,7 @@ mod tests {
             "select name, sql from sqlite_master where name in ('sale_line','sale_tender','outbound','outbound_unsent','outbound_sale') order by name",
         ).fetch_all(&p).await.unwrap();
 
-        migrator().run(&p).await.unwrap();
+        migrator_upto(2).run(&p).await.unwrap();
         let fk: i64 = sqlx::query_scalar("pragma foreign_keys")
             .fetch_one(&p)
             .await
@@ -830,6 +837,190 @@ mod tests {
                 .await
                 .unwrap();
         assert!(violations.is_empty());
+    }
+
+    async fn seed_demo_sale(p: &SqlitePool, shift: &str, sale: &str, no: i64) {
+        sqlx::query("insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, created_at) values (?, ?, 'd1', 'SaleInvc', '00', ?, 'Confirmed', '1.00', '1.00', '0.00', '01', '2026-11-20T08:00:00Z')")
+            .bind(sale).bind(shift).bind(no).execute(p).await.unwrap();
+        sqlx::query("insert into sale_line (sale_id, item_seq, item_nm, qty, prc, sply_amt, dc_rt, dc_amt, taxbl_amt, tax_amt, tax_ty_cd) values (?,1,'x','1','1','1','0','0','1','0','B')")
+            .bind(sale).execute(p).await.unwrap();
+        sqlx::query(
+            "insert into sale_tender (sale_id, seq, pmt_ty_cd, amount) values (?,1,'01','1')",
+        )
+        .bind(sale)
+        .execute(p)
+        .await
+        .unwrap();
+        sqlx::query("insert into outbound (kind, sale_id, payload, created_at) values ('sale', ?, '{}', '2026-11-20T08:01:00Z')")
+            .bind(sale).execute(p).await.unwrap();
+    }
+
+    async fn count(p: &SqlitePool, table: &str) -> i64 {
+        sqlx::query_scalar(&format!("select count(*) from {table}"))
+            .fetch_one(p)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_cashier_table_exists_and_is_empty_on_a_fresh_database() {
+        let p = raw_pool().await;
+        migrator().run(&p).await.unwrap();
+        assert_eq!(count(&p, "cashier").await, 0);
+        let cols: Vec<(String, String, i64)> = columns(&p, "cashier")
+            .await
+            .into_iter()
+            .map(|(n, t, nn, _, _)| (n, t, nn))
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                ("active".to_string(), "INTEGER".to_string(), 1),
+                ("id".to_string(), "TEXT".to_string(), 0),
+                ("name".to_string(), "TEXT".to_string(), 1),
+                ("pin_hash".to_string(), "TEXT".to_string(), 1),
+                ("synced_at".to_string(), "TEXT".to_string(), 1),
+            ]
+        );
+        let bad = sqlx::query("insert into cashier values ('u1','n','h',2,'t')")
+            .execute(&p)
+            .await;
+        assert!(bad.is_err(), "active is 0 or 1");
+    }
+
+    #[tokio::test]
+    async fn product_id_is_nullable_so_existing_lines_survive() {
+        let p = raw_pool().await;
+        migrator_upto(2).run(&p).await.unwrap();
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 1)")
+            .execute(&p)
+            .await
+            .unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh','d1','alice','2026-11-20T07:00:00Z','0.00')")
+            .execute(&p).await.unwrap();
+        seed_demo_sale(&p, "sh", "s1", 1).await;
+        migrator().run(&p).await.unwrap();
+
+        let pid = columns(&p, "sale_line")
+            .await
+            .into_iter()
+            .find(|c| c.0 == "product_id")
+            .unwrap();
+        assert_eq!((pid.1.as_str(), pid.2), ("TEXT", 0), "nullable TEXT");
+
+        // a line written after the migration, without a product id, is fine
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh2','d1','u1','2026-11-22T07:00:00Z','0.00')")
+            .execute(&p).await.unwrap();
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 2) on conflict do update set last_invc_no = 2")
+            .execute(&p).await.unwrap();
+        seed_demo_sale(&p, "sh2", "s2", 2).await;
+        sqlx::query("update sale_line set product_id = 'cloud-p1' where sale_id = 's2'")
+            .execute(&p)
+            .await
+            .unwrap();
+        let got: Option<String> =
+            sqlx::query_scalar("select product_id from sale_line where sale_id = 's2'")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert_eq!(got.as_deref(), Some("cloud-p1"));
+    }
+
+    #[tokio::test]
+    async fn demo_shifts_and_their_sales_are_gone_but_other_rows_remain() {
+        let p = raw_pool().await;
+        migrator_upto(2).run(&p).await.unwrap();
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 2)")
+            .execute(&p)
+            .await
+            .unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh','d1','alice','2026-11-20T07:00:00Z','0.00')")
+            .execute(&p).await.unwrap();
+        seed_demo_sale(&p, "sh", "s1", 1).await;
+        seed_demo_sale(&p, "sh", "s2", 2).await;
+        // rows that are not on a shift must survive
+        sqlx::query("insert into outbound (kind, payload, created_at) values ('init', '{}', '2026-11-20T08:01:00Z')")
+            .execute(&p).await.unwrap();
+        sqlx::query("insert into product (id, sku, name, unit_price, tax_ty_cd, is_weighed, synced_at) values ('p1','sku','n','1.00','B',0,'t')")
+            .execute(&p).await.unwrap();
+
+        migrator().run(&p).await.unwrap();
+
+        for t in ["shift", "sale", "sale_line", "sale_tender"] {
+            assert_eq!(count(&p, t).await, 0, "{t} emptied");
+        }
+        assert_eq!(count(&p, "outbound").await, 1, "sale-less outbound kept");
+        assert_eq!(count(&p, "product").await, 1);
+        let last: i64 = sqlx::query_scalar("select last_invc_no from invc_seq")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+        assert_eq!(last, 2, "invoice counters never go backwards");
+        let violations: Vec<(String,)> =
+            sqlx::query_as("select \"table\" from pragma_foreign_key_check")
+                .fetch_all(&p)
+                .await
+                .unwrap();
+        assert!(violations.is_empty(), "no orphans");
+    }
+
+    #[tokio::test]
+    async fn demo_delete_is_correct_with_foreign_keys_off_too() {
+        // The migration cannot toggle the pragma, so it must not depend on it.
+        let opts = SqliteConnectOptions::new()
+            .in_memory(true)
+            .foreign_keys(false);
+        let p = SqlitePoolOptions::new()
+            .max_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        migrator_upto(2).run(&p).await.unwrap();
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 1)")
+            .execute(&p)
+            .await
+            .unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh','d1','alice','2026-11-20T07:00:00Z','0.00')")
+            .execute(&p).await.unwrap();
+        seed_demo_sale(&p, "sh", "s1", 1).await;
+        migrator().run(&p).await.unwrap();
+        let violations: Vec<(String,)> =
+            sqlx::query_as("select \"table\" from pragma_foreign_key_check")
+                .fetch_all(&p)
+                .await
+                .unwrap();
+        assert!(violations.is_empty());
+        assert_eq!(count(&p, "sale").await + count(&p, "outbound").await, 0);
+    }
+
+    #[tokio::test]
+    async fn the_migration_is_idempotent_under_migrate_deploy() {
+        let p = raw_pool().await;
+        migrator().run(&p).await.unwrap();
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 1)")
+            .execute(&p)
+            .await
+            .unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh','d1','u1','2026-11-22T07:00:00Z','0.00')")
+            .execute(&p).await.unwrap();
+        seed_demo_sale(&p, "sh", "s1", 1).await;
+        sqlx::query("insert into cashier values ('u1','n','h',1,'t')")
+            .execute(&p)
+            .await
+            .unwrap();
+        // deploying again must neither fail nor delete the post-migration shift
+        migrator().run(&p).await.unwrap();
+        migrator().run(&p).await.unwrap();
+        assert_eq!(count(&p, "shift").await, 1);
+        assert_eq!(count(&p, "sale").await, 1);
+        assert_eq!(count(&p, "cashier").await, 1);
+        let applied: i64 = sqlx::query_scalar("select count(*) from _sqlx_migrations")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+        assert_eq!(applied, 3);
     }
 
     #[test]
