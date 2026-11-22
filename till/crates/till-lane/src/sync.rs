@@ -110,7 +110,8 @@ pub enum PullError {
 #[serde(rename_all = "camelCase")]
 struct CloudCashier {
     id: String,
-    name: String,
+    /// The cloud's `User.name` is nullable.
+    name: Option<String>,
     /// `null` for a deactivated cashier.
     pin_hash: Option<String>,
     active: bool,
@@ -121,10 +122,15 @@ impl From<CloudCashier> for Cashier {
         // A missing hash becomes "", which `verify_pin` never accepts, and the
         // cashier is also inactive whatever the cloud said.
         let pin_hash = c.pin_hash.unwrap_or_default();
+        // A nameless cashier is shown (and typed) by id rather than dropped.
+        let name = c
+            .name
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| c.id.clone());
         Cashier {
             active: c.active && !pin_hash.is_empty(),
             id: c.id,
-            name: c.name,
+            name,
             pin_hash,
         }
     }
@@ -242,7 +248,11 @@ impl CloudSync {
                     sent += 1;
                 }
                 Reply::Refused(reason) => {
-                    let _ = self.store.park(row.id, &reason).await;
+                    if self.store.park(row.id, &reason).await.is_err() {
+                        // Not recorded: back off like any other failure rather
+                        // than spin on a database that will not take a write.
+                        return DrainOutcome::Offline;
+                    }
                     first_parked.get_or_insert((row.id, reason));
                     if row.kind == "shift" {
                         // Its sales would be refused in turn. Stop and surface it.
@@ -285,9 +295,15 @@ impl CloudSync {
             }
             Reply::Refused(why) | Reply::Retry(why) => return Err(PullError::Http(why)),
         }
-        let parsed: Vec<CloudCashier> =
+        // Row by row: one bad record costs that cashier, never the shop's list.
+        let rows: Vec<serde_json::Value> =
             serde_json::from_str(&body).map_err(|_| PullError::Malformed)?;
-        let cashiers: Vec<Cashier> = parsed.into_iter().map(Cashier::from).collect();
+        let cashiers: Vec<Cashier> = rows
+            .into_iter()
+            .filter_map(|v| serde_json::from_value::<CloudCashier>(v).ok())
+            .filter(|c| !c.id.is_empty())
+            .map(Cashier::from)
+            .collect();
         if cashiers.is_empty() {
             return Ok(0);
         }
@@ -868,6 +884,7 @@ mod tests {
             (200, "[]"),
             (200, r#"[{"id":"u1"}]"#),
             (200, r#"[{"id":"","name":"x","pinHash":"h","active":true}]"#),
+            (200, r#"{"not":"an array"}"#),
         ];
         for (status, body) in cases {
             let stub = stub(move |_| (status, body.to_owned())).await;
@@ -889,6 +906,77 @@ mod tests {
             Err(PullError::Http(_))
         ));
         assert_eq!(names(&store).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn one_malformed_cashier_costs_only_that_cashier() {
+        let body = serde_json::json!([
+            {"id":"u1","name":"Alice","pinHash":"h1","active":true},
+            {"id":"u2","name":null,"pinHash":"h2","active":true},
+            {"id":"u3","name":"Cara","pinHash":42,"active":true},
+            {"name":"NoId","pinHash":"h","active":true},
+            "garbage",
+            {"id":"","name":"Empty","pinHash":"h","active":true},
+            {"id":"u4","name":"Dan","pinHash":"h4","active":true},
+        ])
+        .to_string();
+        let stub = stub(move |_| (200, body.clone())).await;
+        let (sync, store) = sync_for(&stub.url).await;
+        assert_eq!(sync.pull_cashiers().await, Ok(3));
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("select id, name from cashier order by id")
+                .fetch_all(store.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("u1".into(), "Alice".into()),
+                ("u2".into(), "u2".into()), // null name falls back to the id
+                ("u4".into(), "Dan".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_on_a_shift_holds_its_sales() {
+        for status in [503u16, 500] {
+            let stub = stub(move |r| {
+                if r.path == "/api/till/shift" {
+                    (status, "down".into())
+                } else {
+                    ok(r)
+                }
+            })
+            .await;
+            let (sync, store) = sync_for(&stub.url).await;
+            let shift = queue(&store, "shift", r#"{"id":"s1"}"#).await;
+            let sale = queue(&store, "sale", r#"{"shiftId":"s1"}"#).await;
+            assert_eq!(sync.drain_once().await, DrainOutcome::Offline);
+            let seen = stub.seen();
+            assert_eq!(seen.len(), 1, "{status}: only the shift was tried");
+            assert_eq!(seen[0].path, "/api/till/shift");
+            assert_eq!(
+                ids(&store).await,
+                vec![shift, sale],
+                "{status}: both still unsent, in order"
+            );
+            assert_eq!(
+                store.parked_count().await.unwrap(),
+                0,
+                "{status}: nothing parked"
+            );
+        }
+        // A dead connection holds it just the same.
+        let dead = {
+            let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            format!("http://{}", l.local_addr().unwrap())
+        };
+        let (sync, store) = sync_for(&dead).await;
+        let shift = queue(&store, "shift", r#"{"id":"s1"}"#).await;
+        let sale = queue(&store, "sale", r#"{"shiftId":"s1"}"#).await;
+        assert_eq!(sync.drain_once().await, DrainOutcome::Offline);
+        assert_eq!(ids(&store).await, vec![shift, sale]);
     }
 
     #[tokio::test]
