@@ -6,7 +6,8 @@
  * shift is only "complete" when what we hold provably equals what the till
  * says it sold; every other state yields no variance at all.
  */
-import { Prisma } from "@prisma/client";
+import { Prisma, TenderMethod } from "@prisma/client";
+import { safeZone } from "@/lib/day";
 
 const D = (v: string | number) => new Prisma.Decimal(v);
 
@@ -77,7 +78,7 @@ export function splitTakings(sales: SaleForSplit[]) {
     for (const t of s.tenders) {
       const a = D(t.amount);
       tendered = tendered.plus(a);
-      if (t.pmtTyCd === "CASH") cash = cash.plus(a);
+      if (t.pmtTyCd === TenderMethod.CASH) cash = cash.plus(a);
       byMethod.set(t.pmtTyCd, (byMethod.get(t.pmtTyCd) ?? D(0)).plus(a));
     }
     const over = tendered.minus(tot);
@@ -90,7 +91,7 @@ export function splitTakings(sales: SaleForSplit[]) {
       methodSum = methodSum.plus(amt);
       return { method, tendered: amt.toFixed(2) };
     });
-  const cashTendered = byMethod.get("CASH") ?? D(0);
+  const cashTendered = byMethod.get(TenderMethod.CASH) ?? D(0);
   return {
     methods,
     changeGiven: change.toFixed(2),
@@ -104,7 +105,7 @@ export function splitTakings(sales: SaleForSplit[]) {
 
 /** The calendar date (YYYY-MM-DD) `instant` falls on in `tz`. */
 export function localDate(instant: Date, tz: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: safeZone(tz), year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
 }
 
 /** An instant that falls on calendar day `day` (YYYY-MM-DD) in `tz`, or null if `day` is not a real date. */

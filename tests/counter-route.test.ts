@@ -6,6 +6,7 @@ const getServerSession = vi.hoisted(() => vi.fn());
 vi.mock("next-auth", () => ({ getServerSession }));
 
 import { GET } from "@/app/api/[slug]/counter/route";
+import { PATCH as orgPATCH } from "@/app/api/[slug]/org/route";
 
 const as = (userId: string, orgId: string) => getServerSession.mockResolvedValue({ user: { id: userId, orgId, role: "ADMIN" } });
 const get = (day?: string) => GET(new Request(`http://x.local/api/shop/counter${day ? `?day=${day}` : ""}`));
@@ -142,5 +143,61 @@ describe("GET /api/[slug]/counter", () => {
   test("an unauthenticated request is refused", async () => {
     getServerSession.mockResolvedValue(null);
     expect((await get("2026-11-22")).status).toBe(401);
+  });
+
+  test("a malformed stored timezone degrades to UTC rather than failing", async () => {
+    const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
+    await prisma.org.update({ where: { id: s.orgId }, data: { timezone: "Kigali" } });
+    await shift(s, l.id, { openedAt: new Date("2026-11-22T06:00:00Z") });
+    const res = await get("2026-11-22");
+    expect(res.status).toBe(200);
+    expect((await res.json()).shifts).toHaveLength(1);
+  });
+
+  test("a PATCH with a non-IANA timezone is refused and not stored", async () => {
+    const s = await seedOrg(); as(s.userId, s.orgId);
+    const res = await orgPATCH(new Request("http://x.local/api/shop/org", { method: "PATCH", body: JSON.stringify({ timezone: "Kigali" }) }));
+    expect(res.status).toBe(422);
+    expect((await prisma.org.findUniqueOrThrow({ where: { id: s.orgId } })).timezone).toBe("Africa/Kigali");
+    const ok = await orgPATCH(new Request("http://x.local/api/shop/org", { method: "PATCH", body: JSON.stringify({ timezone: "Africa/Nairobi" }) }));
+    expect(ok.status).toBe(200);
+  });
+
+  test("a shift opened yesterday and still open, requested as yesterday, is stale", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-22T10:00:00Z"));
+      const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
+      await prisma.laneToken.create({ data: { laneId: l.id, tokenHash: `h-${Math.random()}`, orgId: s.orgId, lastUsedAt: new Date("2026-11-22T09:59:00Z") } });
+      await shift(s, l.id, { openedAt: new Date("2026-11-21T08:00:00Z") });
+      const [row] = (await (await get("2026-11-21")).json()).shifts;
+      expect(row.state).toBe("stale");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("lastReachedAt ignores revoked tokens and takes the max of the live ones", async () => {
+    const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
+    const tok = (lastUsedAt: string, revokedAt: Date | null) =>
+      prisma.laneToken.create({ data: { laneId: l.id, tokenHash: `h-${Math.random()}`, orgId: s.orgId, lastUsedAt: new Date(lastUsedAt), revokedAt } });
+    await tok("2026-11-22T07:00:00Z", null);
+    await tok("2026-11-22T08:00:00Z", null);
+    await tok("2026-11-22T09:00:00Z", new Date("2026-11-22T09:30:00Z")); // revoked, and the most recent
+    await shift(s, l.id);
+    const [row] = (await (await get("2026-11-22")).json()).shifts;
+    expect(row.lastReachedAt).toBe("2026-11-22T08:00:00.000Z");
+  });
+
+  test("a part-cash sale keyed as one CASH_CREDIT tender is not drawer cash: it reconciles and reads as an overage", async () => {
+    const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
+    // Customer owes 1000, hands over 400 cash; the cashier keys it as CASH_CREDIT 1000.
+    // The drawer really gains 400 but the till counts no CASH, so expected stays at the float.
+    const sh = await shift(s, l.id, { closedAt: new Date("2026-11-22T14:00:00Z"), saleCount: 1, gross: "1000.00", declaredCash: "20400.00" });
+    await sale(s, sh.id, l.id, "1000.00", [["CASH_CREDIT", "1000.00"]]);
+    const [row] = (await (await get("2026-11-22")).json()).shifts;
+    expect(row.state).toBe("complete");
+    expect(row.changeGiven).toBe("0.00");
+    expect(row.variance).toEqual({ expected: "20000.00", declared: "20400.00", diff: "400.00" });
   });
 });

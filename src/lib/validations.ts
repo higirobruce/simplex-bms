@@ -29,11 +29,25 @@ export const NonNegativeQtySchema = qtySchema(
 );
 
 // ===== Org =====
+// An IANA zone name the runtime recognises. Anything else would make every
+// day-bounded view fall back to UTC (or throw), so refuse it at write time.
+const timezoneSchema = z.string().min(1).refine(
+  (tz) => {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: tz });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { message: "Timezone must be a valid IANA name, e.g. Africa/Kigali" },
+);
+
 export const OrgPatchSchema = z.object({
   name: z.string().min(1, "Organisation name is required").optional(),
   logo: z.string().url("Logo must be a valid URL").optional().nullable(),
   currency: z.string().min(1).max(8).optional(),
-  timezone: z.string().min(1).optional(),
+  timezone: timezoneSchema.optional(),
 });
 
 // ===== Platform admin: Shops (orgs) =====
@@ -47,7 +61,7 @@ export const ShopCreateSchema = z.object({
     .max(40)
     .regex(slugRegex, "Slug may contain lowercase letters, numbers and hyphens only"),
   currency: z.string().min(1).max(8).default("RWF"),
-  timezone: z.string().min(1).default("Africa/Kigali"),
+  timezone: timezoneSchema.default("Africa/Kigali"),
   // First admin user for the new shop
   adminEmail: z.string().email("Invalid admin email"),
   adminName: z.string().min(1).optional().nullable(),
@@ -58,7 +72,7 @@ export const ShopPatchSchema = z.object({
   name: z.string().min(1).optional(),
   logo: z.string().url("Logo must be a valid URL").optional().nullable(),
   currency: z.string().min(1).max(8).optional(),
-  timezone: z.string().min(1).optional(),
+  timezone: timezoneSchema.optional(),
   status: z.enum(["ACTIVE", "SUSPENDED"]).optional(),
 });
 
@@ -67,7 +81,7 @@ export const PlatformSettingsSchema = z.object({
   platformName: z.string().min(1).optional(),
   supportEmail: z.string().email("Invalid email").optional().nullable(),
   defaultCurrency: z.string().min(1).max(8).optional(),
-  defaultTimezone: z.string().min(1).optional(),
+  defaultTimezone: timezoneSchema.optional(),
   allowSignups: z.boolean().optional(),
 });
 

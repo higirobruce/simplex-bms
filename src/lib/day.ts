@@ -15,7 +15,7 @@ function warnOnce(key: string, msg: string): void {
 }
 
 /** Returns tz if the runtime recognises it; otherwise warns once and returns UTC. */
-function safeZone(tz: unknown): string {
+export function safeZone(tz: unknown): string {
   // Guard non-strings: Intl treats undefined as the HOST zone, which is exactly
   // the server-zone bug this module exists to prevent.
   if (typeof tz !== "string" || !tz) {
