@@ -1,6 +1,7 @@
 -- Cloud sync groundwork: the cloud Product id on each sale line, a local cache
 -- of the cloud's cashiers (so a PIN can be verified with the network down), and
--- removal of the demo shifts that predate any of this.
+-- removal of the unsent outbound queue rows that could never be delivered (see
+-- section 1). No shift or sale is removed.
 --
 -- Conventions as in 0001_init.sql: ids and timestamps are TEXT, booleans are
 -- INTEGER 0/1 with a CHECK. No money column is added here.
@@ -27,10 +28,21 @@
 -- whether or not enforcement is on (`PRAGMA foreign_keys` is a no-op inside the
 -- transaction sqlx wraps this file in); the order is irrelevant to safety.
 -- invc_seq is untouched and no sale is removed, so there is no numbering gap.
+--
+-- Only UNSENT rows (sent_at IS NULL) go. A row with sent_at set was accepted by
+-- the cloud, so its openedBy was valid by definition; a delivered row cannot
+-- wedge the queue, and deleting it would only destroy delivery history.
+--
+-- THIS IS NOT LOSSLESS. Deleting the unsent SALE queue rows means those sales
+-- never reach the cloud, and nothing re-queues them. That is deliberate (owner
+-- decision) and unavoidable: their shift's queue row is gone, so the cloud
+-- would refuse a sale whose shift it has never seen, and that refusal would
+-- wedge the FIFO queue. The sales themselves stay in the till's database.
 -- ---------------------------------------------------------------------------
-DELETE FROM outbound WHERE kind = 'shift';
+DELETE FROM outbound WHERE kind = 'shift' AND sent_at IS NULL;
 DELETE FROM outbound
-WHERE sale_id IN (SELECT id FROM sale WHERE shift_id IN (SELECT id FROM shift));
+WHERE sent_at IS NULL
+  AND sale_id IN (SELECT id FROM sale WHERE shift_id IN (SELECT id FROM shift));
 
 -- ---------------------------------------------------------------------------
 -- 2. The cloud Product.id of a sale line. Nullable: lines written before this
