@@ -1784,6 +1784,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_single_name_match_added_directly_carries_the_cloud_product_id() {
+        let mut l = lane_with(
+            &[
+                named("cloud-m", "Inyange Fresh Milk 1L", None, false),
+                named("cloud-s", "Kabuye Sugar 1kg", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        assert!(l.search_matches().is_empty(), "no picker for one match");
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-m"));
+    }
+
+    #[tokio::test]
     async fn several_name_matches_are_offered_and_picked_by_number() {
         let mut l = lane_with(
             &[
@@ -2844,6 +2860,33 @@ mod tests {
         let t = l.timings().tender_to_bytes.expect("settle measured");
         assert!(t.as_millis() < Budget::TENDER_TO_BYTES_MS);
         eprintln!("tender_to_bytes: {t:?}");
+    }
+
+    #[tokio::test]
+    async fn a_scanned_product_reaches_the_queued_payload_with_its_cloud_id() {
+        // Crosses the lane -> store seam: scan, settle, then read the payload
+        // the sync queue actually holds.
+        let mut l = lane_with(
+            &[product("cloud-e2e", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        scan(&mut l, EAN).await.unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        let payload: String =
+            sqlx::query_scalar("select payload from outbound where kind = 'sale'")
+                .fetch_one(l.store.pool())
+                .await
+                .unwrap();
+        assert!(
+            payload.contains(r#""productId":"cloud-e2e""#),
+            "the scanned product's cloud id must be in the payload: {payload}"
+        );
     }
 
     #[tokio::test]
