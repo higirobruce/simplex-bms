@@ -42,9 +42,11 @@ impl Store {
     /// Rows waiting for delivery, oldest first, at most `limit`.
     ///
     /// Excludes rows already sent, rows parked, and every row that belongs to a
-    /// parked shift: a sale (or the close) of a shift the cloud never accepted
-    /// would only be refused in turn, and `Sale.shiftId` must resolve. Other
-    /// shifts' rows are unaffected.
+    /// parked shift OPEN: a sale (or the close) of a shift the cloud never
+    /// accepted would only be refused in turn, and `Sale.shiftId` must resolve.
+    /// A parked shift CLOSE (payload carries `closedAt`) withholds nothing: the
+    /// shift already exists in the cloud, so its sales land fine. Other shifts'
+    /// rows are unaffected.
     pub async fn unsent(&self, limit: u32) -> Result<Vec<OutboxRow>, StoreError> {
         let rows = sqlx::query(
             "select o.id, o.kind, o.payload, o.attempts from outbound o \
@@ -53,6 +55,7 @@ impl Store {
                  select 1 from outbound p \
                  where p.kind = 'shift' and p.parked_at is not null and p.sent_at is null \
                  and json_valid(p.payload) and json_valid(o.payload) \
+                 and json_extract(p.payload, '$.closedAt') is null \
                  and json_extract(p.payload, '$.id') = \
                      case o.kind when 'sale' then json_extract(o.payload, '$.shiftId') \
                                  else json_extract(o.payload, '$.id') end) \
@@ -251,5 +254,31 @@ mod tests {
         s.park(open, "Unknown cashier").await.unwrap();
         let ids: Vec<i64> = s.unsent(10).await.unwrap().iter().map(|r| r.id).collect();
         assert_eq!(ids, vec![other, other_sale]);
+    }
+
+    #[tokio::test]
+    async fn a_parked_shift_close_does_not_withhold_the_shifts_sales_but_a_parked_open_does() {
+        let s = Store::open_in_memory().await.unwrap();
+        // Close parked: the open was delivered, so the sale must still flow.
+        let open = queue(&s, "shift", r#"{"id":"s1"}"#, "2026-11-22T08:00:00Z").await;
+        s.mark_sent(open).await.unwrap();
+        let close = queue(
+            &s,
+            "shift",
+            r#"{"id":"s1","closedAt":"x"}"#,
+            "2026-11-22T08:02:00Z",
+        )
+        .await;
+        let sale = queue(&s, "sale", r#"{"shiftId":"s1"}"#, "2026-11-22T08:03:00Z").await;
+        s.park(close, "HTTP 422").await.unwrap();
+        let ids: Vec<i64> = s.unsent(10).await.unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![sale]);
+
+        // Open parked: the cloud has never seen shift s2, so its sales wait.
+        let open2 = queue(&s, "shift", r#"{"id":"s2"}"#, "2026-11-22T08:04:00Z").await;
+        queue(&s, "sale", r#"{"shiftId":"s2"}"#, "2026-11-22T08:05:00Z").await;
+        s.park(open2, "Unknown cashier").await.unwrap();
+        let ids: Vec<i64> = s.unsent(10).await.unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![sale]);
     }
 }

@@ -126,14 +126,7 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
             .await
             .map_err(|e| format!("The demo database could not be opened ({e})."))?,
     };
-    store
-        .sync_catalogue(&demo::products())
-        .await
-        .map_err(|e| format!("The demo catalogue could not be loaded ({e})."))?;
-    store
-        .sync_cashiers(&demo::cashiers())
-        .await
-        .map_err(|e| format!("The demo cashiers could not be loaded ({e})."))?;
+    seed_demo(&store, args.db.is_some()).await?;
     let mut state = LaneState::new(store.clone(), demo::config())
         .await
         .map_err(|e| e.to_string())?;
@@ -149,6 +142,29 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
         state: Box::new(state),
         devices: Box::new(Devices::demo(args.vsdc_offline)),
     })
+}
+
+/// Loads the demo catalogue and cashiers into an in-memory demo store only.
+///
+/// A store on disk (`--db`) is a till whose cashiers and catalogue come from
+/// the cloud. `sync_cashiers` DELETES every cashier absent from the list it is
+/// handed, so seeding the demo cashier at each start would wipe the real ones
+/// and open shifts as `demo-cashier`, which the cloud refuses, withholding
+/// every sale of the shift. `sync_catalogue` never deletes, but seeding demo
+/// products into a real catalogue lets a cashier sell items the cloud has
+/// never heard of (their lines would be refused), so it is skipped too.
+async fn seed_demo(store: &till_store::Store, persistent: bool) -> Result<(), String> {
+    if persistent {
+        return Ok(());
+    }
+    store
+        .sync_catalogue(&demo::products())
+        .await
+        .map_err(|e| format!("The demo catalogue could not be loaded ({e})."))?;
+    store
+        .sync_cashiers(&demo::cashiers())
+        .await
+        .map_err(|e| format!("The demo cashiers could not be loaded ({e})."))
 }
 
 /// Starts the cloud sync on the runtime (never the UI thread), if the lane has
@@ -300,5 +316,62 @@ mod tests {
         let a = parse(&["--db", "--demo"]).unwrap();
         assert_eq!(a.db.as_deref(), Some(std::path::Path::new("--demo")));
         assert!(!a.demo, "--demo was consumed as the path, so it is not set");
+    }
+
+    fn real_cashier(id: &str) -> till_store::Cashier {
+        till_store::Cashier {
+            id: id.into(),
+            name: "Real".into(),
+            pin_hash: "x".into(),
+            active: true,
+        }
+    }
+
+    /// Startup on a `--db` store must leave the cloud's cashiers and catalogue
+    /// alone: `sync_cashiers` deletes whatever the list omits.
+    #[tokio::test]
+    async fn a_db_stores_cashiers_survive_startup() {
+        let path = std::env::temp_dir().join(format!(
+            "till-lane-seed-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let store = till_store::Store::open(&path).await.unwrap();
+        store
+            .sync_cashiers(&[real_cashier("real-1")])
+            .await
+            .unwrap();
+        seed_demo(&store, true).await.unwrap();
+        let ids: Vec<String> = store
+            .active_cashiers()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, vec!["real-1".to_string()]);
+        drop(store);
+        for ext in ["", "-wal", "-shm"] {
+            let mut f = path.clone().into_os_string();
+            f.push(ext);
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_in_memory_demo_is_seeded_with_the_demo_cashier() {
+        let store = till_store::Store::open_in_memory().await.unwrap();
+        seed_demo(&store, false).await.unwrap();
+        let ids: Vec<String> = store
+            .active_cashiers()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids, vec!["demo-cashier".to_string()]);
     }
 }

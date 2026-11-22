@@ -34,7 +34,7 @@ const sale = (s: { productId: string }, extra: object = {}) => ({
   saleId: SALE, shiftId: SHIFT, invcNo: 5, totAmt: "2400.00", totTaxblAmt: "2033.90", totTaxAmt: "366.10",
   soldAt: "2026-11-20T09:30:00.000Z",
   lines: [{ itemSeq: 1, productId: s.productId, qty: "2.000", prc: "1200.00", taxTyCd: "B" }],
-  tenders: [{ pmtTyCd: "CASH", amount: "2400.00" }],
+  tenders: [{ seq: 0, pmtTyCd: "CASH", amount: "2400.00" }],
   ...extra,
 });
 const counts = async () => ({
@@ -53,7 +53,7 @@ describe("POST /api/till/sale", () => {
         { itemSeq: 1, productId: s.productId, qty: "2.000", prc: "1200.00", taxTyCd: "B" },
         { itemSeq: 2, productId: p2.id, qty: "1.500", prc: "5.00", taxTyCd: "A" },
       ],
-      tenders: [{ pmtTyCd: "CASH", amount: "1000.00" }, { pmtTyCd: "MOBILE_MONEY", amount: "1407.50" }],
+      tenders: [{ seq: 0, pmtTyCd: "CASH", amount: "1000.00" }, { seq: 1, pmtTyCd: "MOBILE_MONEY", amount: "1407.50" }],
     }));
     expect(res.status).toBe(200);
     expect(await counts()).toEqual({ sale: 1, line: 2, tender: 2, mv: 2 });
@@ -172,6 +172,65 @@ describe("POST /api/till/sale", () => {
     expect((await post(s.token, sale(s))).status).toBe(200);
     expect((await post(s.token, sale(s))).status).toBe(200);
     expect(await counts()).toEqual({ sale: 1, line: 1, tender: 1, mv: 1 });
+  });
+
+  test("a weighed line round-trips and the line amounts sum to the header", async () => {
+    const s = await seed();
+    // 0.734 x 1250 = 917.5, which the till rounds ONCE to 918. qty*prc alone would give 917.50.
+    const res = await post(s.token, sale(s, {
+      totAmt: "918.00", totTaxblAmt: "777.97", totTaxAmt: "140.03",
+      lines: [{ itemSeq: 1, productId: s.productId, qty: "0.734", prc: "1250.00", splyAmt: "918.00", taxblAmt: "777.97", taxTyCd: "B" }],
+      tenders: [{ seq: 0, pmtTyCd: "CASH", amount: "918.00" }],
+    }));
+    expect(res.status).toBe(200);
+    const lines = await prisma.saleLine.findMany();
+    const head = await prisma.sale.findUniqueOrThrow({ where: { id: SALE } });
+    expect(lines[0].qty.toFixed(3)).toBe("0.734");
+    expect(lines[0].splyAmt?.toFixed(2)).toBe("918.00");
+    expect(lines[0].taxblAmt?.toFixed(2)).toBe("777.97");
+    const sum = lines.reduce((a, l) => a.plus(l.splyAmt!), lines[0].splyAmt!.mul(0));
+    expect(sum.toFixed(2)).toBe(head.totAmt.toFixed(2));
+    expect(lines[0].qty.mul(lines[0].prc).toFixed(2)).toBe("917.50"); // why qty*prc cannot be stored instead
+  });
+
+  test("a line sent without amounts stores null, and a malformed amount is 422", async () => {
+    const s = await seed();
+    expect((await post(s.token, sale(s))).status).toBe(200);
+    const l = await prisma.saleLine.findFirstOrThrow();
+    expect(l.splyAmt).toBeNull();
+    expect(l.taxblAmt).toBeNull();
+    const bad = await post(s.token, sale(s, {
+      saleId: "c".repeat(32), invcNo: 6,
+      lines: [{ itemSeq: 1, productId: s.productId, qty: "1.000", prc: "1.00", splyAmt: "9.999", taxTyCd: "B" }],
+    }));
+    expect(bad.status).toBe(422);
+  });
+
+  test("posting the same sale twice leaves exactly one tender row per seq", async () => {
+    const s = await seed();
+    const body = sale(s, {
+      tenders: [{ seq: 0, pmtTyCd: "CASH", amount: "1000.00" }, { seq: 1, pmtTyCd: "MOBILE_MONEY", amount: "1400.00" }],
+    });
+    expect((await post(s.token, body)).status).toBe(200);
+    expect((await post(s.token, body)).status).toBe(200);
+    const t = await prisma.tender.findMany({ orderBy: { seq: "asc" } });
+    expect(t.map((x) => x.seq)).toEqual([0, 1]);
+    expect(t.map((x) => x.amount.toFixed(2))).toEqual(["1000.00", "1400.00"]);
+  });
+
+  test("two concurrent posts of one sale never double the tenders", async () => {
+    const s = await seed();
+    await Promise.all([post(s.token, sale(s)), post(s.token, sale(s))]);
+    expect(await prisma.tender.count()).toBe(1);
+  });
+
+  test("a tender without a seq, or with a repeated seq, is 422", async () => {
+    const s = await seed();
+    expect((await post(s.token, sale(s, { tenders: [{ pmtTyCd: "CASH", amount: "2400.00" }] }))).status).toBe(422);
+    expect((await post(s.token, sale(s, {
+      tenders: [{ seq: 0, pmtTyCd: "CASH", amount: "1.00" }, { seq: 0, pmtTyCd: "CASH", amount: "2.00" }],
+    }))).status).toBe(422);
+    expect(await prisma.tender.count()).toBe(0);
   });
 
   test("two lines of one product make one movement with the summed quantity", async () => {

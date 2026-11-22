@@ -52,7 +52,7 @@ test("each new model rejects an orgId that is not an Org", async () => {
       prisma.saleLine.create({
         data: { saleId: sale.id, productId, itemSeq: 1, qty: "1", prc: "1", taxTyCd: "B", orgId: BOGUS },
       }),
-    Tender: () => prisma.tender.create({ data: { saleId: sale.id, pmtTyCd: "CASH", amount: "1", orgId: BOGUS } }),
+    Tender: () => prisma.tender.create({ data: { saleId: sale.id, seq: 0, pmtTyCd: "CASH", amount: "1", orgId: BOGUS } }),
   };
   for (const [name, attempt] of Object.entries(attempts)) {
     await expect(attempt(), name).rejects.toThrow(FK);

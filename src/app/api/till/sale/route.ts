@@ -86,7 +86,7 @@ export async function POST(req: Request) {
     if (!Array.isArray(body.tenders)) return refuse("tenders must be an array");
 
     const seqs = new Set<number>();
-    const lines: { itemSeq: number; productId?: string; itemCd?: string; qty: string; prc: string; taxTyCd: Tax; dcAmt: string }[] = [];
+    const lines: { itemSeq: number; productId?: string; itemCd?: string; qty: string; prc: string; taxTyCd: Tax; dcAmt: string; splyAmt: string | null; taxblAmt: string | null }[] = [];
     for (const l of body.lines) {
       if (!isObj(l)) return refuse("each line must be an object");
       if (!isInt(l.itemSeq, 0) || seqs.has(l.itemSeq)) return refuse("itemSeq must be a unique integer per line");
@@ -99,6 +99,11 @@ export async function POST(req: Request) {
       // The till's dcAmt is the line's discount in money (whole francs, exact string). Absent = none.
       const dcAmt = l.dcAmt === undefined || l.dcAmt === null ? "0" : money(l.dcAmt);
       if (dcAmt === null) return refuse("dcAmt must be a decimal string with at most 2 places");
+      // The till's rounded line amounts. Optional (older payloads), but malformed is a refusal.
+      const splyAmt = l.splyAmt === undefined || l.splyAmt === null ? null : money(l.splyAmt);
+      if (l.splyAmt != null && splyAmt === null) return refuse("splyAmt must be a decimal string with at most 2 places");
+      const taxblAmt = l.taxblAmt === undefined || l.taxblAmt === null ? null : money(l.taxblAmt);
+      if (l.taxblAmt != null && taxblAmt === null) return refuse("taxblAmt must be a decimal string with at most 2 places");
       const hasPid = l.productId !== undefined && l.productId !== null;
       if (hasPid && (typeof l.productId !== "string" || !l.productId)) return refuse("productId must be a string");
       if (!hasPid && (typeof l.itemCd !== "string" || !l.itemCd)) return refuse("each line needs a productId or an itemCd");
@@ -108,20 +113,25 @@ export async function POST(req: Request) {
         prc,
         taxTyCd: l.taxTyCd as Tax,
         dcAmt,
+        splyAmt,
+        taxblAmt,
         productId: hasPid ? l.productId : undefined,
         itemCd: hasPid ? undefined : l.itemCd,
       });
     }
 
-    const tenders: { pmtTyCd: any; amount: string; providerRef: string | null; confirmed: boolean }[] = [];
+    const tenderSeqs = new Set<number>();
+    const tenders: { seq: number; pmtTyCd: any; amount: string; providerRef: string | null; confirmed: boolean }[] = [];
     for (const t of body.tenders) {
       if (!isObj(t)) return refuse("each tender must be an object");
+      if (!isInt(t.seq, 0) || tenderSeqs.has(t.seq)) return refuse("tender seq must be a unique integer per tender");
+      tenderSeqs.add(t.seq);
       if (typeof t.pmtTyCd !== "string" || !TENDER_METHODS.has(t.pmtTyCd)) return refuse("unknown tender pmtTyCd");
       const amount = money(t.amount);
       if (!amount) return refuse("tender amount must be a decimal string with at most 2 places");
       if (t.providerRef != null && typeof t.providerRef !== "string") return refuse("providerRef must be a string");
       if (t.confirmed != null && typeof t.confirmed !== "boolean") return refuse("confirmed must be a boolean");
-      tenders.push({ pmtTyCd: t.pmtTyCd, amount, providerRef: t.providerRef ?? null, confirmed: t.confirmed ?? false });
+      tenders.push({ seq: t.seq, pmtTyCd: t.pmtTyCd, amount, providerRef: t.providerRef ?? null, confirmed: t.confirmed ?? false });
     }
 
     // The shift must exist and belong to this lane (the outbox is ordered, so it normally does).
@@ -151,11 +161,11 @@ export async function POST(req: Request) {
       : [];
     const pidOk = new Set(byPid.map((p) => p.id));
     const skuMap = new Map(bySku.map((p) => [p.sku, p.id]));
-    const resolved: { itemSeq: number; productId: string; qty: string; prc: string; taxTyCd: Tax; dcAmt: string }[] = [];
+    const resolved: { itemSeq: number; productId: string; qty: string; prc: string; taxTyCd: Tax; dcAmt: string; splyAmt: string | null; taxblAmt: string | null }[] = [];
     for (const l of lines) {
       const productId = l.productId ? (pidOk.has(l.productId) ? l.productId : undefined) : skuMap.get(l.itemCd!);
       if (!productId) return refuse(`Line ${l.itemSeq} names a product that does not exist in this shop`);
-      resolved.push({ itemSeq: l.itemSeq, productId, qty: l.qty, prc: l.prc, taxTyCd: l.taxTyCd, dcAmt: l.dcAmt });
+      resolved.push({ itemSeq: l.itemSeq, productId, qty: l.qty, prc: l.prc, taxTyCd: l.taxTyCd, dcAmt: l.dcAmt, splyAmt: l.splyAmt, taxblAmt: l.taxblAmt });
     }
 
     // The partial unique index is on (referenceId, productId) for SALE, so two lines of one
@@ -194,8 +204,9 @@ export async function POST(req: Request) {
         })),
         skipDuplicates: true,
       });
-      await tx.tender.deleteMany({ where: { saleId, orgId } });
-      await tx.tender.createMany({ data: tenders.map((t) => ({ ...t, saleId, orgId })) });
+      // Idempotent on the (saleId, seq) unique: a concurrent or later retry inserts nothing, so
+      // takings are never double-counted (delete-then-recreate raced under READ COMMITTED).
+      await tx.tender.createMany({ data: tenders.map((t) => ({ ...t, saleId, orgId })), skipDuplicates: true });
       // One movement per product. A replay inserts nothing (ON CONFLICT DO NOTHING on the partial
       // unique index), and StockLevel is decremented ONLY when a row was actually inserted, so a
       // replay moves no stock. A till sale already happened, so on-hand may go negative.
