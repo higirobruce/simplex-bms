@@ -116,7 +116,8 @@ pub fn cheat_sheet() -> String {
          {}  Tomatoes 1.250 kg (scale label)      800/kg A\n  \
          5449000000996  Coca-Cola 500ml                      500 B\n  \
          5612345000031  Mutzig 650ml                       1,200 B\n\
-         Then F8 (cash; type an amount first, or none for exact) and Enter to pay.",
+         Then F8 (cash; type an amount first, or none for exact) and Enter to pay.\n\
+         Shift+F12 takes the simulated VSDC offline (C1 hard stop); F12 resumes.",
         tomato_label(1250)
     )
 }

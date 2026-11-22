@@ -1,0 +1,22 @@
+# Cross-compiling the lane for a Windows till from a developer machine.
+#
+# Two Windows targets, for two different jobs:
+#
+#   x86_64-pc-windows-gnu   Needs mingw-w64 (`brew install mingw-w64`). Small
+#                           toolchain, quick to set up. Use it for hardware
+#                           bring-up: scanners, key maps, how the screen looks.
+#
+#   x86_64-pc-windows-msvc  Needs `cargo-xwin` and LLVM's clang-cl
+#                           (`brew install llvm`, a multi-gigabyte download).
+#                           This is the triple that ships, so the installer and
+#                           anything heading for RRA certification is built
+#                           with it: `cargo xwin build --release -p till-lane
+#                           --target x86_64-pc-windows-msvc`.
+#
+# A GNU build and an MSVC build are not interchangeable for certification. They
+# are interchangeable for finding out whether a barcode reader types into the
+# right field.
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"

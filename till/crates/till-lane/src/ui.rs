@@ -78,6 +78,9 @@ pub enum Action {
     ReprintZ,
     CancelSale,
     Resume,
+    /// Demo only: take the simulated VSDC offline, or put it back, so the C1
+    /// hard stop can be exercised by hand. A no-op with real devices.
+    ToggleVsdc,
     NotBuilt(&'static str),
 }
 
@@ -190,6 +193,10 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
                         out.push(Action::Tender(*code));
                     }
                 }
+                // Demo only, and deliberately next to F12's resume: Shift+F12
+                // takes the simulated VSDC away, F12 brings the lane back.
+                // A chord, so a scanner wedge can never type it.
+                egui::Key::F12 if modifiers.shift => out.push(Action::ToggleVsdc),
                 k if modifiers.shift && SHIFT_KEYS.iter().any(|(sk, ..)| sk == k) => {
                     out.extend(SHIFT_KEYS.iter().filter(|(sk, ..)| sk == k).map(|t| t.2));
                 }
@@ -262,6 +269,16 @@ fn apply(
         Action::ReprintZ => block_on(state.reprint_z(devices.printer.as_mut())),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
+        Action::ToggleVsdc => {
+            local.note = Some(match devices.toggle_vsdc() {
+                Some(true) => {
+                    "Demo: the VSDC is now unreachable. The next sale will hard stop.".to_owned()
+                }
+                Some(false) => "Demo: the VSDC is reachable again.".to_owned(),
+                None => "There is no simulated VSDC to switch in this build.".to_owned(),
+            });
+            Ok(())
+        }
         Action::NotBuilt(name) => {
             local.note = Some(format!("{name} is not available in this build."));
             Ok(())
@@ -385,7 +402,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
     }
 
     let mut tapped = Vec::new();
-    status_bar(ctx, state, &session);
+    status_bar(ctx, state, &session, devices.vsdc_offline());
     match state.screen().clone() {
         Screen::HardStop { reason } => {
             if let Some(a) = hard_stop(ctx, state, &reason) {
@@ -471,7 +488,7 @@ fn shift_label(shift: Option<&till_store::OpenShift>) -> String {
     }
 }
 
-fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
+fn status_bar(ctx: &Context, state: &LaneState, session: &Session, vsdc_switched_off: bool) {
     egui::TopBottomPanel::top("status")
         .frame(
             Frame::new()
@@ -494,6 +511,13 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
                     TOKENS.line,
                 ));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // The demo's own switch is a different claim from the one
+                    // below: it reports how the SIMULATOR is set, which is
+                    // known without asking anything, and says "demo" so it can
+                    // never be read as the state of a real device.
+                    if vsdc_switched_off {
+                        chip(ui, "DEMO: VSDC switched off", TOKENS.danger, TOKENS.surface);
+                    }
                     // The lane does not poll the VSDC; it only learns at
                     // settlement. So the chip reports the last outcome, and
                     // never claims the device is reachable right now.
@@ -1344,7 +1368,7 @@ mod tests {
                 rt,
                 ctx,
                 state,
-                devices: Devices::demo(),
+                devices: Devices::demo(false),
             }
         }
 
@@ -1843,6 +1867,95 @@ mod tests {
                 modifiers: Modifiers::SHIFT,
             })
             .collect()
+    }
+
+    fn tap_shift(key: Key) -> Vec<Event> {
+        [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shift_f12_is_the_vsdc_switch_and_plain_f12_is_still_resume() {
+        assert_eq!(
+            actions_from(&tap_shift(Key::F12)),
+            vec![Action::ToggleVsdc],
+            "Shift+F12 must switch the simulated VSDC"
+        );
+        assert_eq!(
+            actions_from(&tap(Key::F12)),
+            vec![Action::Resume],
+            "plain F12 must still resume from a hard stop"
+        );
+    }
+
+    /// The whole point of the switch: a hard stop can be produced by hand, and
+    /// the lane comes back from it. This is CIS §24.7.8 and §24.7.9 end to end,
+    /// driven the way an operator at a till would drive it.
+    #[test]
+    fn the_vsdc_switch_produces_a_hard_stop_and_the_lane_recovers() {
+        let mut r = Rig::new();
+
+        // Take the VSDC away.
+        r.frame(tap_shift(Key::F12));
+        assert!(r.devices.vsdc_offline());
+
+        // Sell, and try to settle.
+        r.frame(type_text("5612345000017"));
+        r.frame(tap(Key::Enter));
+        r.frame(tap(Key::F8));
+        r.frame(tap(Key::Enter));
+
+        assert!(
+            matches!(r.state.screen(), Screen::HardStop { .. }),
+            "an unreachable VSDC must hard stop the lane, got {:?}",
+            r.state.screen()
+        );
+        // Nothing was printed and no number was burned on a sale the VSDC
+        // never saw.
+        assert!(r.state.last_receipt().is_none());
+
+        // The screen says so, and says why.
+        let painted = r.frame(vec![]);
+        assert!(painted.contains("F12"), "the resume key must be on screen");
+
+        // Put the VSDC back, then resume.
+        r.frame(tap_shift(Key::F12));
+        assert!(!r.devices.vsdc_offline());
+        r.frame(tap(Key::F12));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+
+        // And the lane sells again.
+        r.frame(type_text("5612345000017"));
+        r.frame(tap(Key::Enter));
+        r.frame(tap(Key::F8));
+        r.frame(tap(Key::Enter));
+        assert!(
+            matches!(r.state.screen(), Screen::Settled { .. }),
+            "after the VSDC returns the lane must settle, got {:?}",
+            r.state.screen()
+        );
+        assert!(r.state.last_receipt().is_some());
+    }
+
+    #[test]
+    fn the_status_bar_says_when_the_demo_vsdc_is_switched_off() {
+        let mut r = Rig::new();
+        // `chip` upper-cases every label, as the other status chips show.
+        assert!(!r.frame(vec![]).contains("DEMO: VSDC SWITCHED OFF"));
+        r.frame(tap_shift(Key::F12));
+        let painted = r.frame(vec![]);
+        assert!(
+            painted.contains("DEMO: VSDC SWITCHED OFF"),
+            "an operator must be able to see the switch is thrown. painted:\n{painted}"
+        );
     }
 
     #[test]
