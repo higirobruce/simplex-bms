@@ -47,19 +47,34 @@ Run it as `simplex-lane.exe --demo`. Without `--demo` it refuses to start, on
 purpose: there is no VSDC client yet and a simulator must never ring up a real
 sale.
 
-### Three things this build cannot test — do not spend time trying
+### What this build can and cannot reach
 
-| Behaviour | Why it is out of reach | What it would take |
-|---|---|---|
-| Close report surviving a restart | `--demo` is in-memory (`main.rs:69`) | a `--db <path>` flag |
-| The C1 hard stop, and **F12 resume** (CIS §24.7.8/§24.7.9) | `fiscal.rs:90` — "the demo only succeeds; tests drive the failure modes" | a flag forcing `SimMode::Unreachable` |
-| Printer, scale, cash drawer | none of the hardware is present | the devices |
+| Behaviour | Status |
+|---|---|
+| Close report surviving a restart | **Testable.** Pass `--db <path>`. |
+| The C1 hard stop and F12 resume (CIS §24.7.8/§24.7.9) | **Testable.** `--vsdc-offline`, or Shift+F12 mid-shift. |
+| Printer, scale, cash drawer | **Out of reach** — the hardware is not present. |
 
-The hard stop is the one that stings: it is constraint C1 and among the most
-important compliance behaviours in the product, and in this build only the
-test suite can reach it. On screen it is a labelled button —
-"F12 Supervisor: resume selling" (`ui.rs:1159`) — so it is discoverable when
-it happens; it just cannot be made to happen by hand.
+Run it one of two ways:
+
+    simplex-lane.exe --demo
+    simplex-lane.exe --demo --db till.db
+
+With `--db`, two companion files appear next to it (`till.db-wal` and
+`till.db-shm`). That is SQLite's write-ahead log, not a fault. Deleting the
+`-wal` file between runs throws away the most recent writes, so leave all
+three alone.
+
+`--vsdc-offline` starts with the fiscal device unreachable, so the very first
+sale hard stops. More useful mid-session is **Shift+F12**, which takes the
+simulated VSDC away and gives it back while the lane runs. The status bar shows
+`DEMO: VSDC SWITCHED OFF` while the switch is thrown — and says "demo", because
+it reports how the *simulator* is set and must never be read as a claim about a
+real device.
+
+An unknown flag is refused rather than ignored, deliberately: a mistyped `--db`
+that silently fell back to memory would look exactly like data loss at the end
+of a shift.
 
 ## The checklist, in the order that fails cheapest first
 
@@ -114,6 +129,7 @@ menu activation, and our map puts destructive actions on both.
 - [ ] **F10 Cancel sale** — does it reach the app, or does Windows eat it?
 - [ ] **F11 Undo tender** — same question; many apps bind F11 to fullscreen.
 - [ ] **Shift+F7 Close shift** — a chord because closing is irreversible.
+- [ ] **Shift+F12** — demo only: take the simulated VSDC offline or restore it.
 - [ ] F2 Discount, F3 Suspend, F4 Resume, F5 Refund, F6 Buyer TIN should each
       say plainly that they are not built, rather than doing nothing.
 
@@ -129,7 +145,25 @@ reasoning is what makes F10 and F11 worth testing deliberately.
 If F10 or F11 do not arrive, say so and the map gets changed. They are the
 wrong keys for destructive actions if the OS is ambiguous about them.
 
-### 4. Mixed tender, end to end
+### 4. The hard stop — the most important test here
+
+This is constraint C1 and CIS §24.7.8/§24.7.9: a certified invoicing system
+must stop operating when it cannot reach the fiscal device. Until now only the
+test suite had ever seen it happen.
+
+- [ ] With a shift open and an item in the basket, press **Shift+F12**. The
+      status bar should show `DEMO: VSDC SWITCHED OFF`.
+- [ ] Settle the sale. **Expected:** the lane stops, shows the hard-stop
+      screen, and prints nothing. No receipt, no drawer kick.
+- [ ] Check the basket is **held**, not lost — the screen should say so.
+- [ ] Press **Shift+F12** again to bring the VSDC back, then **F12** to resume.
+- [ ] Sell again. **Expected:** it settles normally.
+- [ ] Now the subtle one, and worth doing with `--db`: after the refused sale,
+      does the next successful sale take the **next** invoice number, or does it
+      skip one? A sale the VSDC never saw must not consume a number. The suite
+      asserts this, but this is the first time it runs on a real file.
+
+### 5. Mixed tender, end to end
 
 - [ ] Ring up three items by scanning.
 - [ ] Pay part on Card (Ctrl+5), the rest in Cash (Ctrl+1). Note that methods
@@ -142,7 +176,7 @@ wrong keys for destructive actions if the OS is ambiguous about them.
 - [ ] Close the shift (**Shift+F7**), declare a cash count deliberately 500
       short. **Expected:** the close report shows a signed variance of -500.
 
-### 5. Does it feel fast
+### 6. Does it feel fast
 
 No stopwatch needed — the question is whether a cashier would notice.
 
