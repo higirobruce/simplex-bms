@@ -8,16 +8,25 @@
 const FALLBACK_TZ = "UTC";
 const warned = new Set<string>();
 
+function warnOnce(key: string, msg: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(msg);
+}
+
 /** Returns tz if the runtime recognises it; otherwise warns once and returns UTC. */
-function safeZone(tz: string): string {
+function safeZone(tz: unknown): string {
+  // Guard non-strings: Intl treats undefined as the HOST zone, which is exactly
+  // the server-zone bug this module exists to prevent.
+  if (typeof tz !== "string" || !tz) {
+    warnOnce(String(tz), `[day] missing timezone (${String(tz)}); falling back to ${FALLBACK_TZ}`);
+    return FALLBACK_TZ;
+  }
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return tz;
   } catch {
-    if (!warned.has(tz)) {
-      warned.add(tz);
-      console.warn(`[day] unknown timezone ${JSON.stringify(tz)}; falling back to ${FALLBACK_TZ}`);
-    }
+    warnOnce(tz, `[day] unknown timezone ${JSON.stringify(tz)}; falling back to ${FALLBACK_TZ}`);
     return FALLBACK_TZ;
   }
 }
@@ -69,14 +78,27 @@ function zonedMidnight(y: number, m: number, d: number, tz: string): number {
   // Two passes settle the offset when the guess lands across a DST change.
   let t = asUtc - offsetAt(asUtc, tz);
   t = asUtc - offsetAt(t, tz);
+  // If midnight falls in a DST gap (e.g. Havana 00:00 -> 01:00), the passes can
+  // land on the previous day's last hour. Advance to the first real instant
+  // whose wall clock has reached the target.
+  for (let i = 0; i < 3; i++) {
+    const behind = asUtc - wall(t, tz).ms;
+    if (behind <= 0) break;
+    t += behind;
+  }
   return t;
+}
+
+/** An Invalid Date falls back to now, so callers never pass NaN on to the database. */
+function validInstant(day: Date): number {
+  const t = day instanceof Date ? day.getTime() : NaN;
+  return Number.isNaN(t) ? Date.now() : t;
 }
 
 /** UTC instants bounding the calendar day of `day` in `tz`; start inclusive, end exclusive. */
 export function dayBounds(day: Date, tz: string): { start: Date; end: Date } {
   const zone = safeZone(tz);
-  if (Number.isNaN(day.getTime())) return { start: new Date(NaN), end: new Date(NaN) };
-  const { y, m, d } = wall(day.getTime(), zone);
+  const { y, m, d } = wall(validInstant(day), zone);
   const next = new Date(Date.UTC(y, m - 1, d + 1));
   return {
     start: new Date(zonedMidnight(y, m, d, zone)),
@@ -89,7 +111,6 @@ export function dayBounds(day: Date, tz: string): { start: Date; end: Date } {
 /** The instant the month containing `day` began in `tz`. */
 export function startOfMonthIn(day: Date, tz: string): Date {
   const zone = safeZone(tz);
-  if (Number.isNaN(day.getTime())) return new Date(NaN);
-  const { y, m } = wall(day.getTime(), zone);
+  const { y, m } = wall(validInstant(day), zone);
   return new Date(zonedMidnight(y, m, 1, zone));
 }

@@ -50,8 +50,48 @@ describe("day bounds in the org's timezone", () => {
     warn.mockRestore();
   });
 
-  test("an invalid date does not throw", () => {
-    expect(() => dayBounds(new Date(NaN), KIGALI)).not.toThrow();
+  test("an invalid date falls back to the day containing now", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-21T10:00:00Z"));
+    try {
+      const { start, end } = dayBounds(new Date(NaN), KIGALI);
+      expect(start.toISOString()).toBe("2026-11-20T22:00:00.000Z");
+      expect(end.toISOString()).toBe("2026-11-21T22:00:00.000Z");
+      expect(startOfMonthIn(new Date(NaN), KIGALI).toISOString()).toBe("2026-10-31T22:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a runtime undefined or null zone falls back to UTC, not the host zone", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const d = new Date("2026-11-21T10:00:00Z");
+    for (const tz of [undefined, null] as unknown as string[]) {
+      expect(dayBounds(d, tz).start.toISOString()).toBe("2026-11-21T00:00:00.000Z");
+      expect(startOfMonthIn(d, tz).toISOString()).toBe("2026-11-01T00:00:00.000Z");
+    }
+    warn.mockRestore();
+  });
+
+  test("a midnight DST gap west of UTC starts at the first real instant (Havana 2026-03-08)", () => {
+    const { start, end } = dayBounds(new Date("2026-03-08T12:00:00Z"), "America/Havana");
+    expect(start.toISOString()).toBe("2026-03-08T05:00:00.000Z"); // 01:00 local
+    expect(end.toISOString()).toBe("2026-03-09T04:00:00.000Z");
+    // the last hour of 3/7 belongs to 3/7, not 3/8
+    const lastOf7 = new Date("2026-03-08T04:30:00Z");
+    expect(dayBounds(lastOf7, "America/Havana").end.getTime()).toBe(start.getTime());
+  });
+
+  test("a midnight DST gap east of UTC (Cairo 2026-04-24) starts at the first real instant", () => {
+    expect(dayBounds(new Date("2026-04-24T12:00:00Z"), "Africa/Cairo").start.toISOString())
+      .toBe("2026-04-23T22:00:00.000Z");
+  });
+
+  test("a fall-back day is 25 hours long (New York 2026-11-01)", () => {
+    const b = dayBounds(new Date("2026-11-01T12:00:00Z"), "America/New_York");
+    expect(b.start.toISOString()).toBe("2026-11-01T04:00:00.000Z");
+    expect(b.end.toISOString()).toBe("2026-11-02T05:00:00.000Z");
+    expect((b.end.getTime() - b.start.getTime()) / 3600000).toBe(25);
   });
 
   test("honours DST for zones that have it (no fixed offset)", () => {
