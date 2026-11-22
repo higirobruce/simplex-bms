@@ -8,7 +8,7 @@ test("two SALE movements for one product and one sale are refused", async () => 
       data: { productId, fromLocationId: locationId, qty: "1", type: "SALE", referenceId: "sale-1", orgId },
     });
   await make();
-  await expect(make()).rejects.toThrow(/StockMovement_sale_ref_product_key|Unique constraint/);
+  await expect(make()).rejects.toThrow(/referenceId.*productId/);
 });
 
 test("two GRN movements for one product in different batches are still allowed", async () => {
@@ -17,10 +17,66 @@ test("two GRN movements for one product in different batches are still allowed",
   const b2 = await prisma.batch.create({ data: { productId, lot: "B", orgId } });
   for (const batchId of [b1.id, b2.id]) {
     await prisma.stockMovement.create({
-      data: { productId, toLocationId: locationId, qty: "5", type: "RECEIPT", referenceId: "grn-1", batchId, orgId },
+      data: { productId, toLocationId: locationId, qty: "5", type: "PURCHASE", referenceId: "grn-1", batchId, orgId },
     });
   }
   expect(await prisma.stockMovement.count({ where: { referenceId: "grn-1", productId } })).toBe(2);
+});
+
+test("two PURCHASE movements for one product without batch are allowed", async () => {
+  const { orgId, productId, locationId } = await seedOrg();
+  for (let i = 0; i < 2; i++) {
+    await prisma.stockMovement.create({
+      data: { productId, toLocationId: locationId, qty: "5", type: "PURCHASE", referenceId: "grn-1", orgId },
+    });
+  }
+  expect(await prisma.stockMovement.count({ where: { referenceId: "grn-1", productId } })).toBe(2);
+});
+
+test("two SALE movements with same referenceId but different productId are allowed", async () => {
+  const { orgId, locationId } = await seedOrg();
+  const p1 = await prisma.product.create({ data: { sku: "P1-SKU", name: "P1", unitPrice: "100", orgId } });
+  const p2 = await prisma.product.create({ data: { sku: "P2-SKU", name: "P2", unitPrice: "100", orgId } });
+  for (const pid of [p1.id, p2.id]) {
+    await prisma.stockMovement.create({
+      data: { productId: pid, fromLocationId: locationId, qty: "1", type: "SALE", referenceId: "sale-1", orgId },
+    });
+  }
+  expect(await prisma.stockMovement.count({ where: { referenceId: "sale-1" } })).toBe(2);
+});
+
+test("two SALE movements with same productId but different referenceId are allowed", async () => {
+  const { orgId, productId, locationId } = await seedOrg();
+  for (let i = 0; i < 2; i++) {
+    await prisma.stockMovement.create({
+      data: { productId, fromLocationId: locationId, qty: "1", type: "SALE", referenceId: `sale-${i}`, orgId },
+    });
+  }
+  expect(await prisma.stockMovement.count({ where: { productId, type: "SALE" } })).toBe(2);
+});
+
+test("a SALE movement and a PURCHASE movement with same referenceId and productId are allowed", async () => {
+  const { orgId, productId, locationId } = await seedOrg();
+  await prisma.stockMovement.create({
+    data: { productId, fromLocationId: locationId, qty: "1", type: "SALE", referenceId: "ref-1", orgId },
+  });
+  await prisma.stockMovement.create({
+    data: { productId, toLocationId: locationId, qty: "1", type: "PURCHASE", referenceId: "ref-1", orgId },
+  });
+  expect(await prisma.stockMovement.count({ where: { referenceId: "ref-1", productId } })).toBe(2);
+});
+
+test("delivery note with one SALE movement per product is allowed", async () => {
+  const { orgId, locationId } = await seedOrg();
+  const p1 = await prisma.product.create({ data: { sku: "P1-SKU", name: "P1", unitPrice: "100", orgId } });
+  const p2 = await prisma.product.create({ data: { sku: "P2-SKU", name: "P2", unitPrice: "100", orgId } });
+  const noteId = "dn-123";
+  for (const pid of [p1.id, p2.id]) {
+    await prisma.stockMovement.create({
+      data: { productId: pid, fromLocationId: locationId, qty: "1", type: "SALE", referenceId: noteId, orgId },
+    });
+  }
+  expect(await prisma.stockMovement.count({ where: { referenceId: noteId, type: "SALE" } })).toBe(2);
 });
 
 test("a lane token hash is unique", async () => {
