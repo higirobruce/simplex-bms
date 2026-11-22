@@ -18,9 +18,9 @@ use eframe::egui::{
     self, Align, Align2, Color32, Context, CornerRadius, FontFamily, FontId, Frame, Layout, Margin,
     Rect, RichText, Sense, Stroke, StrokeKind, Ui, vec2,
 };
-use till_core::Money;
 use till_core::codes::{PmtTyCd, TaxType};
 use till_core::line::LineDiscount;
+use till_core::{Money, TenderError};
 
 /// Who is at the lane. `LaneConfig` carries none of this, so `main` supplies it
 /// through the context (see [`set_session`]).
@@ -28,7 +28,6 @@ use till_core::line::LineDiscount;
 pub struct Session {
     pub lane: String,
     pub cashier: String,
-    pub shift: String,
 }
 
 impl Default for Session {
@@ -36,7 +35,6 @@ impl Default for Session {
         Session {
             lane: "LANE".into(),
             cashier: "NO CASHIER".into(),
-            shift: "NO SHIFT".into(),
         }
     }
 }
@@ -65,17 +63,28 @@ pub enum Action {
     Backspace,
     Enter,
     VoidLine,
-    Cash,
+    /// Take a payment under this RRA code: the keyed amount, or the balance.
+    Tender(PmtTyCd),
+    /// Take back the last payment keyed (a mis-key).
+    UndoTender,
+    /// Take back every payment; the basket stays.
+    ClearTenders,
     Reprint,
+    /// Print a shift report: a read-only snapshot of the open shift.
+    ReportX,
+    /// Close the shift with the keyed cash count and print the shift close report.
+    ReportZ,
+    /// Print the last shift close report again (a jam is not a lost closing).
+    ReprintZ,
     CancelSale,
     Resume,
     NotBuilt(&'static str),
 }
 
 /// Function keys: (egui key, label, name, action). The first seven are the
-/// mockup's; the lane has no discount, suspend, refund, buyer-TIN or report
-/// flow yet, so those say so rather than doing nothing silently.
-const FKEYS: [(egui::Key, &str, &str, Action); 10] = [
+/// mockup's; the lane has no discount, suspend, refund or buyer-TIN flow yet,
+/// so those say so rather than doing nothing silently.
+const FKEYS: [(egui::Key, &str, &str, Action); 11] = [
     (egui::Key::F1, "F1", "Void line", Action::VoidLine),
     (
         egui::Key::F2,
@@ -92,16 +101,74 @@ const FKEYS: [(egui::Key, &str, &str, Action); 10] = [
         "Buyer TIN",
         Action::NotBuilt("Buyer TIN"),
     ),
+    (egui::Key::F7, "F7", "Shift report", Action::ReportX),
     (
-        egui::Key::F7,
-        "F7",
-        "X / Z report",
-        Action::NotBuilt("X / Z report"),
+        egui::Key::F8,
+        "F8 · Ctrl 1",
+        "Cash",
+        Action::Tender(PmtTyCd::Cash),
     ),
-    (egui::Key::F8, "F8", "Cash", Action::Cash),
     (egui::Key::F9, "F9", "Reprint", Action::Reprint),
     (egui::Key::F10, "F10", "Cancel sale", Action::CancelSale),
+    (egui::Key::F11, "F11", "Undo tender", Action::UndoTender),
 ];
+
+/// The payment methods, one per RRA code (C5b): code, key digit, name, the
+/// label on the on-screen cap. Cash also answers to F8, which the cashiers
+/// already know. Letters cannot be method keys: the scanner wedge types them
+/// into the buffer. A modified digit is never wedge text, so Ctrl+1..7 is safe,
+/// and the digit is the RRA code's own number.
+const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
+    (PmtTyCd::Cash, egui::Key::Num1, "Cash", "Cash"),
+    (PmtTyCd::Credit, egui::Key::Num2, "Credit", "Credit"),
+    (
+        PmtTyCd::CashCredit,
+        egui::Key::Num3,
+        "Cash / credit",
+        "Cash/credit",
+    ),
+    (
+        PmtTyCd::BankCheck,
+        egui::Key::Num4,
+        "Bank check",
+        "Bank check",
+    ),
+    (PmtTyCd::Card, egui::Key::Num5, "Card", "Card"),
+    (
+        PmtTyCd::MobileMoney,
+        egui::Key::Num6,
+        "Mobile money",
+        "MoMo",
+    ),
+    (PmtTyCd::Other, egui::Key::Num7, "Other", "Other"),
+];
+
+/// Shift-chorded report keys: key, name, action. Shift+F7 closes the shift and
+/// prints its close report, beside F7's harmless shift report: a chord because
+/// closing is irreversible, and Shift rather than Ctrl
+/// because the operating system reserves Ctrl+F-key chords on some machines.
+const SHIFT_KEYS: [(egui::Key, &str, Action); 2] = [
+    (egui::Key::F7, "Close shift", Action::ReportZ),
+    (egui::Key::F9, "Reprint close report", Action::ReprintZ),
+];
+
+fn shift_cap(key: egui::Key) -> String {
+    format!("Shift {}", key.name())
+}
+
+/// The key cap of a Ctrl chord, derived from the key itself so a cap can never
+/// disagree with the binding that `actions_from` really reads.
+fn ctrl_cap(key: egui::Key) -> String {
+    format!("Ctrl {}", key.name())
+}
+
+fn method_name(code: PmtTyCd) -> &'static str {
+    METHODS
+        .iter()
+        .find(|(c, ..)| *c == code)
+        .map(|(_, _, name, _)| *name)
+        .unwrap_or("Other")
+}
 
 /// Translates raw input into actions, in order. Pure, so it can be tested.
 pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
@@ -113,8 +180,19 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
                 key,
                 pressed: true,
                 repeat: false,
+                modifiers,
                 ..
             } => match key {
+                // Ctrl+Backspace is not a wedge character and not a method key.
+                egui::Key::Backspace if modifiers.ctrl => out.push(Action::ClearTenders),
+                k if modifiers.ctrl => {
+                    if let Some((code, ..)) = METHODS.iter().find(|(_, mk, ..)| mk == k) {
+                        out.push(Action::Tender(*code));
+                    }
+                }
+                k if modifiers.shift && SHIFT_KEYS.iter().any(|(sk, ..)| sk == k) => {
+                    out.extend(SHIFT_KEYS.iter().filter(|(sk, ..)| sk == k).map(|t| t.2));
+                }
                 egui::Key::Enter => out.push(Action::Enter),
                 egui::Key::Backspace => out.push(Action::Backspace),
                 egui::Key::F12 => out.push(Action::Resume),
@@ -134,7 +212,13 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Handle::current().block_on(f)
 }
 
-fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &mut Local) {
+fn apply(
+    action: Action,
+    state: &mut LaneState,
+    devices: &mut Devices,
+    local: &mut Local,
+    session: &Session,
+) {
     local.note = None;
     let result = match action {
         Action::Char(c) => {
@@ -146,6 +230,7 @@ fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &m
             Ok(())
         }
         Action::Enter => match state.screen() {
+            Screen::NoShift => open_shift(state, local, session),
             Screen::Selling if !state.buffer().is_empty() => block_on(state.enter()),
             Screen::Selling => block_on(state.settle(
                 devices.fiscal.as_mut(),
@@ -168,8 +253,13 @@ fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &m
                 None => Ok(()),
             }
         }
-        Action::Cash => tender_cash(state, local),
+        Action::Tender(code) => tender(state, local, code),
+        Action::UndoTender => state.remove_last_tender(),
+        Action::ClearTenders => state.clear_tenders(),
         Action::Reprint => state.reprint(devices.printer.as_mut()),
+        Action::ReportX => block_on(state.print_x(devices.printer.as_mut())),
+        Action::ReportZ => close_with_z(state, local, devices),
+        Action::ReprintZ => block_on(state.reprint_z(devices.printer.as_mut())),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
         Action::NotBuilt(name) => {
@@ -180,25 +270,104 @@ fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &m
     local.fault = result.err().map(|e| e.to_string());
 }
 
-/// F8: what is keyed is the cash handed over; nothing keyed means exact cash.
-fn tender_cash(state: &mut LaneState, local: &mut Local) -> Result<(), crate::lane::LaneError> {
+/// Shift+F7: what is keyed is the cash the cashier counted. Unlike the opening
+/// float, nothing keyed is NOT taken as zero: closing the shift is irreversible, and
+/// a count of zero must be keyed on purpose, never by a stray key press.
+fn close_with_z(
+    state: &mut LaneState,
+    local: &mut Local,
+    devices: &mut Devices,
+) -> Result<(), crate::lane::LaneError> {
+    let digits = state.buffer().chars().filter(char::is_ascii_digit).count();
+    let counted = if state.buffer().is_empty() || digits > MAX_FLOAT_DIGITS {
+        None
+    } else {
+        Money::try_from_str(state.buffer()).ok()
+    };
+    let Some(counted) = counted else {
+        // Never close on a scanned barcode or a mis-key.
+        while !state.buffer().is_empty() {
+            state.backspace();
+        }
+        local.note = Some(
+            "Key the cash you counted in the drawer (0 if empty), then press Shift F7 to close the shift."
+                .into(),
+        );
+        return Ok(());
+    };
+    block_on(state.print_z(counted, devices.printer.as_mut()))
+}
+
+/// The longest opening float the till will take from the keyboard.
+const MAX_FLOAT_DIGITS: usize = 7;
+
+/// Enter on the no-shift screen: what is keyed is the opening float; nothing
+/// keyed means a float of zero. The cashier's name is the session's, because
+/// the lane has no sign-in of its own yet.
+fn open_shift(
+    state: &mut LaneState,
+    local: &mut Local,
+    session: &Session,
+) -> Result<(), crate::lane::LaneError> {
+    // A scanner types its code and Enter exactly like a cashier keys a float,
+    // so a barcode scanned on this screen must never become an opening float.
+    // No drawer opens with more than seven digits.
+    // Digits, not characters: `10000.50` is a legitimate float of eight
+    // characters and seven digits. An EAN-8 is the shortest barcode and has
+    // eight digits, which is why the limit is seven.
+    let digits = state.buffer().chars().filter(char::is_ascii_digit).count();
+    if digits > MAX_FLOAT_DIGITS {
+        while !state.buffer().is_empty() {
+            state.backspace();
+        }
+        local.note = Some("That looks like a barcode. Key the opening float instead.".into());
+        return Ok(());
+    }
+    let float = if state.buffer().is_empty() {
+        Some(Money::zero())
+    } else {
+        Money::try_from_str(state.buffer()).ok()
+    };
+    match float {
+        Some(f) => block_on(state.open_shift(&session.cashier, f)),
+        None => {
+            local.note = Some("Key the opening float as a plain amount, then press Enter.".into());
+            Ok(())
+        }
+    }
+}
+
+/// A payment key: what is keyed is the amount handed over; nothing keyed means
+/// the exact balance. Which code goes where, and what change is owed, is
+/// `till-core`'s: this only passes the amount and the code on.
+fn tender(
+    state: &mut LaneState,
+    local: &mut Local,
+    code: PmtTyCd,
+) -> Result<(), crate::lane::LaneError> {
     if *state.screen() != Screen::Selling {
         return Ok(());
     }
     let amount = if state.buffer().is_empty() {
-        let due = state.basket().totals().map(|t| t.tot_amt).ok();
-        let paid = state.tender_total();
-        match (due, paid) {
-            (Some(d), Some(p)) => d.checked_sub(p).filter(|m| *m > Money::zero()),
-            _ => None,
-        }
+        state
+            .basket()
+            .totals()
+            .ok()
+            .and_then(|t| state.remaining(t.tot_amt))
     } else {
         Money::try_from_str(state.buffer()).ok()
     };
     match amount {
-        Some(a) => state.add_tender(PmtTyCd::Cash, a),
+        Some(a) => state.add_tender(code, a),
         None => {
-            local.note = Some("Key the cash amount first, then press F8.".into());
+            local.note = Some(if state.buffer().is_empty() {
+                "Nothing is left to pay. Press Enter to settle.".to_owned()
+            } else {
+                format!(
+                    "Key the {} amount as a plain number first.",
+                    method_name(code).to_lowercase()
+                )
+            });
             Ok(())
         }
     }
@@ -212,7 +381,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
         .unwrap_or_default();
 
     for a in ctx.input(|i| actions_from(&i.events)) {
-        apply(a, state, devices, &mut local);
+        apply(a, state, devices, &mut local, &session);
     }
 
     let mut tapped = Vec::new();
@@ -223,6 +392,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
                 tapped.push(a);
             }
         }
+        Screen::NoShift => no_shift(ctx, state, &local, &session),
         _ => {
             if let Some(a) = rail(ctx, state, &local) {
                 tapped.push(a);
@@ -231,7 +401,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
         }
     }
     for a in &tapped {
-        apply(*a, state, devices, &mut local);
+        apply(*a, state, devices, &mut local, &session);
     }
     if !tapped.is_empty() {
         ctx.request_repaint();
@@ -289,6 +459,18 @@ fn chip(ui: &mut Ui, label: &str, fill: Color32, ink: Color32) {
         });
 }
 
+/// What the status bar says about the shift: the real opening time (Kigali
+/// clock) and who opened it, read from the open shift itself.
+fn shift_label(shift: Option<&till_store::OpenShift>) -> String {
+    match shift {
+        Some(s) => {
+            let at = crate::lane::kigali_hhmm(&s.opened_at).unwrap_or_else(|| s.opened_at.clone());
+            format!("Shift open {at} · {}", s.opened_by).to_uppercase()
+        }
+        None => "NO SHIFT".to_string(),
+    }
+}
+
 fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
     egui::TopBottomPanel::top("status")
         .frame(
@@ -330,7 +512,8 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
                         }
                     }
                     ui.label(text(clock(), mono(14.0), TOKENS.line));
-                    ui.label(text(session.shift.to_uppercase(), sans(14.0), TOKENS.line));
+                    let shift = shift_label(state.shift());
+                    ui.label(text(shift, sans(14.0), TOKENS.line));
                 });
             });
         });
@@ -688,31 +871,94 @@ fn rail(ctx: &Context, state: &LaneState, _local: &Local) -> Option<Action> {
 
             amount_tile(
                 ui,
-                "Tendered · 01 Cash",
+                "Tendered",
                 tendered,
                 TOKENS.surface,
                 TOKENS.ink,
                 TOKENS.ink_mute,
             );
+            tender_lines(ui, state);
             if settled.is_none() {
-                let change = tendered
-                    .checked_sub(due)
-                    .filter(|m| *m > Money::zero())
-                    .unwrap_or(Money::zero());
-                amount_tile(
-                    ui,
-                    "Change",
-                    change,
-                    TOKENS.surface,
-                    TOKENS.ink,
-                    TOKENS.ink_mute,
-                );
+                balance_tile(ui, state, due);
             }
 
             scan_field(ui, state);
             tapped = keys(ui, state);
         });
     tapped
+}
+
+/// One line per tender taken, each with its RRA code, so a split is visible.
+fn tender_lines(ui: &mut Ui, state: &LaneState) {
+    let entries = state.tenders().entries();
+    if entries.is_empty() {
+        return;
+    }
+    tile(ui, TOKENS.surface, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        for e in entries {
+            ui.horizontal(|ui| {
+                ui.label(text(e.pmt_ty_cd.wire(), mono_bold(14.0), TOKENS.accent));
+                ui.label(text(
+                    method_name(e.pmt_ty_cd),
+                    sans_semibold(14.0),
+                    TOKENS.ink,
+                ));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(text(fmt::rwf(e.amount), mono_bold(14.0), TOKENS.ink));
+                });
+            });
+        }
+    });
+}
+
+/// Change, or what is still owed, before settlement. Asks `till-core` rather
+/// than subtracting: change is capped by the cash handed over, so a card
+/// overpayment owes none, and the cashier is told so instead of being shown
+/// a change figure the till will refuse to settle on.
+fn balance_tile(ui: &mut Ui, state: &LaneState, due: Money) {
+    match state.tenders().settle(due) {
+        Ok(s) => amount_tile(
+            ui,
+            "Change",
+            s.change,
+            TOKENS.surface,
+            TOKENS.ink,
+            TOKENS.ink_mute,
+        ),
+        // Nothing tendered yet is the same state as a shortfall: all of it is
+        // still to pay. `remaining` does the sum; the UI never subtracts.
+        Err(TenderError::Insufficient { .. } | TenderError::Empty) => amount_tile(
+            ui,
+            "Still to pay",
+            state.remaining(due).unwrap_or(due),
+            TOKENS.surface,
+            TOKENS.ink,
+            TOKENS.ink_mute,
+        ),
+        Err(TenderError::OverTenderOnNonCash) => balance_alert(
+            ui,
+            "NO CHANGE ON NON-CASH. The payment is more than is due and cash received does not cover the difference. Take the last payment back (F11) and key it again.",
+        ),
+        // The basket's own total or the tender sum is unusable; the cashier
+        // must see that rather than a blank panel.
+        Err(
+            TenderError::NegativeDue(_)
+            | TenderError::FractionalDue(_)
+            | TenderError::OutOfRange
+            | TenderError::NonPositiveAmount
+            | TenderError::FractionalAmount(_),
+        ) => balance_alert(
+            ui,
+            "THE BALANCE CANNOT BE WORKED OUT. Take the payments back and check the basket, or ask a supervisor.",
+        ),
+    }
+}
+
+fn balance_alert(ui: &mut Ui, message: &str) {
+    tile(ui, TOKENS.surface, |ui| {
+        ui.label(text(message, sans_semibold(14.0), TOKENS.danger));
+    });
 }
 
 fn band_table(ui: &mut Ui, t: &till_core::BasketTotals) {
@@ -786,11 +1032,34 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         Screen::Settled { .. } => ("ENTER", "Next customer", true),
         _ => ("ENTER", "Scan / Pay", true),
     };
-    let mut all: Vec<(&str, &str, Action, bool, bool)> = FKEYS
+    let mut all: Vec<(String, &str, Action, bool, bool)> = FKEYS
         .iter()
-        .map(|(_, k, n, a)| (*k, *n, *a, false, matches!(a, Action::NotBuilt(_))))
+        .map(|(_, k, n, a)| {
+            (
+                (*k).to_owned(),
+                *n,
+                *a,
+                false,
+                matches!(a, Action::NotBuilt(_)),
+            )
+        })
         .collect();
-    all.push((enter.0, enter.1, Action::Enter, enter.2, false));
+    // Cash already has F8; its cap carries the Ctrl+1 alias too. Every label is
+    // derived from `METHODS`, the table `actions_from` reads, so they cannot drift.
+    for (code, key, _, cap) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
+        all.push((ctrl_cap(*key), *cap, Action::Tender(*code), false, false));
+    }
+    for (key, name, action) in SHIFT_KEYS {
+        all.push((shift_cap(key), name, action, false, false));
+    }
+    all.push((
+        "Ctrl Bksp".to_owned(),
+        "Clear tenders",
+        Action::ClearTenders,
+        false,
+        false,
+    ));
+    all.push((enter.0.to_owned(), enter.1, Action::Enter, enter.2, false));
 
     let cols = 4;
     let gap = 6.0;
@@ -799,7 +1068,7 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
             for (fk, name, action, hot, muted) in chunk {
-                if key_cap(ui, w, fk, name, *hot, *muted) {
+                if key_cap(ui, w, fk.as_str(), name, *hot, *muted) {
                     tapped = Some(*action);
                 }
             }
@@ -906,6 +1175,58 @@ fn hard_stop(ctx: &Context, state: &LaneState, reason: &str) -> Option<Action> {
     tapped
 }
 
+/// Shown until a cashier opens a shift. The float is keyed on the same wedge
+/// buffer the scans use, and Enter opens the shift.
+fn no_shift(ctx: &Context, state: &LaneState, local: &Local, session: &Session) {
+    egui::CentralPanel::default()
+        .frame(Frame::new().fill(TOKENS.ink).inner_margin(Margin::same(40)))
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(60.0);
+                ui.label(text("NO SHIFT OPEN", sans_bold(13.0), TOKENS.hi_vis));
+                ui.add_space(12.0);
+                ui.label(text("Open a shift to start selling", sans_bold(40.0), TOKENS.canvas));
+                ui.add_space(14.0);
+                ui.label(text(
+                    format!(
+                        "Count the drawer, key the opening float, and press Enter. The shift opens in the name of {}.",
+                        session.cashier
+                    ),
+                    sans(18.0),
+                    TOKENS.line,
+                ));
+                ui.add_space(24.0);
+                let buffer = if state.buffer().is_empty() {
+                    "Opening float ▏".to_string()
+                } else {
+                    format!("{} ▏", state.buffer())
+                };
+                ui.label(text(buffer, mono(28.0), TOKENS.canvas));
+                ui.add_space(12.0);
+                // A problem and a confirmation must look different on this dark
+                // ground: the closing figures appear here, because closing the
+                // shift is what puts the lane on this screen.
+                match state.notice() {
+                    Notice::Problem(m) => {
+                        ui.label(text(m, sans(16.0), TOKENS.hi_vis));
+                    }
+                    Notice::Info(m) => {
+                        ui.label(text(m, sans_bold(18.0), TOKENS.canvas));
+                    }
+                    Notice::None => {}
+                }
+                if let Some(n) = &local.note {
+                    ui.label(text(n, sans(16.0), TOKENS.hi_vis));
+                }
+                if let Some(f) = &local.fault {
+                    ui.label(text(f, sans(16.0), TOKENS.hi_vis));
+                }
+                ui.add_space(20.0);
+                ui.label(text("ENTER  Open shift", mono(14.0), TOKENS.line));
+            });
+        });
+}
+
 fn ghost_chip(ui: &mut Ui, label: &str) {
     Frame::new()
         .stroke(Stroke::new(1.0_f32, TOKENS.ink_soft))
@@ -965,6 +1286,24 @@ mod tests {
         vec![key_event(key), up]
     }
 
+    /// Ctrl+key, press then release.
+    fn tap_ctrl(key: Key) -> Vec<Event> {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::NONE
+        };
+        [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: ctrl,
+            })
+            .collect()
+    }
+
     fn type_text(s: &str) -> Vec<Event> {
         vec![Event::Text(s.to_owned())]
     }
@@ -978,10 +1317,25 @@ mod tests {
 
     impl Rig {
         fn new() -> Rig {
+            Rig::build(true)
+        }
+
+        /// A till as it starts in the morning: no shift yet.
+        fn without_shift() -> Rig {
+            Rig::build(false)
+        }
+
+        fn build(with_shift: bool) -> Rig {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let state = rt.block_on(async {
                 let store = Store::open_in_memory().await.unwrap();
                 store.sync_catalogue(&demo::products()).await.unwrap();
+                if with_shift {
+                    store
+                        .open_shift(&demo::config().dvc_srl_no, "cashier", Money::zero())
+                        .await
+                        .unwrap();
+                }
                 LaneState::new(store, demo::config()).await.unwrap()
             });
             let ctx = Context::default();
@@ -994,8 +1348,8 @@ mod tests {
             }
         }
 
-        /// One frame with these events.
-        fn frame(&mut self, events: Vec<Event>) {
+        /// One frame with these events; returns every string it painted.
+        fn frame(&mut self, events: Vec<Event>) -> String {
             let _g = self.rt.enter();
             let input = RawInput {
                 events,
@@ -1006,8 +1360,71 @@ mod tests {
                 ..Default::default()
             };
             let (state, devices) = (&mut self.state, &mut self.devices);
-            let _ = self.ctx.run(input, |ctx| lane(ctx, state, devices));
+            let out = self.ctx.run(input, |ctx| lane(ctx, state, devices));
+            out.shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
         }
+
+        /// Scans these barcodes, one Enter each.
+        fn scan(&mut self, codes: &[&str]) {
+            for c in codes {
+                self.frame(type_text(c));
+                self.frame(tap(Key::Enter));
+            }
+        }
+
+        fn due(&self) -> Money {
+            self.state.basket().totals().unwrap().tot_amt
+        }
+
+        fn tenders(&self) -> Vec<(PmtTyCd, String)> {
+            self.state
+                .tenders()
+                .entries()
+                .iter()
+                .map(|e| (e.pmt_ty_cd, e.amount.to_string()))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_cashier_opens_a_shift_from_the_no_shift_screen() {
+        let mut r = Rig::without_shift();
+        set_session(
+            &r.ctx,
+            Session {
+                lane: "Lane 02".into(),
+                cashier: "M. Uwase".into(),
+            },
+        );
+        r.frame(vec![]); // the no-shift screen renders
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        // A barcode scanned here is not an opening float.
+        let mut scan = type_text("5612345000017");
+        scan.extend(tap(Key::Enter));
+        r.frame(scan);
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        assert_eq!(r.state.buffer(), "");
+        assert!(r.state.basket().is_empty());
+        // Key the float; Enter opens the shift in the session's name.
+        r.frame(type_text("5000"));
+        assert_eq!(r.state.buffer(), "5000");
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        assert_eq!(
+            r.state.shift().unwrap().opening_float.to_string(),
+            "5000.00"
+        );
+        assert_eq!(r.state.shift().unwrap().opened_by, "M. Uwase");
+        r.frame(type_text("5612345000017"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(r.state.basket().len(), 1);
     }
 
     #[test]
@@ -1060,6 +1477,234 @@ mod tests {
         r.frame(type_text("2000"));
         r.frame(tap(Key::F8));
         assert_eq!(r.state.tender_total().unwrap().to_string(), "2000.00");
+    }
+
+    /// 7,100 due: two milks, two sugars, a Mutzig and a cola.
+    const BASKET: [&str; 6] = [
+        "5612345000017",
+        "5612345000024",
+        "5612345000031",
+        "5449000000996",
+        "5612345000017",
+        "5612345000024",
+    ];
+
+    #[test]
+    fn each_payment_key_adds_a_tender_under_its_own_rra_code() {
+        let digits = [
+            (Key::Num1, PmtTyCd::Cash),
+            (Key::Num2, PmtTyCd::Credit),
+            (Key::Num3, PmtTyCd::CashCredit),
+            (Key::Num4, PmtTyCd::BankCheck),
+            (Key::Num5, PmtTyCd::Card),
+            (Key::Num6, PmtTyCd::MobileMoney),
+            (Key::Num7, PmtTyCd::Other),
+        ];
+        for (key, code) in digits {
+            let mut r = Rig::new();
+            r.scan(&["5612345000017"]);
+            r.frame(type_text("500"));
+            r.frame(tap_ctrl(key));
+            assert_eq!(r.tenders(), vec![(code, "500.00".to_owned())], "{code:?}");
+            // Nothing keyed: the exact balance, under the same code.
+            r.frame(tap_ctrl(key));
+            assert_eq!(r.tenders()[1], (code, "700.00".to_owned()), "{code:?}");
+        }
+        // F8 is still cash, and the wire codes are the RRA's own.
+        let mut r = Rig::new();
+        r.scan(&["5612345000017"]);
+        r.frame(tap(Key::F8));
+        assert_eq!(r.tenders()[0].0.wire(), "01");
+        assert_eq!(
+            METHODS.map(|(c, ..)| c.wire()),
+            ["01", "02", "03", "04", "05", "06", "07"]
+        );
+    }
+
+    #[test]
+    fn a_digit_without_ctrl_is_still_a_scan_digit() {
+        let mut r = Rig::new();
+        r.scan(&["5612345000017"]);
+        r.frame(type_text("5"));
+        assert_eq!(r.state.buffer(), "5");
+        assert!(r.tenders().is_empty());
+    }
+
+    #[test]
+    fn a_split_tender_across_two_methods_settles_when_the_total_covers_it() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        assert_eq!(r.due().to_string(), "7100.00");
+        r.frame(type_text("5000"));
+        r.frame(tap_ctrl(Key::Num5)); // card
+        // Short: Enter must not settle.
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        r.frame(tap_ctrl(Key::Num1)); // cash, the exact remaining 2,100
+        assert_eq!(
+            r.tenders(),
+            vec![
+                (PmtTyCd::Card, "5000.00".to_owned()),
+                (PmtTyCd::Cash, "2100.00".to_owned())
+            ]
+        );
+        r.frame(tap(Key::Enter));
+        assert_eq!(
+            *r.state.screen(),
+            Screen::Settled {
+                change: Money::zero()
+            }
+        );
+    }
+
+    #[test]
+    fn change_is_capped_by_cash_received_in_a_split_tender() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("8000"));
+        r.frame(tap_ctrl(Key::Num5)); // card 8,000 against 7,100
+        let shown = r.frame(tap(Key::Enter));
+        assert_eq!(
+            *r.state.screen(),
+            Screen::Selling,
+            "card overpay must not settle"
+        );
+        assert!(r.state.last_receipt().is_none());
+        assert!(shown.contains("NO CHANGE ON NON-CASH"), "{shown}");
+        // A token cash tender does not cover 900 of change either.
+        r.frame(type_text("100"));
+        r.frame(tap_ctrl(Key::Num1));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        // Mobile money is non-cash too.
+        let mut m = Rig::new();
+        m.scan(&BASKET);
+        m.frame(type_text("8000"));
+        m.frame(tap_ctrl(Key::Num6));
+        m.frame(tap(Key::Enter));
+        assert_eq!(*m.state.screen(), Screen::Selling);
+        // The cap is not a blanket refusal: cash received can cover change.
+        let mut ok = Rig::new();
+        ok.scan(&["5612345000017"]);
+        ok.frame(type_text("1000"));
+        ok.frame(tap_ctrl(Key::Num5));
+        ok.frame(type_text("500"));
+        ok.frame(tap_ctrl(Key::Num1));
+        ok.frame(tap(Key::Enter));
+        assert_eq!(
+            *ok.state.screen(),
+            Screen::Settled {
+                change: Money::try_from_str("300").unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn the_rail_shows_each_tender_line_with_its_code() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("5000"));
+        r.frame(tap_ctrl(Key::Num5));
+        let shown = r.frame(type_text("1000"));
+        assert!(shown.contains("05") && shown.contains("Card"), "{shown}");
+        assert!(shown.contains(&fmt::rwf(Money::try_from_str("5000").unwrap())));
+        assert!(shown.contains("STILL TO PAY"), "{shown}");
+        r.frame(tap_ctrl(Key::Num6));
+        let shown = r.frame(vec![]);
+        assert!(
+            shown.contains("06") && shown.contains("Mobile money"),
+            "{shown}"
+        );
+        assert!(shown.contains(&fmt::rwf(Money::try_from_str("1000").unwrap())));
+        assert!(shown.contains("STILL TO PAY"));
+        assert!(shown.contains("1,100"), "{shown}");
+    }
+
+    #[test]
+    fn the_balance_is_shown_before_the_first_tender_is_taken() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("STILL TO PAY"), "{shown}");
+        assert!(shown.contains("7,100"), "{shown}");
+    }
+
+    #[test]
+    fn f11_takes_back_a_mis_keyed_card_tender_and_the_sale_can_then_settle() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("8000"));
+        r.frame(tap_ctrl(Key::Num5)); // card 8,000 against 7,100: a mis-key
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("NO CHANGE ON NON-CASH"), "{shown}");
+        let shown = r.frame(tap(Key::F11));
+        assert!(r.tenders().is_empty());
+        assert!(!shown.contains("NO CHANGE ON NON-CASH"), "{shown}");
+        assert!(shown.contains("STILL TO PAY"), "{shown}");
+        r.frame(tap_ctrl(Key::Num5)); // card, the exact balance
+        r.frame(tap(Key::Enter));
+        assert_eq!(
+            *r.state.screen(),
+            Screen::Settled {
+                change: Money::zero()
+            }
+        );
+    }
+
+    #[test]
+    fn ctrl_backspace_clears_every_tender_and_keeps_the_basket() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        r.frame(type_text("1000"));
+        r.frame(tap_ctrl(Key::Num5));
+        r.frame(type_text("500"));
+        r.frame(tap_ctrl(Key::Num6));
+        assert_eq!(r.tenders().len(), 2);
+        let lines = r.state.basket().len();
+        r.frame(tap_ctrl(Key::Backspace));
+        assert!(r.tenders().is_empty());
+        assert_eq!(r.state.basket().len(), lines);
+        assert_eq!(r.due().to_string(), "7100.00");
+    }
+
+    #[test]
+    fn the_undo_keys_are_on_screen() {
+        let mut r = Rig::new();
+        r.scan(&BASKET);
+        let shown = r.frame(vec![]);
+        assert!(
+            shown.contains("Undo tender") && shown.contains("F11"),
+            "{shown}"
+        );
+        assert!(shown.contains("Clear tenders"), "{shown}");
+    }
+
+    #[test]
+    fn an_opening_float_with_cents_is_not_mistaken_for_a_barcode() {
+        let mut r = Rig::without_shift();
+        r.frame(type_text("10000.50"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        assert_eq!(
+            r.state.shift().unwrap().opening_float.to_string(),
+            "10000.50"
+        );
+    }
+
+    #[test]
+    fn an_eight_digit_entry_is_refused_as_a_barcode() {
+        // EAN-8 is the shortest barcode, and the case the guard exists for.
+        let mut r = Rig::without_shift();
+        r.frame(type_text("96385074"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        assert_eq!(r.state.buffer(), "");
+        let local: Local = r.ctx.data(|d| d.get_temp(local_id())).unwrap();
+        assert!(local.note.unwrap().contains("barcode"));
+        // Seven digits is the longest float accepted.
+        r.frame(type_text("9999999"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(*r.state.screen(), Screen::Selling);
     }
 
     #[test]
@@ -1185,5 +1830,93 @@ mod tests {
         let ctx = Context::default();
         theme::apply(&ctx);
         let _ = ctx.run(RawInput::default(), |ctx| fatal(ctx, "database unreadable"));
+    }
+
+    fn tap_shift_f7() -> Vec<Event> {
+        [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key: Key::F7,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn f7_prints_an_x_report_and_leaves_the_shift_open() {
+        let mut r = Rig::new();
+        r.frame(tap(Key::F7));
+        r.frame(tap(Key::F7));
+        assert!(r.state.shift().is_some());
+        assert_eq!(*r.state.screen(), Screen::Selling);
+        match r.state.notice() {
+            Notice::Info(m) => assert!(m.contains("Shift report printed"), "{m}"),
+            n => panic!("{n:?}"),
+        }
+    }
+
+    #[test]
+    fn z_needs_a_keyed_count_and_a_stray_press_closes_nothing() {
+        let mut r = Rig::new();
+        let shown = r.frame(tap_shift_f7());
+        assert!(shown.contains("Key the cash you counted"), "{shown}");
+        assert!(r.state.shift().is_some());
+        // A scanned barcode is not a cash count either.
+        r.frame(type_text("6001234567890"));
+        r.frame(tap_shift_f7());
+        assert!(r.state.shift().is_some());
+        assert_eq!(r.state.buffer(), "");
+        // Plain F7 is the harmless shift report, never a close.
+        r.frame(type_text("1000"));
+        r.frame(tap(Key::F7));
+        assert!(r.state.shift().is_some());
+    }
+
+    #[test]
+    fn shift_f7_with_a_counted_amount_closes_the_shift() {
+        let mut r = Rig::new();
+        r.frame(type_text("1000"));
+        let painted = r.frame(tap_shift_f7());
+        assert!(r.state.shift().is_none());
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        // What the cashier is shown, not what the state holds: the closing
+        // figures are on the frame that follows a successful close.
+        assert!(
+            painted.contains("Close report printed") && painted.contains("variance +1,000"),
+            "{painted}"
+        );
+        assert!(
+            r.frame(vec![]).contains("variance +1,000"),
+            "and they stay painted"
+        );
+    }
+
+    #[test]
+    fn every_ctrl_key_cap_is_derived_from_the_binding_it_labels() {
+        let mut r = Rig::new();
+        let shown = r.frame(vec![]);
+        for (_, key, ..) in METHODS.iter().filter(|(c, ..)| *c != PmtTyCd::Cash) {
+            assert!(shown.contains(&ctrl_cap(*key)), "{key:?} cap in {shown}");
+        }
+        assert!(shown.contains(&shift_cap(Key::F7)) && shown.contains("Close shift"));
+        assert!(shown.contains("Shift F9") && shown.contains("Reprint close report"));
+        assert!(shown.contains("Shift report"));
+    }
+
+    #[test]
+    fn the_status_bar_shows_the_real_shift_not_a_placeholder() {
+        let mut r = Rig::new();
+        let shown = r.frame(vec![]);
+        let opened = r.state.shift().unwrap().clone();
+        let at = crate::lane::kigali_hhmm(&opened.opened_at).unwrap();
+        let want = format!("SHIFT OPEN {at} · {}", opened.opened_by.to_uppercase());
+        assert!(shown.contains(&want), "{want} in {shown}");
+        assert!(
+            !shown.contains("06:58") || at == "06:58",
+            "no hardcoded time"
+        );
     }
 }

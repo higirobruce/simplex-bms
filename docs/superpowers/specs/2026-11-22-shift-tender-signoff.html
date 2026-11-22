@@ -1,0 +1,219 @@
+<title>Shift and Tender Sign-off</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#F1F6FB; --surface:#FFFFFF; --ink:#0F1B2A; --ink-soft:#41576E;
+    --ink-mute:#546A7E; --line:#E2EBF4; --accent:#176596; --accent-soft:#DDEBF6;
+    --danger:#B5271F; --ok:#15713F; --radius:14px;
+    --ui:"Inter",system-ui,-apple-system,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0B141F; --surface:#13202E; --ink:#EAF2FA; --ink-soft:#AFC3D6;
+      --ink-mute:#8CA2B8; --line:#22354A; --accent:#41ADEA; --accent-soft:#13334A;
+      --danger:#FF6369; --ok:#3DD68C; color-scheme:dark;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0B141F; --surface:#13202E; --ink:#EAF2FA; --ink-soft:#AFC3D6;
+    --ink-mute:#8CA2B8; --line:#22354A; --accent:#41ADEA; --accent-soft:#13334A;
+    --danger:#FF6369; --ok:#3DD68C; color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg); color:var(--ink); font-family:var(--ui); margin:0;
+    font-size:16px; line-height:1.55; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:68rem; margin:0 auto; padding-inline:16px; padding-block:36px 72px}
+  .eyebrow{font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--ink-mute); margin:0 0 12px}
+  h1{font-size:clamp(1.85rem,5vw,2.7rem); line-height:1.05; letter-spacing:-.028em;
+    font-weight:800; margin:0 0 15px; text-wrap:balance; max-width:24ch}
+  .stand{font-size:1.05rem; color:var(--ink-soft); margin:0 0 22px; max-width:62ch}
+  .pills{display:flex; gap:7px; flex-wrap:wrap; margin-bottom:42px}
+  .pill{font-size:11.5px; font-weight:700; padding:6px 12px; border-radius:999px;
+    background:var(--accent); color:#fff}
+  .pill.ghost{background:transparent; color:var(--ink-mute); border:1px solid var(--line)}
+  .pill.ok{background:var(--ok); color:#fff}
+  h2{font-size:clamp(1.15rem,2.7vw,1.5rem); font-weight:700; margin:0 0 7px;
+    letter-spacing:-.018em; text-wrap:balance}
+  .sec-no{font-family:var(--mono); font-size:10.5px; color:var(--accent);
+    font-weight:600; letter-spacing:.1em; display:block; margin-bottom:7px}
+  section{margin-bottom:46px}
+  p{margin:0 0 14px; max-width:66ch; color:var(--ink-soft)}
+  .lede{border-left:3px solid var(--danger); padding:3px 0 3px 16px;
+    font-size:1.02rem; color:var(--ink); max-width:64ch; margin-bottom:16px}
+  .grid{display:grid; gap:12px;
+    grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr))}
+  .card{background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius); padding:15px 16px; min-width:0}
+  .card h3{font-size:.95rem; font-weight:700; margin:0 0 7px}
+  .card p{font-size:.87rem; margin:0}
+  .card.bad{border-left:3px solid var(--danger)}
+  table{width:100%; border-collapse:collapse; font-size:.9rem}
+  .scroll{overflow-x:auto; margin-bottom:16px}
+  th{text-align:left; font-size:10px; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--ink-mute); border-bottom:1px solid var(--line);
+    padding:0 14px 8px 0; white-space:nowrap}
+  td{border-bottom:1px solid var(--line); padding:10px 14px 10px 0;
+    vertical-align:top; color:var(--ink-soft)}
+  td.n{font-family:var(--mono); font-size:.78rem; color:var(--accent);
+    font-weight:600; white-space:nowrap}
+  td strong{color:var(--ink); font-weight:600}
+  td .cost{display:block; font-size:.8rem; color:var(--ink-mute); margin-top:4px}
+  .m{font-family:var(--mono); font-size:.84em; background:var(--accent-soft);
+    color:var(--accent); padding:1px 6px; border-radius:5px}
+  ul{margin:0 0 14px; padding-left:19px; max-width:66ch; color:var(--ink-soft);
+    font-size:.93rem}
+  li{margin-bottom:7px}
+  ul strong{color:var(--ink)}
+  .flag{background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--accent); border-radius:var(--radius);
+    padding:15px 16px; margin-bottom:14px}
+  .flag strong{display:block; font-size:.93rem; margin-bottom:5px; color:var(--ink)}
+  .flag p{font-size:.89rem; margin:0}
+  footer{border-top:1px solid var(--line); padding-top:18px}
+  footer p{font-size:.88rem; color:var(--ink-mute); max-width:68ch}
+  .path{font-family:var(--mono); font-size:.8rem; word-break:break-all}
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Branch sign-off · lane-shift-tender · 22 commits</p>
+  <h1>The till can trade a full day</h1>
+  <p class="stand">Shifts, a cash declaration, all seven payment methods, and the
+  sync that finally lets a sale reach the back office. Ten tasks, each reviewed by
+  fresh eyes, then a whole-branch review and one fix wave.</p>
+  <div class="pills">
+    <span class="pill ok">499 tests</span>
+    <span class="pill ghost">405 Rust · 94 TypeScript</span>
+    <span class="pill ghost">clippy + fmt + tsc clean</span>
+    <span class="pill ghost">26 rulings</span>
+    <span class="pill ghost">not merged</span>
+  </div>
+
+  <section>
+    <span class="sec-no">01 — Why this slice existed</span>
+    <h2>Every sale the till recorded was unsyncable</h2>
+    <p class="lede">The cloud's <span class="m">Sale.shiftId</span> is non-null and
+    a <span class="m">Shift</span> model already existed there. The till had no
+    shift concept at all and sent no <span class="m">shiftId</span> — so nothing it
+    recorded could be stored in the back office.</p>
+    <p>That reframed the work. Shift tracking was not a reporting feature to add
+    after mixed tender; it was a prerequisite for anything syncing at all. Then a
+    review found the gap one layer down: the cloud also needs
+    <span class="m">laneId</span>, and the till had never sent a shift <em>to</em>
+    the cloud either — so a queued sale would still fail on a foreign key to a row
+    the back office had never seen. That became Task 9, added mid-execution.</p>
+  </section>
+
+  <section>
+    <span class="sec-no">02 — Three times I was wrong</span>
+    <h2>Corrections, in the order they happened</h2>
+    <div class="grid">
+      <div class="card bad"><h3>"The customer is overcharged"</h3>
+        <p>I justified adding a whole task on the claim that a card overpayment
+        settles and silently overcharges. It does not —
+        <span class="m">settle</span> returns
+        <span class="m">OverTenderOnNonCash</span>. The implementer caught it by
+        reading the code instead of my plan. The task stood on a smaller claim: an
+        operational dead-end, not a money loss.</p></div>
+      <div class="card bad"><h3>"A reorder would misreport the payment method"</h3>
+        <p>I marked this must-fix. The final reviewer overturned it:
+        <span class="m">header_code</span> seeds from the first entry then scans
+        all codes, breaking ties on the lower wire code — provably
+        order-independent. I verified that myself before accepting the reversal.</p></div>
+      <div class="card bad"><h3>"These are not fiscal documents"</h3>
+        <p>The costliest. I told the implementer the X and Z reports were internal
+        and never pointed them at CIS §18/§19 — which are <strong>mandatory
+        content lists</strong>, and define a Z as a <em>daily</em> business and
+        accounting record. Ours was per shift and headed "Z REPORT · FINAL".</p></div>
+    </div>
+    <div class="flag">
+      <strong>The pattern in all three</strong>
+      <p>Each came from reasoning off a summary — a previous review's wording, my
+      own plan text — instead of the source. The same failure produced the reprint
+      defect in the previous slice, where three reviews confirmed a bug because all
+      three checked the code against my brief rather than the specification.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="sec-no">03 — What the reviews caught that tests could not</span>
+    <h2>Four findings worth the seats they cost</h2>
+    <ul>
+      <li><strong>A barcode could open a shift.</strong> A scanner types digits then
+      Enter — exactly how the opening float is keyed. Waving any product at an idle
+      till would have opened a shift with a 13-digit float. No test or spec line
+      would have surfaced it; it comes from picturing the counter.</li>
+      <li><strong>A race that manufactures an accusation.</strong> Shift totals made
+      two un-snapshotted reads. A sale confirming between them had its cash counted
+      but its change never subtracted, overstating expected cash — so a supervisor
+      reading an X report mid-trading would count the drawer and conclude it was
+      short.</li>
+      <li><strong>A successful close showed the cashier nothing.</strong> The figures
+      went to <span class="m">Notice::Info</span>; the screen rendered only
+      <span class="m">Notice::Problem</span>. Feedback exactly inverted — you saw
+      the numbers only when printing failed. The test read state instead of the
+      painted frame, so it passed.</li>
+      <li><strong>A hardcoded shift time.</strong> I had deferred
+      <span class="m">"Shift 3 · open 06:58"</span> as cosmetic. The tell:
+      <span class="m">opened_at</span> had no non-test reader anywhere — the real
+      value was available all along with a mock in its seat.</li>
+    </ul>
+  </section>
+
+  <section>
+    <span class="sec-no">04 — Rulings I made on your behalf</span>
+    <h2>Twenty-six decisions, and what each costs if wrong</h2>
+    <p>Four from the pre-flight scan, twenty-two during execution. The ones marked
+    <strong>⚑</strong> changed what the software does rather than how it is arranged.</p>
+    <div class="scroll"><table>
+      <tr><th>#</th><th>Decision · why · cost if wrong</th></tr>
+      <tr><td class="n">R1</td><td><strong>Opening float is <span class="m">Money</span>, stored as TEXT.</strong> Every money column here is an exact decimal string; REAL is a float and NUMERIC converts to one.<span class="cost">If wrong: nothing; it matches nine existing columns.</span></td></tr>
+      <tr><td class="n">R2</td><td><strong><span class="m">by_code</span> is an ordered list, not a map.</strong> HashMap iteration order would make report output differ between runs.<span class="cost">If wrong: one collection type.</span></td></tr>
+      <tr><td class="n">R3</td><td><strong>Task 8 owns the key map after Task 5 extends it.</strong><span class="cost">If wrong: one duplicated binding, caught by review.</span></td></tr>
+      <tr><td class="n">R4</td><td><strong>The migration's synthetic shift is created only if sale rows exist.</strong> An empty database must not gain a phantom closed shift, but a migration that drops rows is never acceptable.<span class="cost">If wrong: one harmless row on a fresh till.</span></td></tr>
+      <tr><td class="n">5 ⚑</td><td><strong>Fold the shift API into the schema task.</strong> A NOT NULL <span class="m">shift_id</span> makes a shift mandatory, so schema and creation are inseparable — separating them leaves the suite red. My pre-flight scan called the pair clean and never asked whether either could land alone.<span class="cost">If wrong: one larger task and one review covering both.</span></td></tr>
+      <tr><td class="n">6 ⚑</td><td><strong>One open shift per device enforced in the DATABASE</strong>, as a partial unique index. An application check alone can be passed by two racing connections.<span class="cost">If wrong: one index.</span></td></tr>
+      <tr><td class="n">7</td><td><strong>Editing <span class="m">lane.rs</span> outside the brief was necessary</strong> — it builds <span class="m">NewSale</span>. The store re-checks the shift in its own transaction, which is the part that matters.<span class="cost">If wrong: a redundant read.</span></td></tr>
+      <tr><td class="n">8 ⚑</td><td><strong><span class="m">NoOpenShift</span> also covers a shift belonging to another device</strong>, not only a closed one. A sale claiming another lane's shift is exactly as invalid.<span class="cost">If wrong: a refusal that could have been a raw FK error.</span></td></tr>
+      <tr><td class="n">9 ⚑⚑</td><td><strong>Added Task 9 mid-execution: shifts must reach the cloud.</strong> Without it a queued sale fails on a foreign key to a Shift the back office never saw, and the slice would not achieve the thing that justified it. The shift payload carries <span class="m">dvcSrlNo</span> so the cloud resolves <span class="m">laneId</span> — the till never learns cloud primary keys.<span class="cost">If wrong: one more outbound kind than the cloud needs.</span></td></tr>
+      <tr><td class="n">10 ⚑⚑</td><td><strong>A barcode cannot open a shift.</strong> Entries over 7 digits are refused as scanner input. 7 digits allows a float to 9,999,999 RWF, far above any real till float, so the limit errs safe.<span class="cost">If wrong: a float above ten million must be split.</span></td></tr>
+      <tr><td class="n">11</td><td><strong><span class="m">abandon_pending</span> works with no shift open.</strong> A till that crashed and restarted could otherwise never cancel its outstanding sale.<span class="cost">If wrong: a cancel path available slightly too early.</span></td></tr>
+      <tr><td class="n">12 ⚑</td><td><strong>Added Task 10: a mis-keyed tender can be taken back.</strong> Task 5 created the dead-end — with cash only, an overpayment always produced change, so a mis-key self-corrected.<span class="cost">If wrong: a key nobody presses.</span></td></tr>
+      <tr><td class="n">13</td><td><strong>Ctrl+1 to Ctrl+7, where the digit is the RRA code's own number.</strong> F-keys were taken; letters and digits belong to the scan buffer.<span class="cost">If wrong: a remapping. Note: on macOS this is Control, not Command.</span></td></tr>
+      <tr><td class="n">14 ⚑</td><td><strong>Change is derived, not stored — my brief said otherwise.</strong> There is no change column. <span class="m">sum(tenders) − tot_amt</span> is exact by definition, verified on both a cash-only and a split shape.<span class="cost">If wrong: a schema change for a figure already implied.</span></td></tr>
+      <tr><td class="n">15</td><td><strong>An unknown shift id errors rather than returning zeros.</strong> Zeros would make a mistyped id look like a quiet shift — a reading a supervisor would accept.<span class="cost">If wrong: one more error path.</span></td></tr>
+      <tr><td class="n">16 ⚑</td><td><strong><span class="m">close_shift</span> returns <span class="m">Option</span> — my brief's signature was wrong.</strong> It could not express a cashier-actionable refusal without <span class="m">Err</span>, contradicting the module's contract. <span class="m">settle</span> already solved this identically.<span class="cost">If wrong: the UI matches an Option it could have skipped.</span></td></tr>
+      <tr><td class="n">17 ⚑</td><td><strong>Variance is not persisted, on either side.</strong> Confirmed sales are immutable, so expected cash is reproducible from the opening float plus the sales; the cloud recomputes identically. Sending a derived figure invites the two sides to disagree.<span class="cost">If wrong: historical variances shift if the totals query's semantics ever change.</span></td></tr>
+      <tr><td class="n">18</td><td><strong>The pending-sale check is scoped to the shift</strong>, inside the close transaction — better than the per-device helper the brief named.<span class="cost">If wrong: a broader check than needed.</span></td></tr>
+      <tr><td class="n">19 ⚑</td><td><strong>The store itself refuses a negative declared cash.</strong> Leaving the guard to callers lets any direct store user write a negative count into a reconciliation record.<span class="cost">If wrong: one duplicated check.</span></td></tr>
+      <tr><td class="n">20 ⚑</td><td><strong>Refuse to close while a sale is in progress.</strong> Closing silently discarded a half-rung basket. Nothing fiscal was lost, but a mis-press cost the customer's shopping with no undo.<span class="cost">If wrong: an abandoned basket must be voided before closing.</span></td></tr>
+      <tr><td class="n">21 ⚑</td><td><strong>A short till still closes, with a negative variance, sign preserved.</strong> A system that refuses when cash does not match is one cashiers learn to lie to. Mutation-verified: clamping the variance at zero fails the test.<span class="cost">If wrong — and it is not — the shop loses its shrinkage data entirely.</span></td></tr>
+      <tr><td class="n">22 ⚑</td><td><strong>A printer jam must not lose the close report.</strong> Closing before printing is the correct order; the fix is retention plus reprint, as the sale path already does. A paper jam is a stationery problem, not a bookkeeping one.<span class="cost">If wrong: a reprint path nobody needs.</span></td></tr>
+      <tr><td class="n">23</td><td><strong>The close key moved off Ctrl+F7.</strong> macOS reserves those chords, and the demo runs on a Mac — a key the OS swallows leaves tests as the only evidence the path works.<span class="cost">If wrong: one constant.</span></td></tr>
+      <tr><td class="n">24</td><td><strong>Reports reuse <span class="m">receipt.rs</span>'s layout helpers</strong> rather than copying them.<span class="cost">If wrong: a visibility change, not a behaviour one.</span></td></tr>
+      <tr><td class="n">25</td><td><strong>Open and close queue separate rows; the close carries the full shift</strong>, so the cloud's upsert is correct even if the open row never arrived.<span class="cost">If wrong: a redundant payload.</span></td></tr>
+      <tr><td class="n">26 ⚑⚑</td><td><strong>The reports stop claiming to be RRA X and Z.</strong> CIS §18/§19 make those <em>daily</em> documents with mandatory content we do not print. The danger was never the missing content — it was a paper headed "Z REPORT · FINAL" that is not a Z. Renamed now; the true daily reports are a separate slice, documented in the code.<span class="cost">If wrong: a shop has no compliant daily report — which is true either way, but it no longer pretends otherwise.</span></td></tr>
+    </table></div>
+  </section>
+
+  <section>
+    <span class="sec-no">05 — Shipping with these known gaps</span>
+    <h2>Written into the code, not just this page</h2>
+    <ul>
+      <li><strong>The CIS §18/§19 daily X and Z reports are not implemented.</strong> They need aggregation across shifts for a trading day and a per-tax-rate split that <span class="m">ShiftTotals</span> does not gather. Documented in <span class="m">report.rs</span>.</li>
+      <li><strong>Nothing drains the outbound queue yet.</strong> The cloud handler for <span class="m">kind='shift'</span> is Phase 3.</li>
+      <li><strong>No backfill</strong> for shifts opened before this change — moot, since no till has traded.</li>
+      <li><strong>A recomposed close report is always marked COPY</strong>, because after a restart nothing records whether the original reached paper.</li>
+      <li><strong>Refunds, suspend/resume, discounts and buyer TIN</strong> remain later slices, as does the supervisor gate on cancelling a pending sale.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Branch <span class="m">lane-shift-tender</span>, 22 commits from
+      <span class="m">35cfd32</span>. Plan:
+      <span class="path">docs/superpowers/plans/2026-11-21-lane-shift-tender.md</span>.
+      Nothing has been merged or pushed. If a ruling above is wrong, this is the
+      cheapest moment to say so.</p>
+  </footer>
+</div>

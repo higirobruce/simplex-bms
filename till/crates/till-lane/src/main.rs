@@ -13,6 +13,10 @@ mod escpos;
 // Composes the RRA tax receipt.
 mod receipt;
 
+// Composes the shift reports (internal documents, not fiscal receipts, and not
+// RRA's daily X and Z; see `report.rs`).
+mod report;
+
 // Fiscal port trait and simulated VSDC. Phase 3 will write the real client.
 mod fiscal;
 
@@ -106,7 +110,6 @@ fn main() -> eframe::Result {
                 ui::Session {
                     lane: "Lane 02".into(),
                     cashier: "M. Uwase".into(),
-                    shift: "Shift 3 · open 06:58".into(),
                 },
             );
             Ok(Box::new(app))

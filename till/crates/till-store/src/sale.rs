@@ -34,6 +34,10 @@ pub struct NewSale<'a> {
     /// The till's device serial: with `counter`, which numbering series the
     /// sale draws its invoice number from.
     pub dvc_srl_no: &'a str,
+    /// The shift this sale belongs to. It must be open and on `dvc_srl_no`,
+    /// or `begin_sale` refuses with [`StoreError::NoOpenShift`] before an
+    /// invoice number is allocated.
+    pub shift_id: &'a str,
     pub counter: Counter,
     /// The branch id for the payload. Shared by every lane of a shop.
     pub bhf_id: &'a str,
@@ -96,17 +100,33 @@ impl Store {
 
         let mut tx = self.begin_immediate().await?;
         let written = async {
+            // The shift is checked BEFORE the number is allocated, inside the
+            // same transaction (so a shift cannot close between check and
+            // insert). A refusal spends no number.
+            let open: i64 = sqlx::query_scalar(
+                "select count(*) from shift where id = ? and dvc_srl_no = ? and closed_at is null",
+            )
+            .bind(new.shift_id)
+            .bind(new.dvc_srl_no)
+            .fetch_one(tx.conn())
+            .await?;
+            if open == 0 {
+                return Err(StoreError::NoOpenShift {
+                    dvc_srl_no: new.dvc_srl_no.to_string(),
+                });
+            }
             let invc_no = allocate_on(&mut tx, new.dvc_srl_no, new.counter).await?;
             let conn = tx.conn();
             let id: String = sqlx::query_scalar("select lower(hex(randomblob(16)))")
                 .fetch_one(&mut *conn)
                 .await?;
             sqlx::query(&format!(
-                "insert into sale (id, dvc_srl_no, counter, bhf_id, invc_no, state, tot_amt, \
-                 tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, created_at) \
-                 values (?, ?, ?, ?, ?, 'AwaitingVsdc', ?, ?, ?, ?, ?, {NOW_SQL})"
+                "insert into sale (id, shift_id, dvc_srl_no, counter, bhf_id, invc_no, state, \
+                 tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, created_at) \
+                 values (?, ?, ?, ?, ?, ?, 'AwaitingVsdc', ?, ?, ?, ?, ?, {NOW_SQL})"
             ))
             .bind(&id)
+            .bind(new.shift_id)
             .bind(new.dvc_srl_no)
             .bind(new.counter.as_str())
             .bind(new.bhf_id)
@@ -386,7 +406,7 @@ async fn cloud_payload(
     r: &VsdcReceipt,
 ) -> Result<String, StoreError> {
     let head = sqlx::query(
-        "select bhf_id, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, \
+        "select shift_id, bhf_id, tot_amt, tot_taxbl_amt, tot_tax_amt, pmt_ty_cd, buyer_tin, \
          created_at, confirmed_at from sale where id = ?",
     )
     .bind(&h.id)
@@ -442,6 +462,7 @@ async fn cloud_payload(
 
     Ok(serde_json::to_string(&serde_json::json!({
         "saleId": h.id,
+        "shiftId": head.try_get::<String, _>("shift_id")?,
         "bhfId": head.try_get::<String, _>("bhf_id")?,
         "invcNo": h.invc_no,
         "buyerTin": head.try_get::<Option<String>, _>("buyer_tin")?,
@@ -523,6 +544,7 @@ mod tests {
         fn sale<'a>(&'a self, dvc: &'a str) -> NewSale<'a> {
             NewSale {
                 dvc_srl_no: dvc,
+                shift_id: "sh-test",
                 counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &self.basket,
@@ -535,6 +557,17 @@ mod tests {
 
     fn cash() -> Fixture {
         Fixture::new(&[(PmtTyCd::Cash, "2380")])
+    }
+
+    /// An in-memory store with an open shift `sh-test` on `DVC`.
+    async fn store() -> Store {
+        let s = Store::open_in_memory().await.unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh-test', ?, 'cashier', '2026-11-21T00:00:00Z', '0.00')")
+            .bind(DVC)
+            .execute(s.pool())
+            .await
+            .unwrap();
+        s
     }
 
     fn receipt() -> VsdcReceipt {
@@ -554,8 +587,110 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_begun_sale_stores_its_lines_tenders_and_totals() {
+    async fn the_cloud_payload_carries_the_shift_id() {
+        // The cloud's Sale.shiftId is non-null: without this it rejects the sale.
+        let s = store().await;
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let payload: String = sqlx::query_scalar("select payload from outbound where sale_id=?")
+            .bind(&h.id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["shiftId"], "sh-test");
+    }
+
+    #[tokio::test]
+    async fn the_shift_is_queued_before_any_sale_that_references_it() {
+        // The queue drains in id order and the cloud's Sale.shiftId is a
+        // foreign key, so the shift row must have the lower id.
         let s = Store::open_in_memory().await.unwrap();
+        let shift = s.open_shift(DVC, "cashier", Money::zero()).await.unwrap();
+        let sale = cash();
+        let new = NewSale {
+            shift_id: &shift.id,
+            ..sale.sale(DVC)
+        };
+        let h = s.begin_sale(new).await.unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let shift_row: i64 =
+            sqlx::query_scalar("select id from outbound where kind = 'shift' order by id limit 1")
+                .fetch_one(s.pool())
+                .await
+                .unwrap();
+        let sale_row: i64 = sqlx::query_scalar("select id from outbound where kind = 'sale'")
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        assert!(shift_row < sale_row, "{shift_row} must precede {sale_row}");
+        let payload: String = sqlx::query_scalar("select payload from outbound where id = ?")
+            .bind(sale_row)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let shift_payload: String = sqlx::query_scalar("select payload from outbound where id = ?")
+            .bind(shift_row)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        let sv: serde_json::Value = serde_json::from_str(&shift_payload).unwrap();
+        assert_eq!(v["shiftId"], sv["id"]);
+    }
+
+    #[tokio::test]
+    async fn beginning_a_sale_against_a_closed_shift_is_refused() {
+        let s = store().await;
+        sqlx::query("update shift set closed_at = '2026-11-21T01:00:00Z', declared_cash = '0.00'")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let e = s.begin_sale(cash().sale(DVC)).await.unwrap_err();
+        assert!(
+            matches!(&e, StoreError::NoOpenShift { dvc_srl_no } if dvc_srl_no == DVC),
+            "{e:?}"
+        );
+        assert_eq!(count(&s, "select count(*) from sale").await, 0);
+        assert_eq!(
+            count(&s, "select count(*) from invc_seq").await,
+            0,
+            "no number taken"
+        );
+        assert_eq!(s.allocate_invc_no(DVC, Counter::SaleInvc).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_shift_that_does_not_exist_or_is_on_another_device_is_refused_and_takes_no_number() {
+        let s = store().await;
+        let f = cash();
+        let ghost = NewSale {
+            shift_id: "nope",
+            ..f.sale(DVC)
+        };
+        assert!(matches!(
+            s.begin_sale(ghost).await,
+            Err(StoreError::NoOpenShift { .. })
+        ));
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh-other', 'dvc-2', 'c', '2026-11-21T00:00:00Z', '0.00')")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        let foreign = NewSale {
+            shift_id: "sh-other",
+            ..f.sale(DVC)
+        };
+        assert!(matches!(
+            s.begin_sale(foreign).await,
+            Err(StoreError::NoOpenShift { .. })
+        ));
+        assert_eq!(count(&s, "select count(*) from invc_seq").await, 0);
+        assert_eq!(count(&s, "select count(*) from sale").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_begun_sale_stores_its_lines_tenders_and_totals() {
+        let s = store().await;
         let f = cash();
         let h = s.begin_sale(f.sale(DVC)).await.unwrap();
         assert_eq!(h.invc_no, 1);
@@ -584,14 +719,14 @@ mod tests {
     #[tokio::test]
     async fn beginning_a_sale_queues_nothing_yet() {
         // C1: the sale is not complete, so the cloud must not hear about it
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         s.begin_sale(cash().sale(DVC)).await.unwrap();
         assert_eq!(count(&s, "select count(*) from outbound").await, 0);
     }
 
     #[tokio::test]
     async fn confirming_stores_the_receipt_and_queues_exactly_one_row() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let (state, rcpt, sign): (String, i64, String) =
@@ -614,7 +749,7 @@ mod tests {
     #[tokio::test]
     async fn the_receipt_qr_fields_are_readable_from_the_sale_row_alone() {
         // A COPY reprint must rebuild the C5 QR without the outbound payload.
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         let before: (Option<String>, Option<i64>) =
             sqlx::query_as("select vsdc_rcpt_pbct_date, tot_rcpt_no from sale where id=?")
@@ -645,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_outbound_payload_uses_cloud_labels_and_exact_decimal_strings() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         // Two tenders: the header takes the larger total (MobileMoney), tenders keep their own.
         let f = Fixture::new(&[(PmtTyCd::Cash, "1000"), (PmtTyCd::MobileMoney, "1380")]);
         let h = s.begin_sale(f.sale(DVC)).await.unwrap();
@@ -673,7 +808,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_sale_keeps_its_number_for_the_retry() {
         // Review Focus 4: the refusal case must not burn the number.
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.fail_sale(&h, "894 communication error").await.unwrap();
         let (state, attempts, last_error): (String, i64, Option<String>) =
@@ -714,7 +849,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirming_twice_with_the_same_receipt_queues_one_row_only() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
@@ -723,7 +858,7 @@ mod tests {
 
     #[tokio::test]
     async fn confirming_a_confirmed_sale_with_another_receipt_is_refused_and_changes_nothing() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let other = VsdcReceipt {
@@ -738,7 +873,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_confirmed_sale_cannot_be_failed() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         let e = s.fail_sale(&h, "late").await.unwrap_err();
@@ -752,7 +887,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_handle_is_not_found_not_silently_ok() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let ghost = SaleHandle {
             id: "nope".into(),
             invc_no: 1,
@@ -770,7 +905,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sale_without_lines_is_refused_and_takes_no_number() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let f = cash();
         let empty = Basket::new();
         let e = s
@@ -787,7 +922,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_settlement_that_is_not_this_baskets_is_refused() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let f = cash();
         let wrong = Settled {
             header_pmt_ty_cd: PmtTyCd::Card,
@@ -806,7 +941,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_sale_is_blocked_until_the_first_is_resolved() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let f = cash();
         let h = s.begin_sale(f.sale(DVC)).await.unwrap();
         let e = s.begin_sale(f.sale(DVC)).await.unwrap_err();
@@ -824,7 +959,7 @@ mod tests {
         // them), so the failure is injected: a trigger that aborts the insert
         // of line 2. By then the number is allocated, the sale row written and
         // line 1 inserted, so this really does exercise a rollback.
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         sqlx::query(
             "create trigger boom before insert on sale_line when new.item_seq = 2 \
              begin select raise(abort, 'injected failure'); end",
@@ -849,7 +984,7 @@ mod tests {
 
     #[tokio::test]
     async fn abandoning_unblocks_the_branch_and_the_next_sale_gets_the_next_number() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         assert_eq!(h.invc_no, 1);
         assert!(matches!(
@@ -878,7 +1013,7 @@ mod tests {
 
     #[tokio::test]
     async fn abandoning_a_confirmed_sale_is_refused_by_name_and_changes_nothing() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.confirm_sale(&h, receipt()).await.unwrap();
         assert!(matches!(
@@ -895,7 +1030,7 @@ mod tests {
 
     #[tokio::test]
     async fn abandoning_twice_is_fine_and_keeps_the_first_reason() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.abandon_sale(&h, "first").await.unwrap();
         s.abandon_sale(&h, "second").await.unwrap();
@@ -909,7 +1044,7 @@ mod tests {
 
     #[tokio::test]
     async fn abandoning_queues_nothing_and_leaves_no_pending_sale() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
         s.abandon_sale(&h, "permanent").await.unwrap();
         assert_eq!(count(&s, "select count(*) from outbound").await, 0);
@@ -918,7 +1053,7 @@ mod tests {
 
     #[tokio::test]
     async fn abandoning_an_unknown_sale_is_not_found_and_a_voided_sale_cannot_be_confirmed() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let ghost = SaleHandle {
             id: "nope".into(),
             invc_no: 9,
@@ -939,7 +1074,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_fully_discounted_sale_with_no_tenders_is_recorded_and_confirmed() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let mut basket = basket();
         basket.basket_discount = Some(till_core::LineDiscount::Percent("100".parse().unwrap()));
         let tenders = TenderSet::default();
@@ -949,6 +1084,7 @@ mod tests {
         let h = s
             .begin_sale(NewSale {
                 dvc_srl_no: DVC,
+                shift_id: "sh-test",
                 counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &basket,
@@ -967,7 +1103,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_over_long_item_name_is_refused_before_an_invoice_number_is_taken() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let mut basket = Basket::new();
         let mut l = line("MILK", "1200", TaxType::A);
         l.item_nm = "x".repeat(201);
@@ -987,6 +1123,7 @@ mod tests {
         let r = s
             .begin_sale(NewSale {
                 dvc_srl_no: DVC,
+                shift_id: "sh-test",
                 counter: Counter::SaleInvc,
                 bhf_id: "00",
                 basket: &basket,
@@ -1011,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_ten_digit_buyer_tin_is_refused_before_an_invoice_number_is_taken() {
-        let s = Store::open_in_memory().await.unwrap();
+        let s = store().await;
         let f = cash();
         let mut new = f.sale(DVC);
         new.buyer_tin = Some("1001102634");
@@ -1034,6 +1171,11 @@ mod tests {
             Err(StoreError::Busy)
         ));
         drop(holder);
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh-test', ?, 'cashier', '2026-11-21T00:00:00Z', '0.00')")
+            .bind(DVC)
+            .execute(s.pool())
+            .await
+            .unwrap();
         assert_eq!(s.begin_sale(f.sale(DVC)).await.unwrap().invc_no, 1);
         drop(s);
         std::fs::remove_dir_all(&dir).ok();
