@@ -6,30 +6,31 @@
 -- INTEGER 0/1 with a CHECK. No money column is added here.
 
 -- ---------------------------------------------------------------------------
--- 1. Remove the demo shifts, the sales on them, and those sales' children.
+-- 1. Clear the unsendable outbound queue entries. NO shift, sale, sale_line or
+-- sale_tender row is deleted: those are fiscal records and stay.
 --
--- shift.opened_by holds free text from testing ("alice", "cashier"); from now
--- on it is the cloud User.id, so those rows could never be migrated, and
--- nothing has ever synced them. Authorised by the project owner, 2026-11-22.
+-- shift.opened_by holds free text from testing ("alice", "cashier"). The
+-- queued payloads for those shifts (and for the sales on them) carry
+-- `openedBy` as that free text; the cloud refuses such a row with 422, the till
+-- parks it, and the FIFO queue is then wedged forever behind it. Removing the
+-- unsendable queue entries is what unblocks it. The orphaned local shifts are
+-- harmless: nothing syncs them and nothing reads them.
 --
--- ORDER MATTERS. sqlx runs this file in one transaction and `PRAGMA
--- foreign_keys` is a no-op inside a transaction, so FK enforcement may be on
--- or off and this file must be correct either way. Deleting strictly
--- child-first means no row is ever deleted while another row still references
--- it, so with keys ON nothing is refused and with keys OFF nothing is orphaned:
---   sale_line, sale_tender, outbound  ->  sale  ->  shift
--- All of it is one transaction, so a failure rolls the whole delete back.
--- invc_seq is deliberately untouched: the invoice counters must never go
--- backwards.
+-- Why scoping to "every shift that exists now" is complete, not a guess: when
+-- this migration runs there is no `cashier` table and a till has never had any
+-- way to obtain a cloud User.id, so EVERY shift existing at this point is
+-- unmigratable by construction. Authorised by the project owner, 2026-11-22.
+--
+-- Scoped explicitly (not a bare DELETE FROM outbound) so the intent is legible
+-- and it stays correct against a partly-migrated database. outbound is a leaf
+-- table (nothing references it), so these deletes cannot violate a foreign key
+-- whether or not enforcement is on (`PRAGMA foreign_keys` is a no-op inside the
+-- transaction sqlx wraps this file in); the order is irrelevant to safety.
+-- invc_seq is untouched and no sale is removed, so there is no numbering gap.
 -- ---------------------------------------------------------------------------
-DELETE FROM sale_line
-WHERE sale_id IN (SELECT id FROM sale WHERE shift_id IN (SELECT id FROM shift));
-DELETE FROM sale_tender
-WHERE sale_id IN (SELECT id FROM sale WHERE shift_id IN (SELECT id FROM shift));
+DELETE FROM outbound WHERE kind = 'shift';
 DELETE FROM outbound
 WHERE sale_id IN (SELECT id FROM sale WHERE shift_id IN (SELECT id FROM shift));
-DELETE FROM sale WHERE shift_id IN (SELECT id FROM shift);
-DELETE FROM shift;
 
 -- ---------------------------------------------------------------------------
 -- 2. The cloud Product.id of a sale line. Nullable: lines written before this

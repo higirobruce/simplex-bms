@@ -908,7 +908,19 @@ mod tests {
             .unwrap();
         assert_eq!((pid.1.as_str(), pid.2), ("TEXT", 0), "nullable TEXT");
 
+        // the pre-existing line survived with no product id
+        let old: Option<String> =
+            sqlx::query_scalar("select product_id from sale_line where sale_id = 's1'")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert_eq!(old, None);
+
         // a line written after the migration, without a product id, is fine
+        sqlx::query("update shift set closed_at = '2026-11-20T18:00:00Z' where id = 'sh'")
+            .execute(&p)
+            .await
+            .unwrap();
         sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh2','d1','u1','2026-11-22T07:00:00Z','0.00')")
             .execute(&p).await.unwrap();
         sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 2) on conflict do update set last_invc_no = 2")
@@ -927,7 +939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn demo_shifts_and_their_sales_are_gone_but_other_rows_remain() {
+    async fn shifts_and_sales_survive_but_their_outbound_rows_are_gone() {
         let p = raw_pool().await;
         migrator_upto(2).run(&p).await.unwrap();
         sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 2)")
@@ -938,34 +950,40 @@ mod tests {
             .execute(&p).await.unwrap();
         seed_demo_sale(&p, "sh", "s1", 1).await;
         seed_demo_sale(&p, "sh", "s2", 2).await;
-        // rows that are not on a shift must survive
-        sqlx::query("insert into outbound (kind, payload, created_at) values ('init', '{}', '2026-11-20T08:01:00Z')")
+        sqlx::query("insert into outbound (kind, sale_id, payload, created_at) values ('shift', null, '{}', '2026-11-20T07:00:01Z')")
             .execute(&p).await.unwrap();
-        sqlx::query("insert into product (id, sku, name, unit_price, tax_ty_cd, is_weighed, synced_at) values ('p1','sku','n','1.00','B',0,'t')")
+        // an outbound row of another kind, not tied to a sale, must survive
+        sqlx::query("insert into outbound (kind, payload, created_at) values ('init', '{}', '2026-11-20T08:01:00Z')")
             .execute(&p).await.unwrap();
 
         migrator().run(&p).await.unwrap();
 
-        for t in ["shift", "sale", "sale_line", "sale_tender"] {
-            assert_eq!(count(&p, t).await, 0, "{t} emptied");
-        }
-        assert_eq!(count(&p, "outbound").await, 1, "sale-less outbound kept");
-        assert_eq!(count(&p, "product").await, 1);
+        // fiscal records are untouched
+        assert_eq!(count(&p, "shift").await, 1);
+        assert_eq!(count(&p, "sale").await, 2);
+        assert_eq!(count(&p, "sale_line").await, 2);
+        assert_eq!(count(&p, "sale_tender").await, 2);
         let last: i64 = sqlx::query_scalar("select last_invc_no from invc_seq")
             .fetch_one(&p)
             .await
             .unwrap();
-        assert_eq!(last, 2, "invoice counters never go backwards");
+        assert_eq!(last, 2);
+        // the unsendable queue entries are gone; the unrelated one remains
+        let kinds: Vec<(String,)> = sqlx::query_as("select kind from outbound")
+            .fetch_all(&p)
+            .await
+            .unwrap();
+        assert_eq!(kinds, vec![("init".to_string(),)]);
         let violations: Vec<(String,)> =
             sqlx::query_as("select \"table\" from pragma_foreign_key_check")
                 .fetch_all(&p)
                 .await
                 .unwrap();
-        assert!(violations.is_empty(), "no orphans");
+        assert!(violations.is_empty());
     }
 
     #[tokio::test]
-    async fn demo_delete_is_correct_with_foreign_keys_off_too() {
+    async fn the_outbound_cleanup_is_correct_with_foreign_keys_off_too() {
         // The migration cannot toggle the pragma, so it must not depend on it.
         let opts = SqliteConnectOptions::new()
             .in_memory(true)
@@ -992,7 +1010,26 @@ mod tests {
                 .await
                 .unwrap();
         assert!(violations.is_empty());
-        assert_eq!(count(&p, "sale").await + count(&p, "outbound").await, 0);
+        assert_eq!(count(&p, "sale").await, 1);
+        assert_eq!(count(&p, "outbound").await, 0);
+    }
+
+    #[tokio::test]
+    async fn outbound_rows_created_after_the_migration_survive_a_rerun() {
+        let p = raw_pool().await;
+        migrator().run(&p).await.unwrap();
+        sqlx::query("insert into invc_seq values ('d1', 'SaleInvc', 1)")
+            .execute(&p)
+            .await
+            .unwrap();
+        sqlx::query("insert into shift (id, dvc_srl_no, opened_by, opened_at, opening_float) values ('sh','d1','u1','2026-11-22T07:00:00Z','0.00')")
+            .execute(&p).await.unwrap();
+        seed_demo_sale(&p, "sh", "s1", 1).await; // also queues a 'sale' outbound row
+        sqlx::query("insert into outbound (kind, payload, created_at) values ('shift', '{}', '2026-11-22T07:00:01Z')")
+            .execute(&p).await.unwrap();
+        migrator().run(&p).await.unwrap();
+        migrator().run(&p).await.unwrap();
+        assert_eq!(count(&p, "outbound").await, 2, "a live queue is not eaten");
     }
 
     #[tokio::test]
