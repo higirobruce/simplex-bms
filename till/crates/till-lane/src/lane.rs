@@ -64,13 +64,35 @@ use till_core::{
     TenderEntry, TenderError, TenderSet,
 };
 use till_store::{
-    CachedProduct, Counter, NewSale, OpenShift, SaleHandle, ShiftClose, Store, StoreError,
-    VsdcReceipt,
+    CachedProduct, Counter, MIN_SEARCH_LEN, NewSale, OpenShift, SaleHandle, ShiftClose, Store,
+    StoreError, VsdcReceipt,
 };
 
 /// Longest scan buffer kept. Longer than any code (EAN-13 is 13); the excess
 /// is dropped so the resulting `BadLength` still tells the cashier it was wrong.
 const MAX_BUFFER: usize = 32;
+
+/// The character that separates a count from the item it multiplies: `3*1234`.
+/// A symbol, not a letter, because a letter in the buffer means a name search
+/// and because the scanner wedge types letters.
+pub const TIMES: char = '*';
+
+/// The largest count a cashier may key. A till sells cases, not pallets, and a
+/// mis-keyed 10000 should be refused rather than rung up.
+pub const MAX_TIMES: u32 = 999;
+
+/// How many name matches are offered at once. The list is read off a screen
+/// and picked by a one- or two-digit number, never paged.
+pub const MAX_MATCHES: u32 = 12;
+
+/// An open name search: what was typed, the count waiting to be applied to
+/// whatever is picked, and the products offered.
+#[derive(Debug, Clone)]
+pub struct NameSearch {
+    pub term: String,
+    pub times: Option<u32>,
+    pub matches: Vec<CachedProduct>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Screen {
@@ -156,6 +178,21 @@ pub enum LaneError {
     NoZToReprint,
     #[error("There is nothing to pay for. Scan an item first.")]
     EmptyBasket,
+    #[error(
+        "{0} is not a usable count. Key a whole number from 1 to {max}, then the item.",
+        max = MAX_TIMES
+    )]
+    BadMultiplier(String),
+    #[error(
+        "{name} is sold by weight, so a count means nothing. Weigh it and scan the scale label."
+    )]
+    MultiplierOnWeighed { name: String },
+    #[error("Type at least {MIN_SEARCH_LEN} letters of the name, then press Enter.")]
+    SearchTooShort,
+    #[error("Nothing in the catalogue matches \"{0}\". Check the spelling, or scan the item.")]
+    NoNameMatch(String),
+    #[error("There is no item {0} in the list. Key a number from the list, or scan the item.")]
+    BadPick(String),
     #[error(
         "The VSDC refused this sale: {code} {msg}. The basket and payment are held; press pay to retry the same invoice, or ask a supervisor to cancel it."
     )]
@@ -366,6 +403,10 @@ pub struct LaneState {
     store: Store,
     cfg: LaneConfig,
     buffer: String,
+    /// An open name search, offering products to pick from. Not a `Screen`:
+    /// the till is still selling, and a scan while the list is open rings up
+    /// normally and closes it.
+    search: Option<NameSearch>,
     notice: Notice,
     screen: Screen,
     basket: Basket,
@@ -442,6 +483,7 @@ impl LaneState {
             store,
             cfg,
             buffer: String::new(),
+            search: None,
             notice,
             screen,
             basket: Basket::new(),
@@ -499,6 +541,20 @@ impl LaneState {
                 self.timings.scan_to_line = Some(timer.elapsed());
                 Ok(())
             }
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    /// Takes the nth product a name search offered, counting from 1. For a tap
+    /// on the list; keying the number goes through the buffer like a scan, and
+    /// both land in the same place.
+    pub async fn pick_nth(&mut self, n: usize) -> Result<(), LaneError> {
+        self.buffer.clear();
+        if let Err(e) = self.ensure_open() {
+            return self.refuse(e);
+        }
+        match self.pick_at(n).await {
+            Ok(()) => Ok(()),
             Err(e) => self.refuse(e),
         }
     }
@@ -984,6 +1040,20 @@ impl LaneState {
     pub fn buffer(&self) -> &str {
         &self.buffer
     }
+    /// The products an open name search is offering, in the order they are
+    /// numbered on screen. Empty when no search is open.
+    pub fn search_matches(&self) -> &[CachedProduct] {
+        self.search.as_ref().map_or(&[], |s| &s.matches)
+    }
+    /// The count a name search is holding, to be applied to whatever is picked.
+    pub fn search_times(&self) -> Option<u32> {
+        self.search.as_ref().and_then(|s| s.times)
+    }
+    /// What was typed to produce the offered list, shown so a cashier can see
+    /// whether a miss was a spelling slip.
+    pub fn search_term(&self) -> Option<&str> {
+        self.search.as_ref().map(|s| s.term.as_str())
+    }
     pub fn notice(&self) -> &Notice {
         &self.notice
     }
@@ -1279,24 +1349,129 @@ impl LaneState {
 
     async fn try_enter(&mut self, raw: &str) -> Result<(), LaneError> {
         self.ensure_open()?;
-        let scanned = classify(raw, self.cfg.embedded)?;
+        let raw = raw.trim();
+
+        // A pick from an open list. A one- or two-digit entry is never a valid
+        // code (a PLU is 4 or 5 digits, a barcode 8 or 13), so picking can
+        // never shadow a scan; anything else falls through and the list closes.
+        if self.search.is_some() && looks_like_a_pick(raw) {
+            // `looks_like_a_pick` has already proved these are ASCII digits.
+            let n = raw
+                .parse()
+                .map_err(|_| LaneError::BadPick(raw.to_string()))?;
+            return self.pick_at(n).await;
+        }
+        self.search = None;
+
+        let (times, code) = split_times(raw)?;
+
+        // A letter is never part of a code, so it is unambiguously a name.
+        if code.chars().any(char::is_alphabetic) {
+            return self.search_by_name(code, times).await;
+        }
+        self.add_by_code(code, times).await
+    }
+
+    /// Looks a product up by barcode or PLU and puts it in the basket.
+    async fn add_by_code(&mut self, code: &str, times: Option<u32>) -> Result<(), LaneError> {
+        let scanned = classify(code, self.cfg.embedded)?;
         let product = self
             .store
             .lookup(&scanned)
             .await
             .map_err(|e| LaneError::store(StoreOp::Scan, e))?
-            .ok_or_else(|| LaneError::UnknownCode(raw.trim().to_string()))?;
-        let line = line_for(&product, &scanned)?;
+            .ok_or_else(|| LaneError::UnknownCode(code.to_string()))?;
+        self.add_product(&product, Some(&scanned), times)
+    }
+
+    /// Offers the products whose name matches, or adds the only one that does.
+    async fn search_by_name(&mut self, term: &str, times: Option<u32>) -> Result<(), LaneError> {
+        if term.chars().count() < MIN_SEARCH_LEN {
+            return Err(LaneError::SearchTooShort);
+        }
+        let matches = self
+            .store
+            .search_by_name(term, MAX_MATCHES)
+            .await
+            .map_err(|e| LaneError::store(StoreOp::Scan, e))?;
+        match matches.len() {
+            0 => Err(LaneError::NoNameMatch(term.to_string())),
+            // Exactly one match needs no choosing.
+            1 => {
+                let p = matches.into_iter().next().expect("one match");
+                self.add_product(&p, None, times)
+            }
+            n => {
+                self.notice = Notice::Info(format!(
+                    "{n} items match \"{term}\". Key its number and press Enter, or scan the item."
+                ));
+                self.search = Some(NameSearch {
+                    term: term.to_string(),
+                    times,
+                    matches,
+                });
+                Ok(())
+            }
+        }
+    }
+
+    /// Takes the nth offered product, counting from 1 as the screen numbers it.
+    async fn pick_at(&mut self, n: usize) -> Result<(), LaneError> {
+        let search = self.search.take().ok_or(LaneError::NotSelling)?;
+        let Some(product) = n.checked_sub(1).and_then(|i| search.matches.get(i)) else {
+            return Err(LaneError::BadPick(n.to_string()));
+        };
+        let product = product.clone();
+        self.add_product(&product, None, search.times)
+    }
+
+    /// The one place a line reaches the basket, whether it arrived by scan, by
+    /// PLU, or by being picked out of a name search.
+    fn add_product(
+        &mut self,
+        product: &CachedProduct,
+        scanned: Option<&Scanned>,
+        times: Option<u32>,
+    ) -> Result<(), LaneError> {
+        let line = line_for(product, scanned, times)?;
 
         // Price it first: a line that cannot be priced must not spend a number.
         line.amounts().map_err(|source| LaneError::Line {
             name: product.name.clone(),
             source,
         })?;
+        let qty = line.qty;
         let seq = self.basket.push_line(line)?;
-        self.notice = Notice::Info(format!("{} added (line {seq}).", product.name));
+        self.notice = Notice::Info(match times {
+            Some(_) => format!("{} x {} added (line {seq}).", qty, product.name),
+            None => format!("{} added (line {seq}).", product.name),
+        });
         Ok(())
     }
+}
+
+/// Whether an entry is a pick from an offered list rather than a code. One or
+/// two digits only: no real code is that short.
+fn looks_like_a_pick(raw: &str) -> bool {
+    matches!(raw.len(), 1 | 2) && raw.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Splits `3*1234` into a count and the rest. No separator means no count.
+///
+/// The count must be a whole number from 1 to [`MAX_TIMES`]; anything else is
+/// refused rather than guessed at, because a wrong count is a wrong bill.
+fn split_times(raw: &str) -> Result<(Option<u32>, &str), LaneError> {
+    let Some((count, rest)) = raw.split_once(TIMES) else {
+        return Ok((None, raw));
+    };
+    let count = count.trim();
+    let times: u32 = count
+        .parse()
+        .map_err(|_| LaneError::BadMultiplier(count.to_string()))?;
+    if times == 0 || times > MAX_TIMES {
+        return Err(LaneError::BadMultiplier(count.to_string()));
+    }
+    Ok((Some(times), rest.trim()))
 }
 
 /// The lane clock as the CIS block wants it: `yyyymmddhhmmss`, Kigali time.
@@ -1353,7 +1528,17 @@ fn kigali_stamp(unix_secs: u64) -> String {
 
 /// Builds the line a scan stands for. A scale label's weight is the quantity;
 /// a label's price (price mode) beats the catalogue price, at quantity 1.
-fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneError> {
+/// Builds the basket line for a product.
+///
+/// `scanned` is `None` when the product was chosen from a name search rather
+/// than scanned. That is not the same as a bare PLU and must not pretend to be
+/// one: a weighed product picked from a list still needs its scale label, and
+/// the check below is what says so.
+fn line_for(
+    p: &CachedProduct,
+    scanned: Option<&Scanned>,
+    times: Option<u32>,
+) -> Result<BasketLine, LaneError> {
     // itemClsCd is mandatory on the VSDC and drawn from RRA's controlled list;
     // a guess would put a false tax classification on a tax document.
     let item_cls_cd = match p.item_cls_cd.as_deref() {
@@ -1366,13 +1551,21 @@ fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneErro
     };
     // A scale label (weight or price) on a unit product would sell a fraction
     // of a packet, or override its price: refuse, as for the opposite case.
-    if matches!(scanned, Scanned::WeightEmbedded { .. }) && !p.is_weighed {
+    if matches!(scanned, Some(Scanned::WeightEmbedded { .. })) && !p.is_weighed {
         return Err(LaneError::NotWeighed {
             name: p.name.clone(),
         });
     }
+    // A count on a weighed product would multiply a weight: three times
+    // 1.250 kg is not something a cashier means to key, and the scale label
+    // already carries the quantity.
+    if times.is_some() && p.is_weighed {
+        return Err(LaneError::MultiplierOnWeighed {
+            name: p.name.clone(),
+        });
+    }
     let (qty, prc) = match scanned {
-        Scanned::WeightEmbedded { qty: Some(q), .. } => {
+        Some(Scanned::WeightEmbedded { qty: Some(q), .. }) => {
             if !q.is_positive() {
                 return Err(LaneError::ZeroWeight {
                     name: p.name.clone(),
@@ -1380,18 +1573,20 @@ fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneErro
             }
             (*q, p.unit_price)
         }
-        Scanned::WeightEmbedded {
+        Some(Scanned::WeightEmbedded {
             price: Some(label_price),
             ..
-        } => (one()?, *label_price),
-        Scanned::WeightEmbedded { .. } => (one()?, p.unit_price),
+        }) => (one()?, *label_price),
+        Some(Scanned::WeightEmbedded { .. }) => (one()?, p.unit_price),
         // A per-kg product with no weight would sell one kilo of it.
         _ if p.is_weighed => {
             return Err(LaneError::NeedsWeightLabel {
                 name: p.name.clone(),
             });
         }
-        _ => (one()?, p.unit_price),
+        // A keyed count, or one of the item. Built from a string because Qty
+        // owns its own precision and money never passes through a float.
+        _ => (count_qty(times)?, p.unit_price),
     };
     Ok(BasketLine {
         item_seq: 0, // assigned by Basket::push_line
@@ -1408,6 +1603,16 @@ fn line_for(p: &CachedProduct, scanned: &Scanned) -> Result<BasketLine, LaneErro
 
 fn one() -> Result<Qty, LaneError> {
     Qty::try_from_str("1").map_err(|e| LaneError::Internal(e.to_string()))
+}
+
+/// A keyed count as a quantity, or one when none was keyed.
+fn count_qty(times: Option<u32>) -> Result<Qty, LaneError> {
+    match times {
+        None => one(),
+        Some(n) => {
+            Qty::try_from_str(&n.to_string()).map_err(|e| LaneError::Internal(e.to_string()))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1456,6 +1661,266 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// A product with a chosen name, for the name-search tests.
+    fn named(id: &str, name: &str, plu: Option<&str>, weighed: bool) -> CachedProduct {
+        CachedProduct {
+            name: name.into(),
+            ..product(id, None, plu, weighed)
+        }
+    }
+
+    /// Keys `raw` and presses Enter. Returns what `enter` returned, so a test
+    /// about a refusal can assert on it rather than unwrapping a panic.
+    async fn key(l: &mut LaneState, raw: &str) -> Result<(), LaneError> {
+        for c in raw.chars() {
+            l.key(c);
+        }
+        l.enter().await
+    }
+
+    // ---- a keyed count (3*CODE) ----
+
+    #[tokio::test]
+    async fn a_keyed_count_puts_one_line_on_the_basket_with_that_quantity() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, &format!("3*{EAN}")).await;
+        assert_eq!(l.basket().len(), 1, "a count is one line, not three");
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.qty.to_string(), "3.000");
+        // 3 x 1250, priced by the basket and not by the till's arithmetic.
+        assert_eq!(line.amounts().unwrap().sply_amt.to_string(), "3750.00");
+    }
+
+    #[tokio::test]
+    async fn the_count_separator_accepts_space_around_it() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, &format!("2* {EAN}")).await;
+        assert_eq!(l.basket().lines().last().unwrap().qty.to_string(), "2.000");
+    }
+
+    #[tokio::test]
+    async fn a_count_that_is_not_a_whole_positive_number_is_refused() {
+        for bad in ["0", "-1", "1.5", "abc", "", &(MAX_TIMES + 1).to_string()] {
+            let mut l = lane_with(
+                &[product("a", Some(EAN), None, false)],
+                EmbeddedMode::Weight,
+            )
+            .await;
+            let _ = key(&mut l, &format!("{bad}*{EAN}")).await;
+            assert!(
+                l.basket().is_empty(),
+                "{bad:?} must not reach the basket, notice was {:?}",
+                l.notice()
+            );
+            assert!(
+                matches!(l.notice(), Notice::Problem(_)),
+                "{bad:?} must tell the cashier, got {:?}",
+                l.notice()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_largest_allowed_count_is_accepted() {
+        let mut l = lane_with(
+            &[product("a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, &format!("{MAX_TIMES}*{EAN}")).await;
+        assert_eq!(
+            l.basket().lines().last().unwrap().qty.to_string(),
+            format!("{MAX_TIMES}.000")
+        );
+    }
+
+    /// Three times a weight is not something a cashier means to key, and the
+    /// scale label already carries the quantity.
+    #[tokio::test]
+    async fn a_count_on_a_weighed_product_is_refused() {
+        let mut l = lane_with(
+            &[product("23456", None, Some("23456"), true)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, &format!("3*{WEIGHT_LABEL}")).await;
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("sold by weight"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    // ---- name search ----
+
+    #[tokio::test]
+    async fn one_name_match_is_added_without_choosing() {
+        let mut l = lane_with(
+            &[
+                named("a", "Inyange Fresh Milk 1L", None, false),
+                named("b", "Kabuye Sugar 1kg", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        assert_eq!(l.basket().len(), 1);
+        assert_eq!(
+            l.basket().lines().last().unwrap().item_nm,
+            "Inyange Fresh Milk 1L"
+        );
+        assert!(l.search_matches().is_empty(), "nothing left to pick");
+    }
+
+    #[tokio::test]
+    async fn several_name_matches_are_offered_and_picked_by_number() {
+        let mut l = lane_with(
+            &[
+                named("a", "Milk Full Cream 1L", None, false),
+                named("b", "Milk Skimmed 1L", None, false),
+                named("c", "Kabuye Sugar 1kg", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        assert_eq!(l.search_matches().len(), 2, "two matches must be offered");
+        assert!(l.basket().is_empty(), "offering must not add anything");
+
+        // Both names begin with "Milk", so they are offered alphabetically:
+        // Full Cream is 1, Skimmed is 2. Picking 2 must take Skimmed.
+        assert_eq!(l.search_matches()[1].name, "Milk Skimmed 1L");
+        let _ = key(&mut l, "2").await;
+        assert_eq!(l.basket().len(), 1);
+        assert_eq!(
+            l.basket().lines().last().unwrap().item_nm,
+            "Milk Skimmed 1L",
+            "picking 2 must take the second item offered, not the first"
+        );
+        assert!(l.search_matches().is_empty(), "the list closes on a pick");
+    }
+
+    #[tokio::test]
+    async fn a_pick_outside_the_list_is_refused_and_adds_nothing() {
+        let mut l = lane_with(
+            &[
+                named("a", "Milk Full Cream 1L", None, false),
+                named("b", "Milk Skimmed 1L", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        let _ = key(&mut l, "9").await;
+        assert!(l.basket().is_empty());
+        assert!(matches!(l.notice(), Notice::Problem(_)));
+    }
+
+    /// Scanning while a list is open must ring the scan up, not be read as a
+    /// pick. This is why a pick is only one or two digits.
+    #[tokio::test]
+    async fn a_scan_while_a_list_is_open_rings_up_and_closes_the_list() {
+        let mut l = lane_with(
+            &[
+                named("a", "Milk Full Cream 1L", None, false),
+                named("b", "Milk Skimmed 1L", None, false),
+                CachedProduct {
+                    barcode: Some(EAN.into()),
+                    ..named("c", "Something Else", None, false)
+                },
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        assert_eq!(l.search_matches().len(), 2);
+        let _ = key(&mut l, EAN).await;
+        assert_eq!(l.basket().len(), 1);
+        assert_eq!(l.basket().lines().last().unwrap().item_nm, "Something Else");
+        assert!(l.search_matches().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_name_that_matches_nothing_is_a_problem_the_cashier_can_act_on() {
+        let mut l = lane_with(&[named("a", "Milk", None, false)], EmbeddedMode::Weight).await;
+        let _ = key(&mut l, "zzzz").await;
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("zzzz"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn one_letter_is_not_a_search() {
+        let mut l = lane_with(&[named("a", "Milk", None, false)], EmbeddedMode::Weight).await;
+        let _ = key(&mut l, "m").await;
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("at least"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The two features compose: a count keyed before a name is held and
+    /// applied to whatever comes out of the list.
+    #[tokio::test]
+    async fn a_count_survives_a_name_search_and_applies_to_the_pick() {
+        let mut l = lane_with(
+            &[
+                named("a", "Milk Full Cream 1L", None, false),
+                named("b", "Milk Skimmed 1L", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "4*milk").await;
+        assert_eq!(l.search_matches().len(), 2);
+        assert_eq!(l.search_times(), Some(4), "the count must be held");
+        let _ = key(&mut l, "1").await;
+        assert_eq!(l.basket().lines().last().unwrap().qty.to_string(), "4.000");
+    }
+
+    #[tokio::test]
+    async fn a_count_with_a_single_name_match_needs_no_pick() {
+        let mut l = lane_with(&[named("a", "Milk", None, false)], EmbeddedMode::Weight).await;
+        let _ = key(&mut l, "5*milk").await;
+        assert_eq!(l.basket().lines().last().unwrap().qty.to_string(), "5.000");
+    }
+
+    /// A weighed product found by name still needs its scale label: picking it
+    /// off a list is not a substitute for weighing it.
+    #[tokio::test]
+    async fn a_weighed_product_picked_by_name_still_asks_for_the_scale_label() {
+        let mut l = lane_with(
+            &[named("t", "Tomatoes", Some("4087"), true)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "tomato").await;
+        assert!(l.basket().is_empty());
+        match l.notice() {
+            Notice::Problem(m) => assert!(m.contains("Weigh it"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn selling_by_name_needs_an_open_shift_like_any_other_sale() {
+        let mut l = lane_without_shift().await;
+        let _ = key(&mut l, "item").await;
+        assert!(l.basket().is_empty());
+        assert!(matches!(l.screen(), Screen::NoShift));
     }
 
     fn test_config() -> LaneConfig {

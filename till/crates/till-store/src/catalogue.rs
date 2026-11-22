@@ -184,6 +184,59 @@ impl Store {
 const SELECT: &str = "select id, sku, name, barcode, plu, unit_price, tax_ty_cd, is_weighed, \
                       item_cls_cd from product";
 
+/// The shortest search term accepted. One letter matches most of a catalogue
+/// and tells the cashier nothing.
+pub const MIN_SEARCH_LEN: usize = 2;
+
+/// Escapes a cashier's typing so LIKE treats it as literal text. Without this
+/// a name containing `%` would match the whole catalogue, and `_` would match
+/// any character.
+fn escape_like(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for c in term.chars() {
+        if matches!(c, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+impl Store {
+    /// Products whose name contains `term`, for the cashier's name search.
+    ///
+    /// Names starting with the term come first, then the rest alphabetically,
+    /// because a cashier typing "co" wants Coca-Cola before Chocolate Cocoa.
+    /// At most `limit` rows: the list is read off a screen, not paged.
+    ///
+    /// Matching is SQLite's ASCII-only case folding. Good enough for a Rwandan
+    /// catalogue in practice; a name differing only by non-ASCII case will not
+    /// be found, which is a miss, never a wrong product.
+    pub async fn search_by_name(
+        &self,
+        term: &str,
+        limit: u32,
+    ) -> Result<Vec<CachedProduct>, StoreError> {
+        let term = term.trim();
+        if term.chars().count() < MIN_SEARCH_LEN {
+            return Ok(vec![]);
+        }
+        let escaped = escape_like(term);
+        let contains = format!("%{escaped}%");
+        let starts = format!("{escaped}%");
+        let rows = sqlx::query(&format!(
+            "{SELECT} where name like ? escape '\\' \
+             order by (case when name like ? escape '\\' then 0 else 1 end), name limit ?"
+        ))
+        .bind(&contains)
+        .bind(&starts)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(decode_product).collect()
+    }
+}
+
 /// Finds two DIFFERENT products in one batch claiming one barcode, in memory,
 /// before the write lock is taken. Mirrors what the statements would do in
 /// order: an id that appears again replaces its own earlier claim (so
@@ -358,6 +411,111 @@ mod tests {
             .fetch_one(s.pool())
             .await
             .unwrap()
+    }
+
+    /// A product with a chosen name, for the search tests.
+    fn named(id: &str, name: &str) -> CachedProduct {
+        CachedProduct {
+            name: name.into(),
+            ..prod(id, None, None, "1000", TaxType::B)
+        }
+    }
+
+    async fn search(s: &Store, term: &str) -> Vec<String> {
+        s.search_by_name(term, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_name_search_matches_anywhere_in_the_name_ignoring_case() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[
+            named("p1", "Inyange Fresh Milk 1L"),
+            named("p2", "Kabuye Sugar 1kg"),
+            named("p3", "Powdered milk 400g"),
+        ])
+        .await
+        .unwrap();
+
+        assert_eq!(
+            search(&s, "milk").await,
+            vec!["Inyange Fresh Milk 1L", "Powdered milk 400g"],
+            "case must not matter and the term may sit anywhere in the name"
+        );
+        assert_eq!(search(&s, "MILK").await.len(), 2);
+        assert_eq!(search(&s, "sugar").await, vec!["Kabuye Sugar 1kg"]);
+        assert!(search(&s, "zzz").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn names_starting_with_the_term_come_first() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[
+            named("p1", "Chocolate with Cocoa"),
+            named("p2", "Coca-Cola 500ml"),
+        ])
+        .await
+        .unwrap();
+        // "Chocolate" sorts first alphabetically, but a cashier typing "co"
+        // wants the product whose name begins with it.
+        assert_eq!(
+            search(&s, "co").await,
+            vec!["Coca-Cola 500ml", "Chocolate with Cocoa"]
+        );
+    }
+
+    /// A cashier typing a name that happens to contain LIKE's wildcards must
+    /// get a literal search. Unescaped, "%" would match the whole catalogue.
+    #[tokio::test]
+    async fn like_wildcards_typed_by_a_cashier_are_literal_text() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[
+            named("p1", "Juice 100% Orange"),
+            named("p2", "Kabuye Sugar 1kg"),
+            named("p3", "Soap_bar"),
+        ])
+        .await
+        .unwrap();
+
+        assert_eq!(
+            search(&s, "100%").await,
+            vec!["Juice 100% Orange"],
+            "a literal percent must not become a wildcard"
+        );
+        assert_eq!(
+            search(&s, "p_b").await,
+            vec!["Soap_bar"],
+            "a literal underscore must not match any character"
+        );
+        // Proof the underscore really is literal: this would match "Soap_bar"
+        // if `_` were still a single-character wildcard.
+        assert!(search(&s, "pXb").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_term_shorter_than_the_minimum_returns_nothing() {
+        let s = Store::open_in_memory().await.unwrap();
+        s.sync_catalogue(&[named("p1", "Milk")]).await.unwrap();
+        assert!(
+            search(&s, "m").await.is_empty(),
+            "one letter is not a search"
+        );
+        assert!(search(&s, " ").await.is_empty());
+        assert_eq!(search(&s, "mi").await, vec!["Milk"]);
+    }
+
+    #[tokio::test]
+    async fn a_search_never_returns_more_than_the_limit() {
+        let s = Store::open_in_memory().await.unwrap();
+        let many: Vec<CachedProduct> = (0..30)
+            .map(|i| named(&format!("p{i}"), &format!("Milk {i:02}")))
+            .collect();
+        s.sync_catalogue(&many).await.unwrap();
+        assert_eq!(s.search_by_name("milk", 5).await.unwrap().len(), 5);
     }
 
     #[tokio::test]

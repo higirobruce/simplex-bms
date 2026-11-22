@@ -81,6 +81,9 @@ pub enum Action {
     /// Demo only: take the simulated VSDC offline, or put it back, so the C1
     /// hard stop can be exercised by hand. A no-op with real devices.
     ToggleVsdc,
+    /// Take the nth product a name search offered, counting from 1. Only a tap
+    /// produces this; keying the number goes through the buffer like a scan.
+    Pick(usize),
     NotBuilt(&'static str),
 }
 
@@ -272,6 +275,7 @@ fn apply(
         Action::ReprintZ => block_on(state.reprint_z(devices.printer.as_mut())),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
+        Action::Pick(n) => block_on(state.pick_nth(n)),
         Action::ToggleVsdc => {
             local.note = Some(match devices.toggle_vsdc() {
                 Some(true) => {
@@ -909,8 +913,12 @@ fn rail(ctx: &Context, state: &LaneState, _local: &Local) -> Option<Action> {
                 balance_tile(ui, state, due);
             }
 
+            if let Some(picked) = match_list(ui, state) {
+                tapped = Some(picked);
+            }
             scan_field(ui, state);
-            tapped = keys(ui, state);
+            let from_keys = keys(ui, state);
+            tapped = tapped.or(from_keys);
         });
     tapped
 }
@@ -1029,6 +1037,60 @@ fn band_table(ui: &mut Ui, t: &till_core::BasketTotals) {
         });
 }
 
+/// The products a name search is offering, numbered the way `LaneState::pick`
+/// counts them: from 1. Returns the action for a row that was tapped, so a
+/// touch screen reaches the same code path as keying the number.
+fn match_list(ui: &mut Ui, state: &LaneState) -> Option<Action> {
+    let matches = state.search_matches();
+    if matches.is_empty() {
+        return None;
+    }
+    let mut tapped = None;
+    tile(ui, TOKENS.surface, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let term = state.search_term().unwrap_or_default();
+        let heading = match state.search_times() {
+            Some(n) => format!("PICK AN ITEM · \"{term}\" · {n} OF IT"),
+            None => format!("PICK AN ITEM · \"{term}\""),
+        };
+        ui.label(text(heading, sans_bold(11.0), TOKENS.ink_mute));
+        for (i, p) in matches.iter().enumerate() {
+            let n = i + 1;
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::CLICK);
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, corner(), TOKENS.accent_soft);
+            }
+            let painter = ui.painter().with_clip_rect(rect);
+            painter.text(
+                rect.left_center() + vec2(8.0, 0.0),
+                Align2::LEFT_CENTER,
+                format!("{n}"),
+                mono_bold(14.0),
+                TOKENS.accent,
+            );
+            painter.text(
+                rect.left_center() + vec2(34.0, 0.0),
+                Align2::LEFT_CENTER,
+                &p.name,
+                sans(14.0),
+                TOKENS.ink,
+            );
+            painter.text(
+                rect.right_center() - vec2(8.0, 0.0),
+                Align2::RIGHT_CENTER,
+                fmt::rwf(p.unit_price),
+                mono(14.0),
+                TOKENS.ink_soft,
+            );
+            if resp.clicked() {
+                tapped = Some(Action::Pick(n));
+            }
+        }
+    });
+    tapped
+}
+
 fn scan_field(ui: &mut Ui, state: &LaneState) {
     Frame::new()
         .fill(TOKENS.surface)
@@ -1039,7 +1101,14 @@ fn scan_field(ui: &mut Ui, state: &LaneState) {
             ui.set_width(ui.available_width());
             let selling = *state.screen() == Screen::Selling;
             if state.buffer().is_empty() {
-                let hint = if selling { "Scan or key PLU ▏" } else { "" };
+                let hint = if state.search_matches().is_empty() {
+                    // The three things the buffer accepts, in the order a
+                    // cashier reaches for them.
+                    "Scan, key a PLU, type a name, or 3*code ▏"
+                } else {
+                    "Key the item's number ▏"
+                };
+                let hint = if selling { hint } else { "" };
                 ui.label(text(hint, mono(17.0), TOKENS.ink_mute));
             } else {
                 ui.label(text(
@@ -1976,6 +2045,93 @@ mod tests {
         assert_eq!(cap_font_size(105.0, measure), 10.0);
         // Nothing fits: the floor, so the caller clips rather than growing.
         assert_eq!(cap_font_size(1.0, measure), 10.0);
+    }
+
+    /// A name search draws its list, numbered from 1 the way `pick` counts.
+    #[test]
+    fn a_name_search_draws_a_numbered_pick_list() {
+        let mut r = Rig::new();
+        // The demo catalogue has no two names sharing a word except these.
+        let painted = r.frame(type_text("ka"));
+        assert!(!painted.contains("PICK AN ITEM"), "no list before Enter");
+        let painted = r.frame(tap(Key::Enter));
+        // "Kabuye Sugar 1kg" is the only "ka", so it is added with no list.
+        assert!(
+            !painted.contains("PICK AN ITEM"),
+            "a single match needs no list: {painted}"
+        );
+        assert_eq!(r.state.basket().len(), 1);
+    }
+
+    #[test]
+    fn several_matches_draw_the_list_and_a_number_picks_from_it() {
+        let mut r = Rig::new();
+        // "ml" is in exactly two demo names: Coca-Cola 500ml and Mutzig 650ml.
+        // Neither starts with it, so they are offered alphabetically.
+        r.frame(type_text("ml"));
+        let painted = r.frame(tap(Key::Enter));
+        assert_eq!(r.state.search_matches().len(), 2);
+        assert!(painted.contains("PICK AN ITEM"), "{painted}");
+        assert!(painted.contains("Coca-Cola 500ml"), "{painted}");
+        assert!(painted.contains("Mutzig 650ml"), "{painted}");
+        assert!(r.state.basket().is_empty(), "offering must add nothing");
+
+        r.frame(type_text("2"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(
+            r.state.basket().lines().last().unwrap().item_nm,
+            "Mutzig 650ml",
+            "2 must take the second row offered"
+        );
+        let painted = r.frame(vec![]);
+        assert!(!painted.contains("PICK AN ITEM"), "the list closes");
+    }
+
+    /// A tap on a row must reach the same place as keying its number.
+    #[test]
+    fn tapping_a_row_picks_it() {
+        let mut r = Rig::new();
+        r.frame(type_text("ml"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(r.state.search_matches().len(), 2);
+        r.rt.block_on(r.state.pick_nth(1)).unwrap();
+        assert_eq!(
+            r.state.basket().lines().last().unwrap().item_nm,
+            "Coca-Cola 500ml"
+        );
+    }
+
+    #[test]
+    fn a_keyed_count_reaches_the_basket_through_the_buffer() {
+        let mut r = Rig::new();
+        r.frame(type_text("3*5612345000017"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(r.state.basket().len(), 1, "one line, not three");
+        assert_eq!(
+            r.state.basket().lines().last().unwrap().qty.to_string(),
+            "3.000"
+        );
+    }
+
+    /// The star must reach the buffer as ordinary text, like every other
+    /// character a wedge or a keyboard produces.
+    #[test]
+    fn the_count_separator_is_plain_buffer_text() {
+        assert_eq!(
+            actions_from(&type_text("3*")),
+            vec![Action::Char('3'), Action::Char('*')]
+        );
+    }
+
+    #[test]
+    fn the_scan_hint_names_every_way_in_and_changes_while_picking() {
+        let mut r = Rig::new();
+        let painted = r.frame(vec![]);
+        assert!(
+            painted.contains("3*code"),
+            "the hint must teach the count: {painted}"
+        );
+        assert!(painted.contains("type a name"), "{painted}");
     }
 
     fn tap_shift(key: Key) -> Vec<Event> {

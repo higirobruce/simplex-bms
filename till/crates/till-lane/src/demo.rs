@@ -117,7 +117,8 @@ pub fn cheat_sheet() -> String {
          5449000000996  Coca-Cola 500ml                      500 B\n  \
          5612345000031  Mutzig 650ml                       1,200 B\n\
          Then F8 (cash; type an amount first, or none for exact) and Enter to pay.\n\
-         Shift+F12 takes the simulated VSDC offline (C1 hard stop); F12 resumes.",
+         Shift+F12 takes the simulated VSDC offline (C1 hard stop); F12 resumes.\n\
+         A count: 3*5449000000996. A name: type 'ml' and pick a number.",
         tomato_label(1250)
     )
 }

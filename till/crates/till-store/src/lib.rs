@@ -12,7 +12,7 @@ pub mod schema;
 pub mod sequence;
 pub mod shift;
 
-pub use catalogue::{CachedProduct, SyncReport};
+pub use catalogue::{CachedProduct, MIN_SEARCH_LEN, SyncReport};
 pub use sale::{NewSale, SaleHandle, VsdcReceipt};
 pub use schema::{Store, StoreError, decode_money, decode_pmt_ty, decode_qty, decode_tax_ty};
 pub use sequence::{Counter, PendingSale};
