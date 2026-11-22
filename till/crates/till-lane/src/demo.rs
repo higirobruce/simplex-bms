@@ -5,7 +5,7 @@ use crate::lane::LaneConfig;
 use till_core::Money;
 use till_core::codes::TaxType;
 use till_core::scan::{EmbeddedMode, ean13_check_digit};
-use till_store::{CachedProduct, Counter};
+use till_store::{CachedProduct, Cashier, Counter};
 
 /// A placeholder item class: the lane refuses a product without one, so the
 /// demo gives every product one. It is NOT a real RRA classification for these
@@ -107,10 +107,27 @@ pub fn config() -> LaneConfig {
     }
 }
 
+/// The PIN of the demo cashier. A demo credential on a simulated till, in the
+/// source on purpose: it unlocks nothing real.
+pub const DEMO_PIN: &str = "4821";
+
+/// One cashier, so `--demo` can sign in without the cloud. The hash is
+/// argon2id with the cloud's own parameters (the interop vector the store's
+/// tests use), so the demo exercises the same cost a real sign-in pays.
+pub fn cashiers() -> Vec<Cashier> {
+    vec![Cashier {
+        id: "demo-cashier".into(),
+        name: "Demo Cashier".into(),
+        pin_hash: "$argon2id$v=19$m=131072,t=3,p=1$tmtSLo0Z/83mPOveszHRVw$QgZ64XnOvO8C5cX3ItVDDI0je1YVUU+GShAZWIWr0PI".into(),
+        active: true,
+    }]
+}
+
 /// What to tell the person at the keyboard.
 pub fn cheat_sheet() -> String {
     format!(
-        "Demo catalogue. Type a barcode or PLU and press Enter:\n  \
+        "Sign in: key 1 and Enter, then PIN {DEMO_PIN} and Enter, then the opening float and Enter.\n\
+         Demo catalogue. Type a barcode or PLU and press Enter:\n  \
          5612345000017  Inyange Fresh Milk 1L (PLU 6001)   1,200 B\n  \
          5612345000024  Kabuye Sugar 1kg (PLU 6014)         1,500 B\n  \
          {}  Tomatoes 1.250 kg (scale label)      800/kg A\n  \

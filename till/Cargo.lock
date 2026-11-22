@@ -3715,6 +3715,7 @@ dependencies = [
 name = "till-lane"
 version = "0.1.0"
 dependencies = [
+ "argon2",
  "eframe",
  "rust_decimal",
  "sqlx",

@@ -12,7 +12,7 @@
 
 use crate::devices::Devices;
 use crate::fmt;
-use crate::lane::{LaneState, Notice, Screen, VsdcOutcome};
+use crate::lane::{LaneState, Notice, Screen, SignInView, VsdcOutcome};
 use crate::theme::{self, TOKENS};
 use eframe::egui::{
     self, Align, Align2, Color32, Context, CornerRadius, FontFamily, FontId, Frame, Layout, Margin,
@@ -27,14 +27,12 @@ use till_core::{Money, TenderError};
 #[derive(Debug, Clone)]
 pub struct Session {
     pub lane: String,
-    pub cashier: String,
 }
 
 impl Default for Session {
     fn default() -> Self {
         Session {
             lane: "LANE".into(),
-            cashier: "NO CASHIER".into(),
         }
     }
 }
@@ -78,6 +76,8 @@ pub enum Action {
     ReprintZ,
     CancelSale,
     Resume,
+    /// Esc: from a PIN back to the list of names.
+    Back,
     /// Demo only: take the simulated VSDC offline, or put it back, so the C1
     /// hard stop can be exercised by hand. A no-op with real devices.
     ToggleVsdc,
@@ -209,6 +209,7 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
                 egui::Key::Enter => out.push(Action::Enter),
                 egui::Key::Backspace => out.push(Action::Backspace),
                 egui::Key::F12 => out.push(Action::Resume),
+                egui::Key::Escape => out.push(Action::Back),
                 k => {
                     if let Some((_, _, _, a)) = FKEYS.iter().find(|(fk, ..)| fk == k) {
                         out.push(*a);
@@ -225,13 +226,7 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Handle::current().block_on(f)
 }
 
-fn apply(
-    action: Action,
-    state: &mut LaneState,
-    devices: &mut Devices,
-    local: &mut Local,
-    session: &Session,
-) {
+fn apply(action: Action, state: &mut LaneState, devices: &mut Devices, local: &mut Local) {
     local.note = None;
     let result = match action {
         Action::Char(c) => {
@@ -243,7 +238,7 @@ fn apply(
             Ok(())
         }
         Action::Enter => match state.screen() {
-            Screen::NoShift => open_shift(state, local, session),
+            Screen::NoShift => sign_in_enter(state, local),
             Screen::Selling if !state.buffer().is_empty() => block_on(state.enter()),
             Screen::Selling => block_on(state.settle(
                 devices.fiscal.as_mut(),
@@ -275,6 +270,10 @@ fn apply(
         Action::ReprintZ => block_on(state.reprint_z(devices.printer.as_mut())),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
+        Action::Back => {
+            state.back_to_cashiers();
+            Ok(())
+        }
         Action::Pick(n) => block_on(state.pick_nth(n)),
         Action::ToggleVsdc => {
             local.note = Some(match devices.toggle_vsdc() {
@@ -325,14 +324,22 @@ fn close_with_z(
 /// The longest opening float the till will take from the keyboard.
 const MAX_FLOAT_DIGITS: usize = 7;
 
-/// Enter on the no-shift screen: what is keyed is the opening float; nothing
-/// keyed means a float of zero. The cashier's name is the session's, because
-/// the lane has no sign-in of its own yet.
-fn open_shift(
-    state: &mut LaneState,
-    local: &mut Local,
-    session: &Session,
-) -> Result<(), crate::lane::LaneError> {
+/// Enter on the no-shift screen. What it means depends on how far the sign-in
+/// has got: a name is chosen, then a PIN is checked, then the opening float is
+/// keyed and the shift opens. The decisions are `LaneState`'s.
+fn sign_in_enter(state: &mut LaneState, local: &mut Local) -> Result<(), crate::lane::LaneError> {
+    match state.signin() {
+        SignInView::Choosing { .. } => block_on(state.choose_cashier()),
+        SignInView::Pin { .. } => state.begin_pin_check(),
+        // The answer is on its way; a second Enter must not queue another.
+        SignInView::Checking { .. } => Ok(()),
+        SignInView::Float { .. } => open_shift(state, local),
+    }
+}
+
+/// Enter once the cashier is signed in: what is keyed is the opening float;
+/// nothing keyed means a float of zero.
+fn open_shift(state: &mut LaneState, local: &mut Local) -> Result<(), crate::lane::LaneError> {
     // A scanner types its code and Enter exactly like a cashier keys a float,
     // so a barcode scanned on this screen must never become an opening float.
     // No drawer opens with more than seven digits.
@@ -353,7 +360,7 @@ fn open_shift(
         Money::try_from_str(state.buffer()).ok()
     };
     match float {
-        Some(f) => block_on(state.open_shift(&session.cashier, f)),
+        Some(f) => block_on(state.open_shift(f)),
         None => {
             local.note = Some("Key the opening float as a plain amount, then press Enter.".into());
             Ok(())
@@ -397,6 +404,30 @@ fn tender(
     }
 }
 
+/// Per-frame sign-in housekeeping. A PIN check runs on the runtime's blocking
+/// pool (argon2 is slow on purpose), so the UI thread only polls for its
+/// answer here and asks for another frame until it arrives: the screen keeps
+/// repainting and the cashier sees "Checking your PIN" instead of a freeze.
+fn sign_in_upkeep(ctx: &Context, state: &mut LaneState, local: &mut Local) {
+    if *state.screen() != Screen::NoShift {
+        return;
+    }
+    let mut fault = block_on(state.ensure_cashiers()).err();
+    if state.is_checking_pin() {
+        if let Err(e) = state.poll_pin_check() {
+            fault = Some(e);
+        }
+        if state.is_checking_pin() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+        } else {
+            ctx.request_repaint();
+        }
+    }
+    if let Some(e) = fault {
+        local.fault = Some(e.to_string());
+    }
+}
+
 /// The whole lane screen. Call once per frame.
 pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
     let mut local: Local = ctx.data(|d| d.get_temp(local_id())).unwrap_or_default();
@@ -405,8 +436,9 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
         .unwrap_or_default();
 
     for a in ctx.input(|i| actions_from(&i.events)) {
-        apply(a, state, devices, &mut local, &session);
+        apply(a, state, devices, &mut local);
     }
+    sign_in_upkeep(ctx, state, &mut local);
 
     let mut tapped = Vec::new();
     status_bar(ctx, state, &session, devices.vsdc_offline());
@@ -416,7 +448,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
                 tapped.push(a);
             }
         }
-        Screen::NoShift => no_shift(ctx, state, &local, &session),
+        Screen::NoShift => no_shift(ctx, state, &local),
         _ => {
             if let Some(a) = rail(ctx, state, &local) {
                 tapped.push(a);
@@ -425,7 +457,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
         }
     }
     for a in &tapped {
-        apply(*a, state, devices, &mut local, &session);
+        apply(*a, state, devices, &mut local);
     }
     if !tapped.is_empty() {
         ctx.request_repaint();
@@ -485,11 +517,11 @@ fn chip(ui: &mut Ui, label: &str, fill: Color32, ink: Color32) {
 
 /// What the status bar says about the shift: the real opening time (Kigali
 /// clock) and who opened it, read from the open shift itself.
-fn shift_label(shift: Option<&till_store::OpenShift>) -> String {
+fn shift_label(shift: Option<&till_store::OpenShift>, cashier: &str) -> String {
     match shift {
         Some(s) => {
             let at = crate::lane::kigali_hhmm(&s.opened_at).unwrap_or_else(|| s.opened_at.clone());
-            format!("Shift open {at} · {}", s.opened_by).to_uppercase()
+            format!("Shift open {at} · {}", cashier).to_uppercase()
         }
         None => "NO SHIFT".to_string(),
     }
@@ -513,7 +545,7 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session, vsdc_switched
                     TOKENS.canvas,
                 ));
                 ui.label(text(
-                    session.cashier.to_uppercase(),
+                    state.shift_cashier().unwrap_or("NO CASHIER").to_uppercase(),
                     sans(14.0),
                     TOKENS.line,
                 ));
@@ -543,7 +575,8 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session, vsdc_switched
                         }
                     }
                     ui.label(text(clock(), mono(14.0), TOKENS.line));
-                    let shift = shift_label(state.shift());
+                    let shift =
+                        shift_label(state.shift(), state.shift_cashier().unwrap_or_default());
                     ui.label(text(shift, sans(14.0), TOKENS.line));
                 });
             });
@@ -1313,9 +1346,11 @@ fn hard_stop(ctx: &Context, state: &LaneState, reason: &str) -> Option<Action> {
     tapped
 }
 
-/// Shown until a cashier opens a shift. The float is keyed on the same wedge
-/// buffer the scans use, and Enter opens the shift.
-fn no_shift(ctx: &Context, state: &LaneState, local: &Local, session: &Session) {
+/// Shown until a cashier opens a shift. A cashier chooses their name, keys a
+/// PIN (drawn only as dots), and then keys the opening float on the same wedge
+/// buffer the scans use; Enter moves each step on.
+fn no_shift(ctx: &Context, state: &LaneState, local: &Local) {
+    let view = state.signin();
     egui::CentralPanel::default()
         .frame(Frame::new().fill(TOKENS.ink).inner_margin(Margin::same(40)))
         .show(ctx, |ui| {
@@ -1325,21 +1360,50 @@ fn no_shift(ctx: &Context, state: &LaneState, local: &Local, session: &Session) 
                 ui.add_space(12.0);
                 ui.label(text("Open a shift to start selling", sans_bold(40.0), TOKENS.canvas));
                 ui.add_space(14.0);
-                ui.label(text(
-                    format!(
-                        "Count the drawer, key the opening float, and press Enter. The shift opens in the name of {}.",
-                        session.cashier
+                let (prompt, entry, hint) = match &view {
+                    SignInView::Choosing { .. } => {
+                        let entry = if state.buffer().is_empty() {
+                            "Your number ▏".to_string()
+                        } else {
+                            format!("{} ▏", state.buffer())
+                        };
+                        (
+                            "Key the number beside your name and press Enter.".to_string(),
+                            entry,
+                            "ENTER  Choose name",
+                        )
+                    }
+                    SignInView::Pin { name, mask } => (
+                        format!("{name}, key your PIN and press Enter."),
+                        format!("{mask} ▏"),
+                        "ENTER  Check PIN   ESC  Choose another name",
                     ),
-                    sans(18.0),
-                    TOKENS.line,
-                ));
-                ui.add_space(24.0);
-                let buffer = if state.buffer().is_empty() {
-                    "Opening float ▏".to_string()
-                } else {
-                    format!("{} ▏", state.buffer())
+                    SignInView::Checking { name } => (
+                        format!("Checking the PIN for {name}..."),
+                        "\u{2022} \u{2022} \u{2022} \u{2022}".to_string(),
+                        "One moment",
+                    ),
+                    SignInView::Float { name } => (
+                        format!(
+                            "Count the drawer, key the opening float, and press Enter. The shift opens in the name of {name}."
+                        ),
+                        if state.buffer().is_empty() {
+                            "Opening float ▏".to_string()
+                        } else {
+                            format!("{} ▏", state.buffer())
+                        },
+                        "ENTER  Open shift   ESC  Choose another name",
+                    ),
                 };
-                ui.label(text(buffer, mono(28.0), TOKENS.canvas));
+                ui.label(text(prompt, sans(18.0), TOKENS.line));
+                ui.add_space(24.0);
+                ui.label(text(entry, mono(28.0), TOKENS.canvas));
+                if let SignInView::Choosing { cashiers } = &view {
+                    ui.add_space(12.0);
+                    for (i, c) in cashiers.iter().enumerate() {
+                        ui.label(text(format!("{}  {}", i + 1, c.name), sans(20.0), TOKENS.canvas));
+                    }
+                }
                 ui.add_space(12.0);
                 // A problem and a confirmation must look different on this dark
                 // ground: the closing figures appear here, because closing the
@@ -1360,7 +1424,7 @@ fn no_shift(ctx: &Context, state: &LaneState, local: &Local, session: &Session) 
                     ui.label(text(f, sans(16.0), TOKENS.hi_vis));
                 }
                 ui.add_space(20.0);
-                ui.label(text("ENTER  Open shift", mono(14.0), TOKENS.line));
+                ui.label(text(hint, mono(14.0), TOKENS.line));
             });
         });
 }
@@ -1468,6 +1532,10 @@ mod tests {
             let state = rt.block_on(async {
                 let store = Store::open_in_memory().await.unwrap();
                 store.sync_catalogue(&demo::products()).await.unwrap();
+                store
+                    .sync_cashiers(&crate::lane::test_support::cashiers())
+                    .await
+                    .unwrap();
                 if with_shift {
                     store
                         .open_shift(&demo::config().dvc_srl_no, "cashier", Money::zero())
@@ -1509,6 +1577,24 @@ mod tests {
                 .join("\n")
         }
 
+        /// Signs Alice in from the no-shift screen: her number, her PIN, and
+        /// the wait for the background check, frame by frame as the UI does.
+        fn sign_in(&mut self) {
+            self.frame(type_text("1"));
+            self.frame(tap(Key::Enter));
+            self.frame(type_text("1234"));
+            self.frame(tap(Key::Enter));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while self.state.is_checking_pin() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the check never ended"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                self.frame(vec![]);
+            }
+        }
+
         /// Scans these barcodes, one Enter each.
         fn scan(&mut self, codes: &[&str]) {
             for c in codes {
@@ -1538,19 +1624,39 @@ mod tests {
             &r.ctx,
             Session {
                 lane: "Lane 02".into(),
-                cashier: "M. Uwase".into(),
             },
         );
-        r.frame(vec![]); // the no-shift screen renders
+        let shown = r.frame(vec![]); // the no-shift screen renders
         assert_eq!(*r.state.screen(), Screen::NoShift);
-        // A barcode scanned here is not an opening float.
+        assert!(shown.contains("Alice") && shown.contains("Bob"), "{shown}");
+        // A barcode scanned here is not a cashier, and not an opening float.
         let mut scan = type_text("5612345000017");
         scan.extend(tap(Key::Enter));
         r.frame(scan);
         assert_eq!(*r.state.screen(), Screen::NoShift);
         assert_eq!(r.state.buffer(), "");
         assert!(r.state.basket().is_empty());
-        // Key the float; Enter opens the shift in the session's name.
+        // Choose Alice, key her PIN: the screen shows dots, never the digits.
+        r.frame(type_text("1"));
+        r.frame(tap(Key::Enter));
+        let shown = r.frame(type_text("1234"));
+        assert!(!shown.contains("1234"), "the PIN was drawn: {shown}");
+        assert!(
+            shown.contains("\u{2022}\u{2022}\u{2022}\u{2022}"),
+            "{shown}"
+        );
+        assert_eq!(r.state.buffer(), "");
+        r.frame(tap(Key::Enter));
+        // The check runs off the UI thread; frames keep being drawn until it ends.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while r.state.is_checking_pin() {
+            assert!(std::time::Instant::now() < deadline);
+            r.frame(vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("opening float"), "{shown}");
+        // Key the float; Enter opens the shift in Alice's name (her cloud id).
         r.frame(type_text("5000"));
         assert_eq!(r.state.buffer(), "5000");
         r.frame(tap(Key::Enter));
@@ -1559,10 +1665,35 @@ mod tests {
             r.state.shift().unwrap().opening_float.to_string(),
             "5000.00"
         );
-        assert_eq!(r.state.shift().unwrap().opened_by, "M. Uwase");
+        assert_eq!(r.state.shift().unwrap().opened_by, "u-alice");
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("ALICE"), "the status bar names her: {shown}");
         r.frame(type_text("5612345000017"));
         r.frame(tap(Key::Enter));
         assert_eq!(r.state.basket().len(), 1);
+    }
+
+    #[test]
+    fn a_wrong_pin_is_shown_to_the_cashier_and_never_drawn() {
+        let mut r = Rig::without_shift();
+        r.frame(type_text("1"));
+        r.frame(tap(Key::Enter));
+        r.frame(type_text("9999"));
+        r.frame(tap(Key::Enter));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while r.state.is_checking_pin() {
+            assert!(std::time::Instant::now() < deadline);
+            r.frame(vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("Wrong PIN"), "{shown}");
+        assert!(!shown.contains("9999"), "{shown}");
+        assert_eq!(*r.state.screen(), Screen::NoShift);
+        // Esc goes back to the names, and a PIN keyed there is not a PIN.
+        r.frame(tap(Key::Escape));
+        let shown = r.frame(vec![]);
+        assert!(shown.contains("Alice") && shown.contains("Bob"), "{shown}");
     }
 
     #[test]
@@ -1820,6 +1951,7 @@ mod tests {
     #[test]
     fn an_opening_float_with_cents_is_not_mistaken_for_a_barcode() {
         let mut r = Rig::without_shift();
+        r.sign_in();
         r.frame(type_text("10000.50"));
         r.frame(tap(Key::Enter));
         assert_eq!(*r.state.screen(), Screen::Selling);
@@ -1833,6 +1965,7 @@ mod tests {
     fn an_eight_digit_entry_is_refused_as_a_barcode() {
         // EAN-8 is the shortest barcode, and the case the guard exists for.
         let mut r = Rig::without_shift();
+        r.sign_in();
         r.frame(type_text("96385074"));
         r.frame(tap(Key::Enter));
         assert_eq!(*r.state.screen(), Screen::NoShift);
@@ -2299,7 +2432,10 @@ mod tests {
         let shown = r.frame(vec![]);
         let opened = r.state.shift().unwrap().clone();
         let at = crate::lane::kigali_hhmm(&opened.opened_at).unwrap();
-        let want = format!("SHIFT OPEN {at} · {}", opened.opened_by.to_uppercase());
+        let want = format!(
+            "SHIFT OPEN {at} · {}",
+            r.state.shift_cashier().unwrap().to_uppercase()
+        );
         assert!(shown.contains(&want), "{want} in {shown}");
         assert!(
             !shown.contains("06:58") || at == "06:58",

@@ -117,7 +117,7 @@ impl Store {
             let payload = serde_json::to_string(&serde_json::json!({
                 "id": row.0,
                 "dvcSrlNo": dvc_srl_no,
-                "openedBy": row.1,
+                "openedById": row.1,
                 "openedAt": row.2,
                 "openingFloat": row.3,
             }))?;
@@ -282,7 +282,7 @@ impl Store {
             let payload = serde_json::to_string(&serde_json::json!({
                 "id": row.0,
                 "dvcSrlNo": row.1,
-                "openedBy": row.2,
+                "openedById": row.2,
                 "openedAt": row.3,
                 "openingFloat": row.4,
                 "closedAt": row.5,
@@ -455,7 +455,7 @@ mod tests {
         let v = &rows[0].1;
         assert_eq!(v["id"], o.id);
         assert_eq!(v["dvcSrlNo"], "d1");
-        assert_eq!(v["openedBy"], "alice");
+        assert_eq!(v["openedById"], "alice");
         assert_eq!(v["openedAt"], o.opened_at);
         // an exact decimal string, never a JSON number
         assert_eq!(v["openingFloat"], "5000.00");

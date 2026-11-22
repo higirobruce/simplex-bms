@@ -118,6 +118,10 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
         .sync_catalogue(&demo::products())
         .await
         .map_err(|e| format!("The demo catalogue could not be loaded ({e})."))?;
+    store
+        .sync_cashiers(&demo::cashiers())
+        .await
+        .map_err(|e| format!("The demo cashiers could not be loaded ({e})."))?;
     let state = LaneState::new(store, demo::config())
         .await
         .map_err(|e| e.to_string())?;
@@ -176,7 +180,6 @@ fn main() -> eframe::Result {
                 &cc.egui_ctx,
                 ui::Session {
                     lane: "Lane 02".into(),
-                    cashier: "M. Uwase".into(),
                 },
             );
             Ok(Box::new(app))
