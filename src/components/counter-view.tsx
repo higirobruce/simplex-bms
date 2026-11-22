@@ -222,7 +222,7 @@ function ShiftSalesLoader({ slug, shiftId, tz }: { slug: string; shiftId: string
     },
   });
   if (isLoading) return <p className="border-t border-line px-5 py-3 text-sm text-ink-soft">Loading sales…</p>;
-  if (isError || !data) return <p role="alert" className="border-t border-line px-5 py-3 text-sm text-danger">Could not load this shift's sales.</p>;
+  if (isError || !data) return <p role="alert" className="border-t border-line px-5 py-3 text-sm text-danger">Could not load this shift&rsquo;s sales.</p>;
   return <ShiftSales data={data} tz={tz} />;
 }
 

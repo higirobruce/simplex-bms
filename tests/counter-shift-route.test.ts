@@ -5,7 +5,8 @@ vi.mock("@/lib/prisma", async () => ({ prisma: (await import("./helpers/db")).pr
 const getServerSession = vi.hoisted(() => vi.fn());
 vi.mock("next-auth", () => ({ getServerSession }));
 
-import { GET, SALES_CAP } from "@/app/api/[slug]/counter/[shiftId]/route";
+import { GET } from "@/app/api/[slug]/counter/[shiftId]/route";
+import { SALES_CAP } from "@/lib/counter-view";
 
 const as = (userId: string, orgId: string) => getServerSession.mockResolvedValue({ user: { id: userId, orgId, role: "ADMIN" } });
 const get = (shiftId: string) => GET(new Request("http://x.local/x"), { params: { shiftId } });

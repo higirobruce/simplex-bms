@@ -1,14 +1,12 @@
 import { prisma } from "@/lib/prisma";
 import { getTenantContext, handleRouteError } from "@/lib/api";
+import { SALES_CAP } from "@/lib/counter-view";
 import { NextResponse } from "next/server";
 
 // One shift's individual sales, with lines and tenders. The tenant comes from the
 // session, never the URL. A shift in another org is a 404, indistinguishable from
 // one that does not exist. Every money value is the STORED decimal rendered as a
 // string: line amounts are splyAmt/taxblAmt as the till wrote them, never qty * prc.
-// Hard cap so one busy shift cannot return an unbounded payload; `truncated` says so.
-export const SALES_CAP = 200;
-
 export async function GET(_req: Request, { params }: { params: { shiftId: string } }) {
   try {
     const { orgId } = await getTenantContext();

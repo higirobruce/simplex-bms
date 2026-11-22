@@ -140,3 +140,6 @@ export type ShiftSalesResponse = {
 export function plainQty(value: string): string {
   return /^-?\d+\.\d+$/.test(value) ? value.replace(/\.?0+$/, "") : value;
 }
+
+/** Hard cap on sales returned for one shift, so a busy shift cannot return an unbounded payload. */
+export const SALES_CAP = 200;
