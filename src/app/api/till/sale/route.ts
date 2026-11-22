@@ -86,7 +86,7 @@ export async function POST(req: Request) {
     if (!Array.isArray(body.tenders)) return refuse("tenders must be an array");
 
     const seqs = new Set<number>();
-    const lines: { itemSeq: number; productId?: string; itemCd?: string; qty: string; prc: string; taxTyCd: Tax }[] = [];
+    const lines: { itemSeq: number; productId?: string; itemCd?: string; qty: string; prc: string; taxTyCd: Tax; dcAmt: string }[] = [];
     for (const l of body.lines) {
       if (!isObj(l)) return refuse("each line must be an object");
       if (!isInt(l.itemSeq, 0) || seqs.has(l.itemSeq)) return refuse("itemSeq must be a unique integer per line");
@@ -96,6 +96,9 @@ export async function POST(req: Request) {
       const prc = money(l.prc);
       if (!prc) return refuse("prc must be a decimal string with at most 2 places");
       if (typeof l.taxTyCd !== "string" || !TAX_TYPES.has(l.taxTyCd)) return refuse("taxTyCd must be A, B, C or D");
+      // The till's dcAmt is the line's discount in money (whole francs, exact string). Absent = none.
+      const dcAmt = l.dcAmt === undefined || l.dcAmt === null ? "0" : money(l.dcAmt);
+      if (dcAmt === null) return refuse("dcAmt must be a decimal string with at most 2 places");
       const hasPid = l.productId !== undefined && l.productId !== null;
       if (hasPid && (typeof l.productId !== "string" || !l.productId)) return refuse("productId must be a string");
       if (!hasPid && (typeof l.itemCd !== "string" || !l.itemCd)) return refuse("each line needs a productId or an itemCd");
@@ -104,6 +107,7 @@ export async function POST(req: Request) {
         qty,
         prc,
         taxTyCd: l.taxTyCd as Tax,
+        dcAmt,
         productId: hasPid ? l.productId : undefined,
         itemCd: hasPid ? undefined : l.itemCd,
       });
@@ -147,17 +151,28 @@ export async function POST(req: Request) {
       : [];
     const pidOk = new Set(byPid.map((p) => p.id));
     const skuMap = new Map(bySku.map((p) => [p.sku, p.id]));
-    const resolved: { itemSeq: number; productId: string; qty: string; prc: string; taxTyCd: Tax }[] = [];
+    const resolved: { itemSeq: number; productId: string; qty: string; prc: string; taxTyCd: Tax; dcAmt: string }[] = [];
     for (const l of lines) {
       const productId = l.productId ? (pidOk.has(l.productId) ? l.productId : undefined) : skuMap.get(l.itemCd!);
       if (!productId) return refuse(`Line ${l.itemSeq} names a product that does not exist in this shop`);
-      resolved.push({ itemSeq: l.itemSeq, productId, qty: l.qty, prc: l.prc, taxTyCd: l.taxTyCd });
+      resolved.push({ itemSeq: l.itemSeq, productId, qty: l.qty, prc: l.prc, taxTyCd: l.taxTyCd, dcAmt: l.dcAmt });
     }
 
     // The partial unique index is on (referenceId, productId) for SALE, so two lines of one
     // product would collide: write one movement per product with the summed quantity.
     const perProduct = new Map<string, string>();
     for (const l of resolved) perProduct.set(l.productId, addQty(perProduct.get(l.productId) ?? "0", l.qty));
+
+    // A summed quantity that cannot fit Decimal(12,3) is a permanent refusal. As a 500 it would
+    // wedge every later sale from the lane (ordered outbox, retried forever).
+    const QTY_MAX = BigInt(999999999999); // 999999999.999 in thousandths
+    const thousandths = (s: string) => {
+      const [i, f = ""] = s.split(".");
+      return BigInt(i) * BigInt(1000) + BigInt(f.padEnd(3, "0"));
+    };
+    for (const q of Array.from(perProduct.values())) {
+      if (thousandths(q) > QTY_MAX) return refuse("Total quantity of one product is too large");
+    }
 
     await prisma.$transaction(async (tx) => {
       await tx.sale.upsert({
@@ -171,18 +186,32 @@ export async function POST(req: Request) {
         select: { id: true },
       });
       await tx.saleLine.createMany({
-        data: resolved.map((l) => ({ ...l, saleId, orgId })),
+        data: resolved.map(({ dcAmt, ...l }) => ({
+          ...l, saleId, orgId,
+          // dcRt is derived from dcAmt on the till, so the exact money amount is what is kept.
+          // Lines then reconcile with the header: qty*prc - discountValue.
+          ...(Number(dcAmt) > 0 ? { discountKind: "AMOUNT" as const, discountValue: dcAmt } : {}),
+        })),
         skipDuplicates: true,
       });
       await tx.tender.deleteMany({ where: { saleId, orgId } });
       await tx.tender.createMany({ data: tenders.map((t) => ({ ...t, saleId, orgId })) });
-      // ON CONFLICT DO NOTHING: the partial unique index makes a replay a no-op.
-      await tx.stockMovement.createMany({
-        data: Array.from(perProduct).map(([productId, qty]) => ({
-          type: "SALE" as const, productId, qty, fromLocationId: locationId, referenceId: saleId, orgId,
-        })),
-        skipDuplicates: true,
-      });
+      // One movement per product. A replay inserts nothing (ON CONFLICT DO NOTHING on the partial
+      // unique index), and StockLevel is decremented ONLY when a row was actually inserted, so a
+      // replay moves no stock. A till sale already happened, so on-hand may go negative.
+      for (const [productId, qty] of Array.from(perProduct.entries())) {
+        const made = await tx.stockMovement.createMany({
+          data: [{ type: "SALE" as const, productId, qty, fromLocationId: locationId, referenceId: saleId, orgId }],
+          skipDuplicates: true,
+        });
+        if (made.count === 1) {
+          await tx.stockLevel.upsert({
+            where: { productId_locationId: { productId, locationId } },
+            update: { qty: { decrement: qty } },
+            create: { productId, locationId, qty: "-" + qty },
+          });
+        }
+      }
       // Never backwards: an out-of-order replay of an older sale cannot lower the counter.
       await tx.lane.updateMany({ where: { id: laneId, lastInvcNo: { lt: invcNo } }, data: { lastInvcNo: invcNo } });
     });

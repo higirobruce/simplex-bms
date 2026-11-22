@@ -13,14 +13,16 @@ const SHIFT = "a".repeat(32);
 
 async function seed() {
   const s = await seedOrg();
-  const lane = await prisma.lane.create({ data: { code: "L1", name: "Lane 1", locationId: s.locationId, orgId: s.orgId } });
+  // The lane sits on a SECOND location, so a route that picked the org's first location would be caught.
+  const laneLoc = await prisma.location.create({ data: { name: "Shop Floor", code: "FLOOR", orgId: s.orgId } });
+  const lane = await prisma.lane.create({ data: { code: "L1", name: "Lane 1", locationId: laneLoc.id, orgId: s.orgId } });
   const { token, tokenHash } = mintLaneToken();
   await prisma.laneToken.create({ data: { laneId: lane.id, tokenHash, orgId: s.orgId } });
   const cashier = await prisma.user.create({
     data: { email: `c-${Math.random()}@c.invalid`, password: "!x", name: "Amy", role: "CASHIER", pinHash: "$argon2id$fake", orgId: s.orgId },
   });
   await prisma.shift.create({ data: { id: SHIFT, laneId: lane.id, orgId: s.orgId, openedById: cashier.id, openingFloat: "0.00" } });
-  return { ...s, lane, token };
+  return { ...s, lane, token, laneLocationId: laneLoc.id };
 }
 const post = (token: string | null, body: unknown) =>
   POST(new Request("http://x.local/api/till/sale", {
@@ -66,8 +68,103 @@ describe("POST /api/till/sale", () => {
     const other = await prisma.location.create({ data: { name: "Other", code: "OTH", orgId: s.orgId } });
     await post(s.token, sale(s, { fromLocationId: other.id, locationId: other.id }));
     const mv = await prisma.stockMovement.findFirstOrThrow({ where: { type: "SALE" } });
-    expect(mv.fromLocationId).toBe(s.locationId);
+    expect(mv.fromLocationId).toBe(s.laneLocationId);
+    expect(mv.fromLocationId).not.toBe(s.locationId);
+    expect(mv.fromLocationId).not.toBe(other.id);
     expect(mv.toLocationId).toBeNull();
+  });
+
+  test("a sale decrements StockLevel by the summed qty at the lane's location; a re-POST does not", async () => {
+    const s = await seed();
+    await prisma.stockLevel.create({ data: { productId: s.productId, locationId: s.laneLocationId, qty: "10.000" } });
+    await prisma.stockLevel.create({ data: { productId: s.productId, locationId: s.locationId, qty: "10.000" } });
+    const body = sale(s, {
+      lines: [
+        { itemSeq: 1, productId: s.productId, qty: "1.250", prc: "10.00", taxTyCd: "B" },
+        { itemSeq: 2, productId: s.productId, qty: "2.000", prc: "10.00", taxTyCd: "B" },
+      ],
+    });
+    const level = async (loc: string) =>
+      (await prisma.stockLevel.findUniqueOrThrow({ where: { productId_locationId: { productId: s.productId, locationId: loc } } })).qty.toFixed(3);
+    expect((await post(s.token, body)).status).toBe(200);
+    expect(await level(s.laneLocationId)).toBe("6.750");
+    expect(await level(s.locationId)).toBe("10.000");
+    expect((await post(s.token, body)).status).toBe(200);
+    expect((await post(s.token, body)).status).toBe(200);
+    expect(await level(s.laneLocationId)).toBe("6.750");
+  });
+
+  test("selling a product with no StockLevel row creates one at the lane's location, negative", async () => {
+    const s = await seed();
+    expect((await post(s.token, sale(s))).status).toBe(200);
+    const lvl = await prisma.stockLevel.findFirstOrThrow({ where: { productId: s.productId } });
+    expect(lvl.locationId).toBe(s.laneLocationId);
+    expect(lvl.qty.toFixed(3)).toBe("-2.000");
+    await post(s.token, sale(s));
+    expect((await prisma.stockLevel.findFirstOrThrow({ where: { productId: s.productId } })).qty.toFixed(3)).toBe("-2.000");
+  });
+
+  // Field set copied from cloud_payload in till/crates/till-store/src/sale.rs, including the
+  // extra till-only fields and the NESTED receipt, which is the only shape the till sends.
+  test("the till's real payload shape is accepted and rcptNo is stored from receipt.rcptNo", async () => {
+    const s = await seed();
+    const golden = {
+      saleId: SALE, shiftId: SHIFT, bhfId: "00", invcNo: 12, buyerTin: "123456789",
+      totAmt: "2380.00", totTaxblAmt: "2016.95", totTaxAmt: "363.05", pmtTyCd: "CASH",
+      createdAt: "2026-11-21T10:30:00Z", confirmedAt: "2026-11-21T10:30:02Z",
+      lines: [{
+        itemSeq: 1, itemCd: "SKU-X", itemClsCd: "5020230602", itemNm: "Thing", qty: "2.000", prc: "1200.00",
+        splyAmt: "2400.00", dcRt: "0", dcAmt: "20.00", taxblAmt: "2380.00", taxAmt: "363.05", taxTyCd: "B",
+      }],
+      tenders: [{ seq: 1, pmtTyCd: "CASH", amount: "2380.00" }],
+      receipt: {
+        rcptNo: 42, intrlData: "INTRL", rcptSign: "ABCD1234EFGH5678", sdcId: "SDC010000001",
+        mrcNo: "WIS00000001", vsdcRcptPbctDate: "20261121103000", totRcptNo: 7,
+      },
+    };
+    const p = await prisma.product.findUniqueOrThrow({ where: { id: s.productId } });
+    golden.lines[0].itemCd = p.sku;
+    expect((await post(s.token, golden)).status).toBe(200);
+    const row = await prisma.sale.findUniqueOrThrow({ where: { id: SALE } });
+    expect(row.rcptNo).toBe(42);
+    expect(row.buyerTin).toBe("123456789");
+    expect(row.soldAt.toISOString()).toBe("2026-11-21T10:30:00.000Z");
+    expect(row.invcNo).toBe(12);
+  });
+
+  test("a line discount round-trips exactly and the lines reconcile with the header", async () => {
+    const s = await seed();
+    const body = sale(s, {
+      totAmt: "2380.00",
+      lines: [{ itemSeq: 1, productId: s.productId, qty: "2.000", prc: "1200.00", dcRt: "0.83", dcAmt: "20.00", taxTyCd: "B" }],
+    });
+    expect((await post(s.token, body)).status).toBe(200);
+    const l = await prisma.saleLine.findFirstOrThrow();
+    expect(l.discountKind).toBe("AMOUNT");
+    expect(l.discountValue?.toFixed(2)).toBe("20.00");
+    const net = l.qty.mul(l.prc).minus(l.discountValue!);
+    const head = await prisma.sale.findUniqueOrThrow({ where: { id: SALE } });
+    expect(net.toFixed(2)).toBe(head.totAmt.toFixed(2));
+  });
+
+  test("an undiscounted line stores no discount", async () => {
+    const s = await seed();
+    await post(s.token, sale(s));
+    const l = await prisma.saleLine.findFirstOrThrow();
+    expect(l.discountKind).toBeNull();
+    expect(l.discountValue).toBeNull();
+  });
+
+  test("a summed quantity that cannot fit its column is 422, not 500, and writes nothing", async () => {
+    const s = await seed();
+    const res = await post(s.token, sale(s, {
+      lines: [
+        { itemSeq: 1, productId: s.productId, qty: "999999999.000", prc: "1.00", taxTyCd: "B" },
+        { itemSeq: 2, productId: s.productId, qty: "999999999.000", prc: "1.00", taxTyCd: "B" },
+      ],
+    }));
+    expect(res.status).toBe(422);
+    expect(await counts()).toEqual({ sale: 0, line: 0, tender: 0, mv: 0 });
   });
 
   test("re-posting the same sale creates no duplicate tender or movement", async () => {
@@ -206,16 +303,21 @@ describe("POST /api/till/sale", () => {
 
   test("a failure mid-transaction leaves no half-written sale", async () => {
     const s = await seed();
-    // Two valid lines whose summed movement overflows Decimal(12,3): the sale, lines and tender
-    // are already written when the movement insert fails, so the rollback is what is tested.
-    const res = await post(s.token, sale(s, {
-      lines: [
-        { itemSeq: 1, productId: s.productId, qty: "999999999.000", prc: "1.00", taxTyCd: "B" },
-        { itemSeq: 2, productId: s.productId, qty: "999999999.000", prc: "1.00", taxTyCd: "B" },
-      ],
-    }));
+    await prisma.stockLevel.create({ data: { productId: s.productId, locationId: s.laneLocationId, qty: "10.000" } });
+    // Inject a fault on the LAST write of the transaction, after the sale, lines, tenders,
+    // movement and stock decrement have all been written.
+    const real = prisma.$transaction.bind(prisma) as any;
+    const spy = vi.spyOn(prisma, "$transaction").mockImplementationOnce(((fn: any, opts: any) =>
+      real((tx: any) =>
+        fn(new Proxy(tx, {
+          get: (target, key) =>
+            key === "lane" ? { updateMany: async () => { throw new Error("injected"); } } : target[key],
+        })), opts)) as any);
+    const res = await post(s.token, sale(s));
+    spy.mockRestore();
     expect(res.status).toBe(500);
     expect(await counts()).toEqual({ sale: 0, line: 0, tender: 0, mv: 0 });
+    expect((await prisma.stockLevel.findFirstOrThrow({ where: { productId: s.productId } })).qty.toFixed(3)).toBe("10.000");
     expect((await prisma.lane.findUniqueOrThrow({ where: { id: s.lane.id } })).lastInvcNo).toBe(0);
   });
 
