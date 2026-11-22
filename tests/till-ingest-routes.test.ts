@@ -97,6 +97,42 @@ describe("POST /api/till/shift", () => {
     await prisma.user.update({ where: { id: s.cashier.id }, data: { pinHash: null } });
     const res = await post(s.token, open(s, { closedAt: "2026-11-22T17:00:00.000Z", declaredCash: "5.00" }));
     expect(res.status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.closedAt?.toISOString()).toBe("2026-11-22T17:00:00.000Z");
+    expect(row.declaredCash?.toFixed(2)).toBe("5.00");
+  });
+
+  test("a shift id owned by a different org cannot be overwritten", async () => {
+    const s = await seed();
+    const otherLane = await prisma.lane.create({ data: { code: "O1", name: "O1", locationId: s.locationId, orgId: s.otherOrgId } });
+    const theirs = await s.mk(s.otherOrgId, "Theirs");
+    await prisma.shift.create({
+      data: { id: SID, laneId: otherLane.id, orgId: s.otherOrgId, openedById: theirs.id, openingFloat: "1.00" },
+    });
+    const res = await post(s.token, open(s, { closedAt: "2026-11-22T17:00:00.000Z", declaredCash: "9.00" }));
+    expect(res.status).toBe(422);
+    expect((await prisma.shift.findUniqueOrThrow({ where: { id: SID } })).closedAt).toBeNull();
+  });
+
+  test("openedById mismatching the existing shift is refused", async () => {
+    const s = await seed();
+    await post(s.token, open(s));
+    const other = await s.mk(s.orgId, "Bob");
+    const res = await post(s.token, open(s, { openedById: other.id, closedAt: "2026-11-22T17:00:00.000Z", declaredCash: "9.00" }));
+    expect(res.status).toBe(422);
+    expect((await prisma.shift.findUniqueOrThrow({ where: { id: SID } })).closedAt).toBeNull();
+  });
+
+  test("dates need an explicit instant: lenient forms are 422, Z and offsets accepted", async () => {
+    const s = await seed();
+    for (const openedAt of ["2026", "1", "2026-11-22T10:00:00", "2026-11-22"]) {
+      expect((await post(s.token, open(s, { openedAt }))).status).toBe(422);
+    }
+    expect(await prisma.shift.count()).toBe(0);
+    expect((await post(s.token, open(s, { openedAt: "2026-11-22T10:00:00+02:00" }))).status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.openedAt.toISOString()).toBe("2026-11-22T08:00:00.000Z");
+    expect((await post(s.token, open(s, { openedAt: "2026-11-22T08:00:00.000Z" }))).status).toBe(200);
   });
 
   test("a shift naming a cashier from another org is refused", async () => {

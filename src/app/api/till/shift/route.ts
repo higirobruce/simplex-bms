@@ -17,8 +17,11 @@ const refuse = (message: string) => NextResponse.json({ error: message }, { stat
 const HEX32 = /^[0-9a-f]{32}$/;
 const MONEY = /^[0-9]{1,10}(\.[0-9]{1,2})?$/; // Decimal(12,2), exact string, never a float
 
+// ISO-8601 instant with an explicit Z or numeric offset. new Date() alone accepts "2026" or "1"
+// and reads zone-less strings in server-local time, which would silently mis-stamp a shift.
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
 function date(v: unknown): Date | null {
-  if (typeof v !== "string") return null;
+  if (typeof v !== "string" || !ISO_INSTANT.test(v)) return null;
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? null : d;
 }
