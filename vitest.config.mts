@@ -13,6 +13,8 @@ if (existsSync(".env.test")) {
 }
 
 export default defineConfig({
+  // tsconfig has jsx: preserve (Next compiles it); tests need oxc to transform JSX.
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
