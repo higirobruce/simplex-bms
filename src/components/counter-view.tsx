@@ -1,7 +1,8 @@
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
-  absMoney, clock, clockWithDay, groupMoney, methodLabel, splitShifts, varianceKind,
-  type CounterResponse, type CounterShift,
+  absMoney, clock, clockWithDay, groupMoney, methodLabel, plainQty, splitShifts, varianceKind,
+  type CounterResponse, type CounterShift, type ShiftSale, type ShiftSalesResponse,
 } from "@/lib/counter-view";
 
 /**
@@ -149,7 +150,86 @@ const BORDER: Record<string, string> = {
   mismatch: "border-l-danger",
 };
 
-function ClosedShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
+/** Presentational: the sales of one shift. Amounts are the stored strings, re-grouped as text only. */
+export function ShiftSales({ data, tz }: { data: ShiftSalesResponse; tz?: string }) {
+  return (
+    <div className="border-t border-line bg-surface-2 px-5 py-3">
+      <p className="mb-3 text-[0.8125rem] text-warning">{data.record.note}</p>
+      {data.sales.length === 0 && <p className="text-sm text-ink-soft">No sales held for this shift.</p>}
+      {data.sales.map((x: ShiftSale) => (
+        <div key={x.id} data-sale={x.invcNo} className="mb-3 rounded-[var(--radius)] border border-line bg-surface px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div className={`${MONO} text-xs text-ink-mute`}>
+              #{x.invcNo} · {clock(x.soldAt, tz)}
+              {x.voidedAt ? " · VOIDED" : ""}
+            </div>
+            <div className={`${MONO} font-semibold text-ink`}>{groupMoney(x.totAmt)}</div>
+          </div>
+          <table className="mt-2 w-full text-sm">
+            <thead>
+              <tr className={KICKER}>
+                <th className="text-left font-normal">Item</th>
+                <th className="text-right font-normal">Qty</th>
+                <th className="text-right font-normal">Price</th>
+                <th className="text-right font-normal">Line</th>
+                <th className="text-right font-normal">Taxable</th>
+              </tr>
+            </thead>
+            <tbody>
+              {x.lines.map((l) => (
+                <tr key={l.itemSeq} className="text-ink-soft">
+                  <td>{l.name}</td>
+                  <td className={`${MONO} text-right`}>{plainQty(l.qty)}</td>
+                  <td className={`${MONO} text-right`}>{groupMoney(l.prc)}</td>
+                  <td className={`${MONO} text-right text-ink`}>{l.splyAmt === null ? "—" : groupMoney(l.splyAmt)}</td>
+                  <td className={`${MONO} text-right`}>{l.taxblAmt === null ? "—" : groupMoney(l.taxblAmt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-ink-mute">
+            <span>{x.tenders.map((t) => `${methodLabel(t.method)} ${groupMoney(t.amount)}`).join(" · ")}</span>
+            <span className={MONO}>Tax {groupMoney(x.totTaxAmt)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ShiftSalesLoader({ slug, shiftId, tz }: { slug: string; shiftId: string; tz?: string }) {
+  const { data, isLoading, isError } = useQuery<ShiftSalesResponse>({
+    queryKey: ["counter-shift", slug, shiftId],
+    queryFn: async () => {
+      const r = await fetch(`/api/${slug}/counter/${encodeURIComponent(shiftId)}`);
+      if (!r.ok) throw new Error("Could not load the sales");
+      return r.json();
+    },
+  });
+  if (isLoading) return <p className="border-t border-line px-5 py-3 text-sm text-ink-soft">Loading sales…</p>;
+  if (isError || !data) return <p role="alert" className="border-t border-line px-5 py-3 text-sm text-danger">Could not load this shift's sales.</p>;
+  return <ShiftSales data={data} tz={tz} />;
+}
+
+// The only interaction on the page: show or hide. It changes nothing on the server.
+function Expander({ slug, shiftId, tz }: { slug: string; shiftId: string; tz?: string }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="w-full border-t border-line px-5 py-2 text-left text-sm text-ink-soft hover:bg-surface-3"
+      >
+        {open ? "Hide sales" : "Show sales"}
+      </button>
+      {open && <ShiftSalesLoader slug={slug} shiftId={shiftId} tz={tz} />}
+    </>
+  );
+}
+
+function ClosedShift({ s, now, tz, slug }: { s: CounterShift; now: Date; tz?: string; slug?: string }) {
   let border = BORDER[s.state];
   if (s.state === "complete" && s.variance?.diff) {
     const k = varianceKind(s.variance.diff);
@@ -171,6 +251,7 @@ function ClosedShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }
         </div>
       </div>
       <Verdict s={s} now={now} tz={tz} />
+      {slug && <Expander slug={slug} shiftId={s.id} tz={tz} />}
     </article>
   );
 }
@@ -219,7 +300,7 @@ function LiveShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) 
   );
 }
 
-export function CounterView({ data, now = new Date(), tz, dayLabel }: { data: CounterResponse; now?: Date; tz?: string; dayLabel?: string }) {
+export function CounterView({ data, now = new Date(), tz, dayLabel, slug }: { data: CounterResponse; now?: Date; tz?: string; dayLabel?: string; slug?: string }) {
   const { closed, live } = splitShifts(data.shifts);
   const stale = live.filter((s) => s.state === "stale");
   const label = dayLabel ?? data.day;
@@ -235,7 +316,7 @@ export function CounterView({ data, now = new Date(), tz, dayLabel }: { data: Co
       {closed.length === 0 && (
         <p className="rounded-[var(--radius)] border border-line bg-surface px-5 py-4 text-sm text-ink-soft">No shift has closed on this day yet.</p>
       )}
-      {closed.map((s) => <ClosedShift key={s.id} s={s} now={now} tz={tz} />)}
+      {closed.map((s) => <ClosedShift key={s.id} s={s} now={now} tz={tz} slug={slug} />)}
 
       <div className="mt-3.5 flex flex-wrap items-baseline justify-between gap-4 rounded-[var(--radius)] border border-line bg-surface-2 px-5 py-4">
         <div>

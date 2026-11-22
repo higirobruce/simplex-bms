@@ -101,3 +101,39 @@ export function splitShifts(shifts: CounterShift[]) {
     live: shifts.filter((s) => s.state === "open" || s.state === "stale"),
   };
 }
+
+export type ShiftSaleLine = {
+  itemSeq: number;
+  name: string;
+  qty: string;
+  prc: string;
+  taxTyCd: string;
+  /** Stored by the till; null on rows that predate the columns. Never derived. */
+  splyAmt: string | null;
+  taxblAmt: string | null;
+};
+
+export type ShiftSale = {
+  id: string;
+  invcNo: number;
+  rcptNo: number | null;
+  soldAt: string;
+  voidedAt: string | null;
+  totAmt: string;
+  totTaxblAmt: string;
+  totTaxAmt: string;
+  buyerTin: string | null;
+  lines: ShiftSaleLine[];
+  tenders: { seq: number; method: string; amount: string }[];
+};
+
+export type ShiftSalesResponse = {
+  shiftId: string;
+  record: { kind: "back-office"; fiscalCopy: false; note: string };
+  sales: ShiftSale[];
+};
+
+/** A trailing-zero-free quantity: "3.000" -> "3", "0.500" -> "0.5". Text only. */
+export function plainQty(value: string): string {
+  return /^-?\d+\.\d+$/.test(value) ? value.replace(/\.?0+$/, "") : value;
+}

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CounterView } from "@/components/counter-view";
+import { CounterView, ShiftSales } from "@/components/counter-view";
 import { absMoney, groupMoney, shiftDay, varianceKind, type CounterResponse, type CounterShift } from "@/lib/counter-view";
 
 // No React testing library in this project: components are rendered to static
@@ -210,5 +210,41 @@ describe("counter-view helpers", () => {
   test("day navigation crosses month and year", () => {
     expect(shiftDay("2026-03-01", -1)).toBe("2026-02-28");
     expect(shiftDay("2026-12-31", 1)).toBe("2027-01-01");
+  });
+});
+
+describe("ShiftSales (expanded row)", () => {
+  const data = {
+    shiftId: "s1",
+    record: { kind: "back-office" as const, fiscalCopy: false as const, note: "Back-office record, not the fiscal receipt." },
+    sales: [{
+      id: "x1", invcNo: 7, rcptNo: 7, soldAt: "2026-11-21T09:30:00Z", voidedAt: null,
+      totAmt: "1000.00", totTaxblAmt: "847.46", totTaxAmt: "152.54", buyerTin: null,
+      lines: [
+        { itemSeq: 1, name: "Rice 1kg", qty: "3.333", prc: "100.00", taxTyCd: "B", splyAmt: "334.00", taxblAmt: "283.05" },
+        { itemSeq: 2, name: "Old line", qty: "1.000", prc: "666.00", taxTyCd: "B", splyAmt: null, taxblAmt: null },
+      ],
+      tenders: [{ seq: 1, method: "CASH", amount: "1000.00" }],
+    }],
+  };
+  const html = () => renderToStaticMarkup(createElement(ShiftSales, { data, tz: TZ }));
+
+  test("renders the stored line amount, not qty x price", () => {
+    expect(html()).toContain(">334<");
+    expect(html()).not.toContain(">333<");
+  });
+  test("a line with no stored amount shows a dash, never a derived figure", () => {
+    expect(html()).not.toContain(">667<");
+    expect(html()).toContain(">—<");
+  });
+  test("carries the back-office flag and has no inputs or mutating controls", () => {
+    expect(html()).toContain("not the fiscal receipt");
+    expect(html()).not.toMatch(/<(input|button|form|select|textarea)/);
+  });
+  test("the expander is a plain toggle only when a slug is supplied", () => {
+    const base = { day: "2026-11-21", timezone: TZ, shifts: [shift()], total: "1", totalQualified: true };
+    const withSlug = renderToStaticMarkup(createElement(CounterView, { data: base, now: NOW, tz: TZ, slug: "shop" }));
+    expect(withSlug).toContain('aria-expanded="false"');
+    expect(withSlug).not.toMatch(/<(input|form|select|textarea)/);
   });
 });
