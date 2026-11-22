@@ -11,6 +11,8 @@
 //! error cases. No queuing or retry logic lives here — that belongs in later
 //! tasks after the VSDC client is wired.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use thiserror::Error;
 use till_store::VsdcReceipt;
 
@@ -145,9 +147,101 @@ impl FiscalPort for SimFiscal {
     }
 }
 
+/// A shared "the VSDC is offline" flag, so the lane and the operator can
+/// disagree with each other at runtime.
+pub type OfflineFlag = Rc<Cell<bool>>;
+
+/// A [`SimFiscal`] whose reachability can be flipped while the lane is running.
+///
+/// This exists for one reason: the C1 hard stop is the behaviour that matters
+/// most on real hardware (CIS §24.7.8 and §24.7.9), and a simulator that only
+/// ever succeeds cannot produce it. With this port, an operator sitting at a
+/// till can take the VSDC away mid-shift and watch what the lane does.
+///
+/// It is a testing affordance and must never reach a shop. The only
+/// constructor of the flag is `Devices::demo`, a real build has no `SimFiscal`
+/// to wrap, and the lane refuses to start at all without `--demo`.
+pub struct SwitchableSim {
+    inner: SimFiscal,
+    offline: OfflineFlag,
+}
+
+impl SwitchableSim {
+    /// Wraps a simulator so `offline` decides whether it answers.
+    pub fn new(inner: SimFiscal, offline: OfflineFlag) -> SwitchableSim {
+        SwitchableSim { inner, offline }
+    }
+}
+
+impl FiscalPort for SwitchableSim {
+    fn save_sales(&mut self, payload: &SalePayload) -> Result<VsdcReceipt, FiscalError> {
+        if self.offline.get() {
+            // The same error a real unreachable VSDC raises, so the lane takes
+            // the same path: no receipt, no drawer, a hard stop.
+            return Err(FiscalError::Unreachable);
+        }
+        self.inner.save_sales(payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_payload() -> SalePayload {
+        SalePayload {
+            invc_no: 1,
+            bhf_id: "00".to_string(),
+            tot_amt: "1000.00".to_string(),
+            tot_taxbl_amt: "1000.00".to_string(),
+            tot_tax_amt: "0.00".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_switchable_port_goes_offline_and_comes_back() {
+        let offline: OfflineFlag = Rc::new(Cell::new(false));
+        let mut port = SwitchableSim::new(
+            SimFiscal {
+                next_rcpt_no: 7,
+                mode: SimMode::Succeed,
+            },
+            Rc::clone(&offline),
+        );
+
+        assert_eq!(port.save_sales(&a_payload()).unwrap().rcpt_no, 7);
+
+        offline.set(true);
+        assert!(matches!(
+            port.save_sales(&a_payload()),
+            Err(FiscalError::Unreachable)
+        ));
+
+        // Back online, and the receipt number has NOT moved for the refused
+        // call: a sale the VSDC never saw must not consume a number.
+        offline.set(false);
+        assert_eq!(port.save_sales(&a_payload()).unwrap().rcpt_no, 8);
+    }
+
+    #[test]
+    fn a_switchable_port_that_starts_offline_never_answers_until_flipped() {
+        let offline: OfflineFlag = Rc::new(Cell::new(true));
+        let mut port = SwitchableSim::new(
+            SimFiscal {
+                next_rcpt_no: 1,
+                mode: SimMode::Succeed,
+            },
+            Rc::clone(&offline),
+        );
+        for _ in 0..3 {
+            assert!(matches!(
+                port.save_sales(&a_payload()),
+                Err(FiscalError::Unreachable)
+            ));
+        }
+        offline.set(false);
+        assert_eq!(port.save_sales(&a_payload()).unwrap().rcpt_no, 1);
+    }
 
     #[test]
     fn the_simulated_port_returns_an_ascending_receipt_number() {

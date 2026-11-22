@@ -78,6 +78,12 @@ pub enum Action {
     ReprintZ,
     CancelSale,
     Resume,
+    /// Demo only: take the simulated VSDC offline, or put it back, so the C1
+    /// hard stop can be exercised by hand. A no-op with real devices.
+    ToggleVsdc,
+    /// Take the nth product a name search offered, counting from 1. Only a tap
+    /// produces this; keying the number goes through the buffer like a scan.
+    Pick(usize),
     NotBuilt(&'static str),
 }
 
@@ -149,7 +155,10 @@ const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
 /// because the operating system reserves Ctrl+F-key chords on some machines.
 const SHIFT_KEYS: [(egui::Key, &str, Action); 2] = [
     (egui::Key::F7, "Close shift", Action::ReportZ),
-    (egui::Key::F9, "Reprint close report", Action::ReprintZ),
+    // "Reprint close report" does not fit a cap even at the smallest size, and
+    // a clipped label reads as broken. Not "Reprint Z": these are shift
+    // reports, not RRA's daily Z.
+    (egui::Key::F9, "Reprint close", Action::ReprintZ),
 ];
 
 fn shift_cap(key: egui::Key) -> String {
@@ -190,6 +199,10 @@ pub fn actions_from(events: &[egui::Event]) -> Vec<Action> {
                         out.push(Action::Tender(*code));
                     }
                 }
+                // Demo only, and deliberately next to F12's resume: Shift+F12
+                // takes the simulated VSDC away, F12 brings the lane back.
+                // A chord, so a scanner wedge can never type it.
+                egui::Key::F12 if modifiers.shift => out.push(Action::ToggleVsdc),
                 k if modifiers.shift && SHIFT_KEYS.iter().any(|(sk, ..)| sk == k) => {
                     out.extend(SHIFT_KEYS.iter().filter(|(sk, ..)| sk == k).map(|t| t.2));
                 }
@@ -262,6 +275,17 @@ fn apply(
         Action::ReprintZ => block_on(state.reprint_z(devices.printer.as_mut())),
         Action::CancelSale => block_on(state.abandon_pending()),
         Action::Resume => state.resume_from_hard_stop(),
+        Action::Pick(n) => block_on(state.pick_nth(n)),
+        Action::ToggleVsdc => {
+            local.note = Some(match devices.toggle_vsdc() {
+                Some(true) => {
+                    "Demo: the VSDC is now unreachable. The next sale will hard stop.".to_owned()
+                }
+                Some(false) => "Demo: the VSDC is reachable again.".to_owned(),
+                None => "There is no simulated VSDC to switch in this build.".to_owned(),
+            });
+            Ok(())
+        }
         Action::NotBuilt(name) => {
             local.note = Some(format!("{name} is not available in this build."));
             Ok(())
@@ -385,7 +409,7 @@ pub fn lane(ctx: &Context, state: &mut LaneState, devices: &mut Devices) {
     }
 
     let mut tapped = Vec::new();
-    status_bar(ctx, state, &session);
+    status_bar(ctx, state, &session, devices.vsdc_offline());
     match state.screen().clone() {
         Screen::HardStop { reason } => {
             if let Some(a) = hard_stop(ctx, state, &reason) {
@@ -471,7 +495,7 @@ fn shift_label(shift: Option<&till_store::OpenShift>) -> String {
     }
 }
 
-fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
+fn status_bar(ctx: &Context, state: &LaneState, session: &Session, vsdc_switched_off: bool) {
     egui::TopBottomPanel::top("status")
         .frame(
             Frame::new()
@@ -494,6 +518,13 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session) {
                     TOKENS.line,
                 ));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // The demo's own switch is a different claim from the one
+                    // below: it reports how the SIMULATOR is set, which is
+                    // known without asking anything, and says "demo" so it can
+                    // never be read as the state of a real device.
+                    if vsdc_switched_off {
+                        chip(ui, "DEMO: VSDC switched off", TOKENS.danger, TOKENS.surface);
+                    }
                     // The lane does not poll the VSDC; it only learns at
                     // settlement. So the chip reports the last outcome, and
                     // never claims the device is reachable right now.
@@ -811,13 +842,13 @@ fn amount_tile(
 fn rail(ctx: &Context, state: &LaneState, _local: &Local) -> Option<Action> {
     let mut tapped = None;
     egui::SidePanel::right("rail")
-        .exact_width(440.0)
+        .exact_width(RAIL_WIDTH)
         .resizable(false)
         .frame(
             Frame::new()
                 .fill(TOKENS.canvas)
                 .stroke(Stroke::new(1.0_f32, TOKENS.line))
-                .inner_margin(Margin::same(12)),
+                .inner_margin(Margin::same(RAIL_MARGIN as i8)),
         )
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 10.0;
@@ -882,8 +913,12 @@ fn rail(ctx: &Context, state: &LaneState, _local: &Local) -> Option<Action> {
                 balance_tile(ui, state, due);
             }
 
+            if let Some(picked) = match_list(ui, state) {
+                tapped = Some(picked);
+            }
             scan_field(ui, state);
-            tapped = keys(ui, state);
+            let from_keys = keys(ui, state);
+            tapped = tapped.or(from_keys);
         });
     tapped
 }
@@ -1002,6 +1037,60 @@ fn band_table(ui: &mut Ui, t: &till_core::BasketTotals) {
         });
 }
 
+/// The products a name search is offering, numbered the way `LaneState::pick`
+/// counts them: from 1. Returns the action for a row that was tapped, so a
+/// touch screen reaches the same code path as keying the number.
+fn match_list(ui: &mut Ui, state: &LaneState) -> Option<Action> {
+    let matches = state.search_matches();
+    if matches.is_empty() {
+        return None;
+    }
+    let mut tapped = None;
+    tile(ui, TOKENS.surface, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        let term = state.search_term().unwrap_or_default();
+        let heading = match state.search_times() {
+            Some(n) => format!("PICK AN ITEM · \"{term}\" · {n} OF IT"),
+            None => format!("PICK AN ITEM · \"{term}\""),
+        };
+        ui.label(text(heading, sans_bold(11.0), TOKENS.ink_mute));
+        for (i, p) in matches.iter().enumerate() {
+            let n = i + 1;
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::CLICK);
+            if resp.hovered() {
+                ui.painter().rect_filled(rect, corner(), TOKENS.accent_soft);
+            }
+            let painter = ui.painter().with_clip_rect(rect);
+            painter.text(
+                rect.left_center() + vec2(8.0, 0.0),
+                Align2::LEFT_CENTER,
+                format!("{n}"),
+                mono_bold(14.0),
+                TOKENS.accent,
+            );
+            painter.text(
+                rect.left_center() + vec2(34.0, 0.0),
+                Align2::LEFT_CENTER,
+                &p.name,
+                sans(14.0),
+                TOKENS.ink,
+            );
+            painter.text(
+                rect.right_center() - vec2(8.0, 0.0),
+                Align2::RIGHT_CENTER,
+                fmt::rwf(p.unit_price),
+                mono(14.0),
+                TOKENS.ink_soft,
+            );
+            if resp.clicked() {
+                tapped = Some(Action::Pick(n));
+            }
+        }
+    });
+    tapped
+}
+
 fn scan_field(ui: &mut Ui, state: &LaneState) {
     Frame::new()
         .fill(TOKENS.surface)
@@ -1012,7 +1101,14 @@ fn scan_field(ui: &mut Ui, state: &LaneState) {
             ui.set_width(ui.available_width());
             let selling = *state.screen() == Screen::Selling;
             if state.buffer().is_empty() {
-                let hint = if selling { "Scan or key PLU ▏" } else { "" };
+                let hint = if state.search_matches().is_empty() {
+                    // The three things the buffer accepts, in the order a
+                    // cashier reaches for them.
+                    "Scan, key a PLU, type a name, or 3*code ▏"
+                } else {
+                    "Key the item's number ▏"
+                };
+                let hint = if selling { hint } else { "" };
                 ui.label(text(hint, mono(17.0), TOKENS.ink_mute));
             } else {
                 ui.label(text(
@@ -1061,12 +1157,10 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
     ));
     all.push((enter.0.to_owned(), enter.1, Action::Enter, enter.2, false));
 
-    let cols = 4;
-    let gap = 6.0;
-    let w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
-    for chunk in all.chunks(cols) {
+    let w = cap_width();
+    for chunk in all.chunks(CAP_COLS) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
+            ui.spacing_mut().item_spacing.x = CAP_GAP;
             for (fk, name, action, hot, muted) in chunk {
                 if key_cap(ui, w, fk.as_str(), name, *hot, *muted) {
                     tapped = Some(*action);
@@ -1075,6 +1169,39 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         });
     }
     tapped
+}
+
+/// The function-key rail's exact width, its inner margin, and how the caps are
+/// laid out inside it. Named because the cap width derives from them, and the
+/// test that proves every label fits must not be able to drift from the UI.
+const RAIL_WIDTH: f32 = 440.0;
+const RAIL_MARGIN: f32 = 12.0;
+const CAP_COLS: usize = 4;
+const CAP_GAP: f32 = 6.0;
+
+/// The width of one key cap, given the rail's geometry.
+fn cap_width() -> f32 {
+    let inner = RAIL_WIDTH - RAIL_MARGIN * 2.0;
+    (inner - CAP_GAP * (CAP_COLS as f32 - 1.0)) / CAP_COLS as f32
+}
+
+/// The font sizes a key cap will try for its name, largest first. A label that
+/// does not fit at 13 is shrunk rather than painted over its neighbours.
+const CAP_SIZES: [f32; 4] = [13.0, 12.0, 11.0, 10.0];
+
+/// How much of a cap's width its name may use, leaving a visual margin.
+const CAP_TEXT_INSET: f32 = 10.0;
+
+/// Picks the largest cap size whose single-line width fits `max_w`.
+///
+/// Pure in `measure` so it can be tested against both synthetic widths and the
+/// real font. Falls back to the smallest size: a label that does not fit even
+/// there is clipped by the caller, never allowed to escape the cap.
+fn cap_font_size(max_w: f32, measure: impl Fn(f32) -> f32) -> f32 {
+    CAP_SIZES
+        .into_iter()
+        .find(|&size| measure(size) <= max_w)
+        .unwrap_or(CAP_SIZES[CAP_SIZES.len() - 1])
 }
 
 fn key_cap(ui: &mut Ui, w: f32, fk: &str, name: &str, hot: bool, muted: bool) -> bool {
@@ -1106,11 +1233,22 @@ fn key_cap(ui: &mut Ui, w: f32, fk: &str, name: &str, hot: bool, muted: bool) ->
         mono_bold(11.0),
         fk_c,
     );
-    p.text(
+    // The name is shrunk to fit and then clipped to the cap. Painting it at a
+    // fixed size let the longest label ("Reprint close report") run past the
+    // cap's edge.
+    let max_w = rect.width() - CAP_TEXT_INSET;
+    let size = cap_font_size(max_w, |size| {
+        ui.fonts(|f| {
+            f.layout_no_wrap(name.to_owned(), sans_semibold(size), name_c)
+                .size()
+                .x
+        })
+    });
+    ui.painter().with_clip_rect(rect).text(
         rect.center_bottom() - vec2(0.0, 15.0),
         Align2::CENTER_CENTER,
         name,
-        sans_semibold(13.0),
+        sans_semibold(size),
         name_c,
     );
     resp.clicked()
@@ -1344,7 +1482,7 @@ mod tests {
                 rt,
                 ctx,
                 state,
-                devices: Devices::demo(),
+                devices: Devices::demo(false),
             }
         }
 
@@ -1845,6 +1983,246 @@ mod tests {
             .collect()
     }
 
+    /// Every label a key cap can show, from the same tables the UI draws from.
+    fn every_cap_label() -> Vec<&'static str> {
+        let mut v: Vec<&str> = FKEYS.iter().map(|(_, _, n, _)| *n).collect();
+        v.extend(METHODS.iter().map(|(_, _, _, cap)| *cap));
+        v.extend(SHIFT_KEYS.iter().map(|(_, n, _)| *n));
+        v.extend(["Clear tenders", "Scan / Pay", "Next customer"]);
+        v
+    }
+
+    /// The defect: `key_cap` painted its name at a fixed 13pt with no width
+    /// limit, so a label wider than the cap ran over the edge. Shrinking is the
+    /// fix; this test is what proves every real label actually lands inside its
+    /// cap at the size the shrinker picks, measured with the real font.
+    #[test]
+    fn no_key_cap_label_paints_wider_than_its_cap() {
+        let ctx = Context::default();
+        theme::apply(&ctx);
+        // Fonts are only available once a frame has run.
+        let _ = ctx.run(RawInput::default(), |_| {});
+
+        let max_w = cap_width() - CAP_TEXT_INSET;
+        let mut too_wide = vec![];
+        for name in every_cap_label() {
+            let size = cap_font_size(max_w, |size| {
+                ctx.fonts(|f| {
+                    f.layout_no_wrap(name.to_owned(), sans_semibold(size), TOKENS.ink)
+                        .size()
+                        .x
+                })
+            });
+            let w = ctx.fonts(|f| {
+                f.layout_no_wrap(name.to_owned(), sans_semibold(size), TOKENS.ink)
+                    .size()
+                    .x
+            });
+            if w > max_w {
+                too_wide.push(format!(
+                    "{name:?} is {w:.1}px at {size}pt, cap allows {max_w:.1}px"
+                ));
+            }
+        }
+        assert!(
+            too_wide.is_empty(),
+            "these labels do not fit a key cap even at the smallest size:\n  {}",
+            too_wide.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn cap_font_size_takes_the_largest_that_fits_and_never_goes_below_the_floor() {
+        // A measure that is proportional to size: 10px per point.
+        let measure = |size: f32| size * 10.0;
+        assert_eq!(cap_font_size(130.0, measure), 13.0, "13pt fits at 130px");
+        assert_eq!(
+            cap_font_size(125.0, measure),
+            12.0,
+            "13pt does not, 12pt does"
+        );
+        assert_eq!(cap_font_size(115.0, measure), 11.0);
+        assert_eq!(cap_font_size(105.0, measure), 10.0);
+        // Nothing fits: the floor, so the caller clips rather than growing.
+        assert_eq!(cap_font_size(1.0, measure), 10.0);
+    }
+
+    /// A name search draws its list, numbered from 1 the way `pick` counts.
+    #[test]
+    fn a_name_search_draws_a_numbered_pick_list() {
+        let mut r = Rig::new();
+        // The demo catalogue has no two names sharing a word except these.
+        let painted = r.frame(type_text("ka"));
+        assert!(!painted.contains("PICK AN ITEM"), "no list before Enter");
+        let painted = r.frame(tap(Key::Enter));
+        // "Kabuye Sugar 1kg" is the only "ka", so it is added with no list.
+        assert!(
+            !painted.contains("PICK AN ITEM"),
+            "a single match needs no list: {painted}"
+        );
+        assert_eq!(r.state.basket().len(), 1);
+    }
+
+    #[test]
+    fn several_matches_draw_the_list_and_a_number_picks_from_it() {
+        let mut r = Rig::new();
+        // "ml" is in exactly two demo names: Coca-Cola 500ml and Mutzig 650ml.
+        // Neither starts with it, so they are offered alphabetically.
+        r.frame(type_text("ml"));
+        let painted = r.frame(tap(Key::Enter));
+        assert_eq!(r.state.search_matches().len(), 2);
+        assert!(painted.contains("PICK AN ITEM"), "{painted}");
+        assert!(painted.contains("Coca-Cola 500ml"), "{painted}");
+        assert!(painted.contains("Mutzig 650ml"), "{painted}");
+        assert!(r.state.basket().is_empty(), "offering must add nothing");
+
+        r.frame(type_text("2"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(
+            r.state.basket().lines().last().unwrap().item_nm,
+            "Mutzig 650ml",
+            "2 must take the second row offered"
+        );
+        let painted = r.frame(vec![]);
+        assert!(!painted.contains("PICK AN ITEM"), "the list closes");
+    }
+
+    /// A tap on a row must reach the same place as keying its number.
+    #[test]
+    fn tapping_a_row_picks_it() {
+        let mut r = Rig::new();
+        r.frame(type_text("ml"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(r.state.search_matches().len(), 2);
+        r.rt.block_on(r.state.pick_nth(1)).unwrap();
+        assert_eq!(
+            r.state.basket().lines().last().unwrap().item_nm,
+            "Coca-Cola 500ml"
+        );
+    }
+
+    #[test]
+    fn a_keyed_count_reaches_the_basket_through_the_buffer() {
+        let mut r = Rig::new();
+        r.frame(type_text("3*5612345000017"));
+        r.frame(tap(Key::Enter));
+        assert_eq!(r.state.basket().len(), 1, "one line, not three");
+        assert_eq!(
+            r.state.basket().lines().last().unwrap().qty.to_string(),
+            "3.000"
+        );
+    }
+
+    /// The star must reach the buffer as ordinary text, like every other
+    /// character a wedge or a keyboard produces.
+    #[test]
+    fn the_count_separator_is_plain_buffer_text() {
+        assert_eq!(
+            actions_from(&type_text("3*")),
+            vec![Action::Char('3'), Action::Char('*')]
+        );
+    }
+
+    #[test]
+    fn the_scan_hint_names_every_way_in_and_changes_while_picking() {
+        let mut r = Rig::new();
+        let painted = r.frame(vec![]);
+        assert!(
+            painted.contains("3*code"),
+            "the hint must teach the count: {painted}"
+        );
+        assert!(painted.contains("type a name"), "{painted}");
+    }
+
+    fn tap_shift(key: Key) -> Vec<Event> {
+        [true, false]
+            .into_iter()
+            .map(|pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::SHIFT,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn shift_f12_is_the_vsdc_switch_and_plain_f12_is_still_resume() {
+        assert_eq!(
+            actions_from(&tap_shift(Key::F12)),
+            vec![Action::ToggleVsdc],
+            "Shift+F12 must switch the simulated VSDC"
+        );
+        assert_eq!(
+            actions_from(&tap(Key::F12)),
+            vec![Action::Resume],
+            "plain F12 must still resume from a hard stop"
+        );
+    }
+
+    /// The whole point of the switch: a hard stop can be produced by hand, and
+    /// the lane comes back from it. This is CIS §24.7.8 and §24.7.9 end to end,
+    /// driven the way an operator at a till would drive it.
+    #[test]
+    fn the_vsdc_switch_produces_a_hard_stop_and_the_lane_recovers() {
+        let mut r = Rig::new();
+
+        // Take the VSDC away.
+        r.frame(tap_shift(Key::F12));
+        assert!(r.devices.vsdc_offline());
+
+        // Sell, and try to settle.
+        r.frame(type_text("5612345000017"));
+        r.frame(tap(Key::Enter));
+        r.frame(tap(Key::F8));
+        r.frame(tap(Key::Enter));
+
+        assert!(
+            matches!(r.state.screen(), Screen::HardStop { .. }),
+            "an unreachable VSDC must hard stop the lane, got {:?}",
+            r.state.screen()
+        );
+        // Nothing was printed and no number was burned on a sale the VSDC
+        // never saw.
+        assert!(r.state.last_receipt().is_none());
+
+        // The screen says so, and says why.
+        let painted = r.frame(vec![]);
+        assert!(painted.contains("F12"), "the resume key must be on screen");
+
+        // Put the VSDC back, then resume.
+        r.frame(tap_shift(Key::F12));
+        assert!(!r.devices.vsdc_offline());
+        r.frame(tap(Key::F12));
+        assert_eq!(*r.state.screen(), Screen::Selling);
+
+        // And the lane sells again.
+        r.frame(type_text("5612345000017"));
+        r.frame(tap(Key::Enter));
+        r.frame(tap(Key::F8));
+        r.frame(tap(Key::Enter));
+        assert!(
+            matches!(r.state.screen(), Screen::Settled { .. }),
+            "after the VSDC returns the lane must settle, got {:?}",
+            r.state.screen()
+        );
+        assert!(r.state.last_receipt().is_some());
+    }
+
+    #[test]
+    fn the_status_bar_says_when_the_demo_vsdc_is_switched_off() {
+        let mut r = Rig::new();
+        // `chip` upper-cases every label, as the other status chips show.
+        assert!(!r.frame(vec![]).contains("DEMO: VSDC SWITCHED OFF"));
+        r.frame(tap_shift(Key::F12));
+        let painted = r.frame(vec![]);
+        assert!(
+            painted.contains("DEMO: VSDC SWITCHED OFF"),
+            "an operator must be able to see the switch is thrown. painted:\n{painted}"
+        );
+    }
+
     #[test]
     fn f7_prints_an_x_report_and_leaves_the_shift_open() {
         let mut r = Rig::new();
@@ -1902,7 +2280,16 @@ mod tests {
             assert!(shown.contains(&ctrl_cap(*key)), "{key:?} cap in {shown}");
         }
         assert!(shown.contains(&shift_cap(Key::F7)) && shown.contains("Close shift"));
-        assert!(shown.contains("Shift F9") && shown.contains("Reprint close report"));
+        // Derived from SHIFT_KEYS rather than spelled out, so shortening a
+        // label to fit its cap cannot silently leave this test behind.
+        let f9 = SHIFT_KEYS
+            .iter()
+            .find(|(k, ..)| *k == Key::F9)
+            .expect("F9 is a shift key");
+        assert!(
+            shown.contains("Shift F9") && shown.contains(f9.1),
+            "{shown}"
+        );
         assert!(shown.contains("Shift report"));
     }
 

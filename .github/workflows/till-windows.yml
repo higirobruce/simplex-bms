@@ -1,0 +1,54 @@
+# Builds the till lane for Windows on a real Windows runner.
+#
+# Why a runner and not a cross-compile: `x86_64-pc-windows-msvc` is the triple
+# that ships, and building it natively avoids both a multi-gigabyte local
+# toolchain and any question about whether a GNU-linked binary behaves the same
+# as the one a shop would run. The artifact is a single .exe to copy onto a
+# till.
+name: till · windows
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "till/**"
+      - ".github/workflows/till-windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: till
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            till/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('till/Cargo.lock') }}
+
+      # The suite must pass on Windows, not only on a developer's Mac. SQLite
+      # file locking and path handling are the parts most likely to differ.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --release -p till-lane --target x86_64-pc-windows-msvc
+
+      - name: Upload the lane
+        uses: actions/upload-artifact@v4
+        with:
+          name: simplex-lane-windows-x64
+          path: till/target/x86_64-pc-windows-msvc/release/till-lane.exe
+          if-no-files-found: error
