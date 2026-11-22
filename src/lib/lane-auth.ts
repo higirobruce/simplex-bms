@@ -23,7 +23,7 @@ export function mintLaneToken(): { token: string; tokenHash: string } {
 
 export async function getLaneContext(req: Request): Promise<LaneContext> {
   const header = req.headers.get("authorization") ?? "";
-  const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(header.trim());
+  const match = /^Bearer ([A-Za-z0-9_-]+)$/i.exec(header.trim());
   if (!match) throw new AuthError();
 
   const row = await prisma.laneToken.findUnique({
@@ -32,7 +32,16 @@ export async function getLaneContext(req: Request): Promise<LaneContext> {
   });
   if (!row || row.revokedAt) throw new AuthError();
 
-  await prisma.laneToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date() } });
+  const now = new Date();
+  const threshold = new Date(Date.now() - 60_000);
+  await prisma.laneToken.updateMany({
+    where: {
+      id: row.id,
+      revokedAt: null,
+      OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: threshold } }],
+    },
+    data: { lastUsedAt: now },
+  });
 
   // Tenant and location come from the Lane row, never from the request.
   return { laneId: row.lane.id, orgId: row.lane.orgId, locationId: row.lane.locationId };
