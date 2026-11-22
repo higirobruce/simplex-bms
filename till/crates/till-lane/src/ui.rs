@@ -152,7 +152,10 @@ const METHODS: [(PmtTyCd, egui::Key, &str, &str); 7] = [
 /// because the operating system reserves Ctrl+F-key chords on some machines.
 const SHIFT_KEYS: [(egui::Key, &str, Action); 2] = [
     (egui::Key::F7, "Close shift", Action::ReportZ),
-    (egui::Key::F9, "Reprint close report", Action::ReprintZ),
+    // "Reprint close report" does not fit a cap even at the smallest size, and
+    // a clipped label reads as broken. Not "Reprint Z": these are shift
+    // reports, not RRA's daily Z.
+    (egui::Key::F9, "Reprint close", Action::ReprintZ),
 ];
 
 fn shift_cap(key: egui::Key) -> String {
@@ -835,13 +838,13 @@ fn amount_tile(
 fn rail(ctx: &Context, state: &LaneState, _local: &Local) -> Option<Action> {
     let mut tapped = None;
     egui::SidePanel::right("rail")
-        .exact_width(440.0)
+        .exact_width(RAIL_WIDTH)
         .resizable(false)
         .frame(
             Frame::new()
                 .fill(TOKENS.canvas)
                 .stroke(Stroke::new(1.0_f32, TOKENS.line))
-                .inner_margin(Margin::same(12)),
+                .inner_margin(Margin::same(RAIL_MARGIN as i8)),
         )
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 10.0;
@@ -1085,12 +1088,10 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
     ));
     all.push((enter.0.to_owned(), enter.1, Action::Enter, enter.2, false));
 
-    let cols = 4;
-    let gap = 6.0;
-    let w = (ui.available_width() - gap * (cols as f32 - 1.0)) / cols as f32;
-    for chunk in all.chunks(cols) {
+    let w = cap_width();
+    for chunk in all.chunks(CAP_COLS) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
+            ui.spacing_mut().item_spacing.x = CAP_GAP;
             for (fk, name, action, hot, muted) in chunk {
                 if key_cap(ui, w, fk.as_str(), name, *hot, *muted) {
                     tapped = Some(*action);
@@ -1099,6 +1100,39 @@ fn keys(ui: &mut Ui, state: &LaneState) -> Option<Action> {
         });
     }
     tapped
+}
+
+/// The function-key rail's exact width, its inner margin, and how the caps are
+/// laid out inside it. Named because the cap width derives from them, and the
+/// test that proves every label fits must not be able to drift from the UI.
+const RAIL_WIDTH: f32 = 440.0;
+const RAIL_MARGIN: f32 = 12.0;
+const CAP_COLS: usize = 4;
+const CAP_GAP: f32 = 6.0;
+
+/// The width of one key cap, given the rail's geometry.
+fn cap_width() -> f32 {
+    let inner = RAIL_WIDTH - RAIL_MARGIN * 2.0;
+    (inner - CAP_GAP * (CAP_COLS as f32 - 1.0)) / CAP_COLS as f32
+}
+
+/// The font sizes a key cap will try for its name, largest first. A label that
+/// does not fit at 13 is shrunk rather than painted over its neighbours.
+const CAP_SIZES: [f32; 4] = [13.0, 12.0, 11.0, 10.0];
+
+/// How much of a cap's width its name may use, leaving a visual margin.
+const CAP_TEXT_INSET: f32 = 10.0;
+
+/// Picks the largest cap size whose single-line width fits `max_w`.
+///
+/// Pure in `measure` so it can be tested against both synthetic widths and the
+/// real font. Falls back to the smallest size: a label that does not fit even
+/// there is clipped by the caller, never allowed to escape the cap.
+fn cap_font_size(max_w: f32, measure: impl Fn(f32) -> f32) -> f32 {
+    CAP_SIZES
+        .into_iter()
+        .find(|&size| measure(size) <= max_w)
+        .unwrap_or(CAP_SIZES[CAP_SIZES.len() - 1])
 }
 
 fn key_cap(ui: &mut Ui, w: f32, fk: &str, name: &str, hot: bool, muted: bool) -> bool {
@@ -1130,11 +1164,22 @@ fn key_cap(ui: &mut Ui, w: f32, fk: &str, name: &str, hot: bool, muted: bool) ->
         mono_bold(11.0),
         fk_c,
     );
-    p.text(
+    // The name is shrunk to fit and then clipped to the cap. Painting it at a
+    // fixed size let the longest label ("Reprint close report") run past the
+    // cap's edge.
+    let max_w = rect.width() - CAP_TEXT_INSET;
+    let size = cap_font_size(max_w, |size| {
+        ui.fonts(|f| {
+            f.layout_no_wrap(name.to_owned(), sans_semibold(size), name_c)
+                .size()
+                .x
+        })
+    });
+    ui.painter().with_clip_rect(rect).text(
         rect.center_bottom() - vec2(0.0, 15.0),
         Align2::CENTER_CENTER,
         name,
-        sans_semibold(13.0),
+        sans_semibold(size),
         name_c,
     );
     resp.clicked()
@@ -1869,6 +1914,70 @@ mod tests {
             .collect()
     }
 
+    /// Every label a key cap can show, from the same tables the UI draws from.
+    fn every_cap_label() -> Vec<&'static str> {
+        let mut v: Vec<&str> = FKEYS.iter().map(|(_, _, n, _)| *n).collect();
+        v.extend(METHODS.iter().map(|(_, _, _, cap)| *cap));
+        v.extend(SHIFT_KEYS.iter().map(|(_, n, _)| *n));
+        v.extend(["Clear tenders", "Scan / Pay", "Next customer"]);
+        v
+    }
+
+    /// The defect: `key_cap` painted its name at a fixed 13pt with no width
+    /// limit, so a label wider than the cap ran over the edge. Shrinking is the
+    /// fix; this test is what proves every real label actually lands inside its
+    /// cap at the size the shrinker picks, measured with the real font.
+    #[test]
+    fn no_key_cap_label_paints_wider_than_its_cap() {
+        let ctx = Context::default();
+        theme::apply(&ctx);
+        // Fonts are only available once a frame has run.
+        let _ = ctx.run(RawInput::default(), |_| {});
+
+        let max_w = cap_width() - CAP_TEXT_INSET;
+        let mut too_wide = vec![];
+        for name in every_cap_label() {
+            let size = cap_font_size(max_w, |size| {
+                ctx.fonts(|f| {
+                    f.layout_no_wrap(name.to_owned(), sans_semibold(size), TOKENS.ink)
+                        .size()
+                        .x
+                })
+            });
+            let w = ctx.fonts(|f| {
+                f.layout_no_wrap(name.to_owned(), sans_semibold(size), TOKENS.ink)
+                    .size()
+                    .x
+            });
+            if w > max_w {
+                too_wide.push(format!(
+                    "{name:?} is {w:.1}px at {size}pt, cap allows {max_w:.1}px"
+                ));
+            }
+        }
+        assert!(
+            too_wide.is_empty(),
+            "these labels do not fit a key cap even at the smallest size:\n  {}",
+            too_wide.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn cap_font_size_takes_the_largest_that_fits_and_never_goes_below_the_floor() {
+        // A measure that is proportional to size: 10px per point.
+        let measure = |size: f32| size * 10.0;
+        assert_eq!(cap_font_size(130.0, measure), 13.0, "13pt fits at 130px");
+        assert_eq!(
+            cap_font_size(125.0, measure),
+            12.0,
+            "13pt does not, 12pt does"
+        );
+        assert_eq!(cap_font_size(115.0, measure), 11.0);
+        assert_eq!(cap_font_size(105.0, measure), 10.0);
+        // Nothing fits: the floor, so the caller clips rather than growing.
+        assert_eq!(cap_font_size(1.0, measure), 10.0);
+    }
+
     fn tap_shift(key: Key) -> Vec<Event> {
         [true, false]
             .into_iter()
@@ -2015,7 +2124,16 @@ mod tests {
             assert!(shown.contains(&ctrl_cap(*key)), "{key:?} cap in {shown}");
         }
         assert!(shown.contains(&shift_cap(Key::F7)) && shown.contains("Close shift"));
-        assert!(shown.contains("Shift F9") && shown.contains("Reprint close report"));
+        // Derived from SHIFT_KEYS rather than spelled out, so shortening a
+        // label to fit its cap cannot silently leave this test behind.
+        let f9 = SHIFT_KEYS
+            .iter()
+            .find(|(k, ..)| *k == Key::F9)
+            .expect("F9 is a shift key");
+        assert!(
+            shown.contains("Shift F9") && shown.contains(f9.1),
+            "{shown}"
+        );
         assert!(shown.contains("Shift report"));
     }
 
