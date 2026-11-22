@@ -730,6 +730,9 @@ model Shift {
   closedAt     DateTime?
   openingFloat Decimal   @db.Decimal(12, 2)
   declaredCash Decimal?  @db.Decimal(12, 2)
+  // What the till says the shift holds, sent with the close. Both null = completeness unknown.
+  saleCount    Int?
+  gross        Decimal?  @db.Decimal(12, 2)
   orgId        String
   org           Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   sales        Sale[]
