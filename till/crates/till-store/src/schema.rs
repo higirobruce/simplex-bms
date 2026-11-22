@@ -97,6 +97,9 @@ pub enum StoreError {
     /// rolled back rather than caching something no scan could ever reach.
     #[error("catalogue product {id} rejected: {reason}")]
     CatalogueRejected { id: String, reason: String },
+    /// A cashier the cache refuses to hold; the whole sync is rolled back.
+    #[error("cashier rejected: {reason}")]
+    CashierRejected { reason: String },
     /// A catalogue price below zero. `Money` allows negatives (refunds need
     /// them), but a product that pays the customer is a data error.
     #[error("catalogue product {id} has a negative price")]
