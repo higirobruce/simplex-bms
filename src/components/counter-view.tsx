@@ -155,15 +155,30 @@ export function ShiftSales({ data, tz }: { data: ShiftSalesResponse; tz?: string
   return (
     <div className="border-t border-line bg-surface-2 px-5 py-3">
       <p className="mb-3 text-[0.8125rem] text-warning">{data.record.note}</p>
+      {data.truncated && (
+        <p role="status" className="mb-3 text-[0.8125rem] text-ink-soft">Showing first {data.sales.length} of {data.salesTotal} sales.</p>
+      )}
       {data.sales.length === 0 && <p className="text-sm text-ink-soft">No sales held for this shift.</p>}
       {data.sales.map((x: ShiftSale) => (
-        <div key={x.id} data-sale={x.invcNo} className="mb-3 rounded-[var(--radius)] border border-line bg-surface px-4 py-3">
+        <div
+          key={x.id}
+          data-sale={x.invcNo}
+          {...(x.voidedAt ? { "data-voided": "true" } : {})}
+          className={`mb-3 rounded-[var(--radius)] border border-line bg-surface px-4 py-3 ${x.voidedAt ? "border-l-4 border-l-danger" : ""}`}
+        >
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <div className={`${MONO} text-xs text-ink-mute`}>
               #{x.invcNo} · {clock(x.soldAt, tz)}
-              {x.voidedAt ? " · VOIDED" : ""}
+              {x.voidedAt && <span className="ml-2"><Tag tone="bad">Voided</Tag></span>}
             </div>
-            <div className={`${MONO} font-semibold text-ink`}>{groupMoney(x.totAmt)}</div>
+            {x.voidedAt ? (
+              <div className="text-right">
+                <div className={`${MONO} font-medium text-ink-mute line-through`}>{groupMoney(x.totAmt)}</div>
+                <div className="text-[0.75rem] text-danger">Not counted in takings</div>
+              </div>
+            ) : (
+              <div className={`${MONO} font-semibold text-ink`}>{groupMoney(x.totAmt)}</div>
+            )}
           </div>
           <table className="mt-2 w-full text-sm">
             <thead>

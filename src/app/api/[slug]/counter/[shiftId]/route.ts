@@ -6,6 +6,9 @@ import { NextResponse } from "next/server";
 // session, never the URL. A shift in another org is a 404, indistinguishable from
 // one that does not exist. Every money value is the STORED decimal rendered as a
 // string: line amounts are splyAmt/taxblAmt as the till wrote them, never qty * prc.
+// Hard cap so one busy shift cannot return an unbounded payload; `truncated` says so.
+export const SALES_CAP = 200;
+
 export async function GET(_req: Request, { params }: { params: { shiftId: string } }) {
   try {
     const { orgId } = await getTenantContext();
@@ -16,6 +19,7 @@ export async function GET(_req: Request, { params }: { params: { shiftId: string
         id: true,
         sales: {
           where: { orgId },
+          take: SALES_CAP,
           orderBy: [{ soldAt: "asc" }, { invcNo: "asc" }],
           select: {
             id: true, invcNo: true, rcptNo: true, soldAt: true, voidedAt: true,
@@ -38,6 +42,7 @@ export async function GET(_req: Request, { params }: { params: { shiftId: string
       },
     });
     if (!shift) return NextResponse.json({ error: "Shift not found" }, { status: 404 });
+    const salesTotal = await prisma.sale.count({ where: { shiftId: shift.id, orgId } });
 
     const money = (d: { toFixed(n: number): string } | null) => (d === null ? null : d.toFixed(2));
     return NextResponse.json({
@@ -49,6 +54,8 @@ export async function GET(_req: Request, { params }: { params: { shiftId: string
         fiscalCopy: false,
         note: "Back-office record, not the fiscal receipt. Product names are current names and may differ from the printed receipt.",
       },
+      salesTotal,
+      truncated: salesTotal > shift.sales.length,
       sales: shift.sales.map((s) => ({
         id: s.id,
         invcNo: s.invcNo,

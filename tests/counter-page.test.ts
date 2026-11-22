@@ -217,6 +217,8 @@ describe("ShiftSales (expanded row)", () => {
   const data = {
     shiftId: "s1",
     record: { kind: "back-office" as const, fiscalCopy: false as const, note: "Back-office record, not the fiscal receipt." },
+    salesTotal: 1,
+    truncated: false,
     sales: [{
       id: "x1", invcNo: 7, rcptNo: 7, soldAt: "2026-11-21T09:30:00Z", voidedAt: null,
       totAmt: "1000.00", totTaxblAmt: "847.46", totTaxAmt: "152.54", buyerTin: null,
@@ -231,6 +233,7 @@ describe("ShiftSales (expanded row)", () => {
 
   test("renders the stored line amount, not qty x price", () => {
     expect(html()).toContain(">334<");
+    expect(html()).not.toContain("333.3");
     expect(html()).not.toContain(">333<");
   });
   test("a line with no stored amount shows a dash, never a derived figure", () => {
@@ -246,5 +249,21 @@ describe("ShiftSales (expanded row)", () => {
     const withSlug = renderToStaticMarkup(createElement(CounterView, { data: base, now: NOW, tz: TZ, slug: "shop" }));
     expect(withSlug).toContain('aria-expanded="false"');
     expect(withSlug).not.toMatch(/<(input|form|select|textarea)/);
+  });
+
+  test("a voided sale is badged, marked, struck through and said not to be takings", () => {
+    const v = { ...data, sales: [{ ...data.sales[0], voidedAt: "2026-11-21T09:35:00Z" }] };
+    const out = renderToStaticMarkup(createElement(ShiftSales, { data: v, tz: TZ }));
+    expect(out).toContain('data-voided="true"');
+    expect(out).toContain("Voided");
+    expect(out).toContain("Not counted in takings");
+    expect(out).toContain("line-through");
+    expect(html()).not.toContain("data-voided");
+    expect(html()).not.toContain("Not counted in takings");
+  });
+
+  test("a truncated list says how many are shown of the true total", () => {
+    const out = renderToStaticMarkup(createElement(ShiftSales, { data: { ...data, truncated: true, salesTotal: 450 }, tz: TZ }));
+    expect(out).toContain("Showing first 1 of 450 sales.");
   });
 });

@@ -131,6 +131,9 @@ export type ShiftSalesResponse = {
   shiftId: string;
   record: { kind: "back-office"; fiscalCopy: false; note: string };
   sales: ShiftSale[];
+  /** True number of sales on the shift; `sales` is capped. */
+  salesTotal: number;
+  truncated: boolean;
 };
 
 /** A trailing-zero-free quantity: "3.000" -> "3", "0.500" -> "0.5". Text only. */
