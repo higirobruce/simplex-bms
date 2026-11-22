@@ -1361,14 +1361,19 @@ fn no_shift(ctx: &Context, state: &LaneState, local: &Local) {
                 ui.label(text("Open a shift to start selling", sans_bold(40.0), TOKENS.canvas));
                 ui.add_space(14.0);
                 let (prompt, entry, hint) = match &view {
-                    SignInView::Choosing { .. } => {
+                    SignInView::Choosing { cashiers } => {
+                        // A number longer than the list is no number: a PIN
+                        // keyed at the wrong prompt must not be drawn.
+                        let max_len = cashiers.len().to_string().len();
                         let entry = if state.buffer().is_empty() {
                             "Your number ▏".to_string()
+                        } else if state.buffer().chars().count() > max_len {
+                            format!("{} ▏", "\u{2022}".repeat(state.buffer().chars().count()))
                         } else {
                             format!("{} ▏", state.buffer())
                         };
                         (
-                            "Key the number beside your name and press Enter.".to_string(),
+                            "Key the NUMBER beside your name (not your PIN) and press Enter.".to_string(),
                             entry,
                             "ENTER  Choose name",
                         )

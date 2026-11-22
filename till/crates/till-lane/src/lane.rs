@@ -86,10 +86,12 @@ const PIN_LOCK_BASE: Duration = Duration::from_secs(30);
 /// The longest a lockout grows to.
 const PIN_LOCK_MAX: Duration = Duration::from_secs(15 * 60);
 
-/// The most digits a PIN entry holds. The cloud allows 4 to 6 digit PINs; the
-/// margin lets a stray barcode be recognised as "too long" instead of being
-/// counted as a guess.
-const MAX_PIN_DIGITS: usize = 8;
+/// The most digits a PIN entry holds. The cloud's policy is 6 to 12 digits
+/// (`PIN_MIN_LENGTH` and `PIN_MAX_LENGTH` in `src/lib/cashier.ts`), so 12 must
+/// be accepted or a cashier with a long PIN could never sign in. A 13-digit
+/// EAN-13 is still "too long" and not counted as a guess; an 8 to 12 digit
+/// barcode scanned here is counted as a wrong guess, a known and accepted trade.
+const MAX_PIN_DIGITS: usize = 12;
 
 /// How long sign-in is locked after `failures` wrong PINs in a row, or `None`
 /// while the cashier still has tries left.
@@ -563,6 +565,10 @@ pub struct LaneState {
     locked_until: Option<Instant>,
     /// The name of whoever opened the open shift, for the screen.
     shift_cashier: Option<String>,
+    /// Test only: the PIN check waits (up to 5 s) for this before verifying,
+    /// so a test can hold the worker and prove the caller did not wait on it.
+    #[cfg(test)]
+    pin_gate: Option<Receiver<()>>,
 }
 
 impl LaneState {
@@ -648,6 +654,8 @@ impl LaneState {
             pin_failures: 0,
             locked_until: None,
             shift_cashier,
+            #[cfg(test)]
+            pin_gate: None,
         })
     }
 
@@ -1433,9 +1441,15 @@ impl LaneState {
         let store = self.store.clone();
         let who = cashier.id.clone();
         let rt = handle.clone();
+        #[cfg(test)]
+        let gate = self.pin_gate.take();
         // The JoinHandle is dropped on purpose: the result comes back on `tx`,
         // and a panic drops `tx`, which `poll_pin_check` reads as a fault.
         drop(handle.spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(g) = gate {
+                let _ = g.recv_timeout(Duration::from_secs(5));
+            }
             let _ = tx.send(rt.block_on(store.verify_pin(&who, &digits)));
         }));
         self.notice = Notice::None;
@@ -4269,19 +4283,55 @@ mod tests {
         );
     }
 
+    /// The worker is held at a gate the test controls. If `begin_pin_check`
+    /// waited for the check (ran it inline), it would sit at the gate for the
+    /// full 5 s timeout and this would fail.
     #[tokio::test(flavor = "multi_thread")]
-    async fn the_pin_check_does_not_run_on_the_calling_thread() {
+    async fn the_pin_check_does_not_wait_for_the_verification() {
         let mut l = lane_with_cashiers().await;
         type_digits(&mut l, "1");
         l.choose_cashier().await.unwrap();
         type_digits(&mut l, "1234");
-        let caller = std::thread::current().id();
+        let (open_gate, gate) = mpsc::channel();
+        l.pin_gate = Some(gate);
+        let started = Instant::now();
         l.begin_pin_check().unwrap();
-        // begin returns with the check pending, not finished, and the
-        // work is on another thread.
-        assert!(l.is_checking_pin());
-        assert_eq!(std::thread::current().id(), caller);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "begin_pin_check waited for the verification: {:?}",
+            started.elapsed()
+        );
+        // The gate is still held: the check is pending and polling does not block.
+        std::thread::sleep(Duration::from_millis(150));
+        l.poll_pin_check().unwrap();
+        assert!(l.is_checking_pin(), "the answer cannot exist while gated");
+        open_gate.send(()).unwrap();
         finish_check(&mut l).unwrap();
         assert!(matches!(l.signin(), SignInView::Float { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_twelve_digit_pin_verifies_and_opens_a_shift() {
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .sync_cashiers(&[crate::lane::test_support::cashier(
+                "u-long",
+                "Long",
+                "123456789012",
+            )])
+            .await
+            .unwrap();
+        let mut l = LaneState::new(store, test_config()).await.unwrap();
+        try_pin(&mut l, "1", "123456789012").await.unwrap();
+        l.open_shift(Money::zero()).await.unwrap();
+        assert_eq!(l.shift().unwrap().opened_by, "u-long");
+        // A 13-digit barcode is still too long, and is not a guess.
+        l.close_shift(Money::zero()).await.unwrap();
+        type_digits(&mut l, "1");
+        l.choose_cashier().await.unwrap();
+        type_digits(&mut l, "5612345000017");
+        l.begin_pin_check().unwrap();
+        assert!(problem(&l).contains("too long"));
+        assert_eq!(l.pin_failures, 0);
     }
 }

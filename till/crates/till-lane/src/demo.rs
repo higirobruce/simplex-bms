@@ -107,7 +107,7 @@ pub fn config() -> LaneConfig {
     }
 }
 
-/// The PIN of the demo cashier. A demo credential on a simulated till, in the
+/// The PIN of the demo cashier. Demo only: real PINs are 6 to 12 digits. A demo credential on a simulated till, in the
 /// source on purpose: it unlocks nothing real.
 pub const DEMO_PIN: &str = "4821";
 
