@@ -198,13 +198,13 @@ function Stuck({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
 function LiveShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
   if (s.state === "stale") {
     return (
-      <div data-state="stale" className="my-2.5 rounded-[var(--radius)] border border-line border-l-4 border-l-danger bg-danger-soft">
+      <article data-state="stale" className="my-2.5 rounded-[var(--radius)] border border-line border-l-4 border-l-danger bg-danger-soft">
         <Stuck s={s} now={now} tz={tz} />
-      </div>
+      </article>
     );
   }
   return (
-    <div data-state="open" className="my-2.5 flex flex-wrap items-center justify-between gap-3.5 rounded-[var(--radius)] border border-line bg-surface px-5 py-3.5">
+    <article data-state="open" className="my-2.5 flex flex-wrap items-center justify-between gap-3.5 rounded-[var(--radius)] border border-line bg-surface px-5 py-3.5">
       <div>
         <div className="font-semibold text-base text-ink">
           <span className={`${MONO} mr-2 rounded-full border border-line bg-surface-3 px-2 py-0.5 text-[0.65rem] uppercase tracking-[0.08em] text-ink-soft`}>{s.lane.name}</span>
@@ -215,7 +215,7 @@ function LiveShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) 
         </div>
       </div>
       <Tag tone="live">Trading</Tag>
-    </div>
+    </article>
   );
 }
 

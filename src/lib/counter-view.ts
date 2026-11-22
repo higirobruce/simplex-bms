@@ -26,6 +26,8 @@ export type CounterShift = {
 
 export type CounterResponse = {
   day: string;
+  /** The org's IANA zone: days are bucketed in it, so times must be shown in it. */
+  timezone: string;
   shifts: CounterShift[];
   total: string;
   totalQualified: boolean;

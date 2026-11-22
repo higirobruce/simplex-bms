@@ -42,6 +42,13 @@ describe("GET /api/[slug]/counter", () => {
     expect(body.shifts).toHaveLength(1);
   });
 
+  test("the response names the org's timezone so times can be shown in it", async () => {
+    const s = await seedOrg(); as(s.userId, s.orgId);
+    const body = await (await get("2026-11-22")).json();
+    expect(typeof body.timezone).toBe("string");
+    expect(body.timezone.length).toBeGreaterThan(0);
+  });
+
   test("a shift opening 01:30 Kigali is not filed under the previous day", async () => {
     const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
     await shift(s, l.id, { openedAt: new Date("2026-11-21T23:30:00Z") }); // 01:30 on the 22nd in Kigali

@@ -106,7 +106,7 @@ export async function GET(req: Request) {
       };
     });
 
-    return NextResponse.json({ day, shifts: rows, total: total.toFixed(2), totalQualified });
+    return NextResponse.json({ day, timezone: tz, shifts: rows, total: total.toFixed(2), totalQualified });
   } catch (error) {
     return handleRouteError(error);
   }

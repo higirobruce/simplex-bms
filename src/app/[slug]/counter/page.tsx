@@ -43,7 +43,7 @@ function CounterContent() {
       />
       {isLoading && <p className="text-sm text-ink-soft">Loading shifts…</p>}
       {isError && <p role="alert" className="text-sm text-danger">Could not load the counter. It will retry shortly.</p>}
-      {data && <CounterView data={data} />}
+      {data && <CounterView data={data} tz={data.timezone} />}
     </>
   );
 }

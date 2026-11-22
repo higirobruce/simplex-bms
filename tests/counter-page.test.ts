@@ -32,11 +32,26 @@ function shift(over: Partial<CounterShift> = {}): CounterShift {
 const view = (shifts: CounterShift[], extra: Partial<CounterResponse> = {}) =>
   renderToStaticMarkup(
     createElement(CounterView, {
-      data: { day: "2026-11-21", shifts, total: "356500.00", totalQualified: true, ...extra },
+      data: { day: "2026-11-21", timezone: TZ, shifts, total: "356500.00", totalQualified: true, ...extra },
       now: NOW,
-      tz: TZ,
+      tz: (extra.timezone ?? TZ),
     }),
   );
+
+/** The one card for a state; fails loudly if it is absent or duplicated. */
+function card(h: string, state: string, id?: string): string {
+  const re = new RegExp(`<article data-state="${state}"[^>]*>[\\s\\S]*?</article>`, "g");
+  const all = h.match(re) ?? [];
+  expect(all.length, `cards for ${state}`).toBeGreaterThan(0);
+  return id ? (all.find((c) => c.includes(id)) ?? "") : (all[0] ?? "");
+}
+
+// A real, populated variance. A withheld state must NOT print any part of it.
+const POPULATED = { expected: "123456.00", declared: "119135.00", diff: "-4321.00" };
+const POPULATED_TEXT = ["4,321", "123,456", "119,135", "Short", "Over", "Balanced", "expected"];
+function expectNoVariance(c: string) {
+  for (const t of POPULATED_TEXT) expect(c, `card leaked "${t}"`).not.toContain(t);
+}
 
 describe("counter page", () => {
   test("a short shows the shortfall, the expected drawer and the counted cash", () => {
@@ -44,15 +59,15 @@ describe("counter page", () => {
     expect(h).toContain("Short 2,500");
     expect(h).toContain("expected 231,500 in the drawer, counted 229,000");
     expect(h).toContain("M. Uwase");
-    expect(h).toContain("text-danger");
+    expect(h).toMatch(/<span class="[^"]*text-danger[^"]*">Short 2,500<\/span>/);
   });
 
   test("an over reads as over, never as a negative short", () => {
     const h = view([shift({ variance: { expected: "231500.00", declared: "234000.00", diff: "2500.00" } })]);
     expect(h).toContain("Over 2,500");
     expect(h).not.toMatch(/Short|-2,500|−2,500/);
-    expect(h).toContain("text-info");
-    expect(h).not.toContain("font-semibold text-danger");
+    expect(h).toMatch(/<span class="[^"]*text-info[^"]*">Over 2,500<\/span>/);
+    expect(h).not.toMatch(/<span class="[^"]*text-danger[^"]*">Over/);
   });
 
   test("a balanced drawer says balanced", () => {
@@ -87,25 +102,67 @@ describe("counter page", () => {
   });
 
   test("a short_count shift shows NO variance number and names the gap", () => {
-    const h = view([shift({ state: "short_count", tillSaleCount: 145, saleCount: 142, variance: null })]);
-    expect(h).toContain("Variance withheld");
-    expect(h).toContain("reports 145 sales, we hold 142");
-    expect(h).toContain("3 not here yet");
-    expect(h).not.toMatch(/Short \d|Over \d|Balanced|expected/);
+    const h = view([shift({ state: "short_count", tillSaleCount: 145, saleCount: 142, variance: POPULATED })]);
+    const c = card(h, "short_count");
+    expect(c).toContain("Variance withheld");
+    expect(c).toContain("reports 145 sales, we hold 142");
+    expect(c).toContain("3 not here yet");
+    expectNoVariance(c);
   });
 
-  test("an unknown shift shows takings and no variance", () => {
-    const h = view([shift({ state: "unknown", tillSaleCount: null, tillGross: null, variance: null })]);
-    expect(h).toContain("356,500");
-    expect(h).toContain("Variance not available");
-    expect(h).not.toMatch(/Short \d|Over \d|Balanced|expected/);
+  test("an unknown shift shows its own takings and no variance", () => {
+    const h = view([shift({ state: "unknown", tillSaleCount: null, tillGross: null, takings: "412350.00", variance: POPULATED })]);
+    const c = card(h, "unknown");
+    expect(c).toContain("412,350");
+    expect(c).toContain("Variance not available");
+    expectNoVariance(c);
   });
 
-  test("a mismatch is a data fault, louder than lateness, with no variance", () => {
-    const h = view([shift({ state: "mismatch", variance: null })]);
-    expect(h).toContain("data fault");
-    expect(h).toContain("bg-danger-soft");
-    expect(h).not.toMatch(/Short \d|Over \d|Balanced|expected/);
+  test("a mismatch is a data fault, its row louder than lateness, with no variance", () => {
+    const h = view([shift({ state: "mismatch", variance: POPULATED })]);
+    const c = card(h, "mismatch");
+    expect(c).toContain("data fault");
+    // the verdict ROW wrapper is on the danger ground, not merely the tag
+    expect(c).toMatch(/<div class="[^"]*border-t[^"]*bg-danger-soft[^"]*">/);
+    expectNoVariance(c);
+  });
+
+  test("a withheld stale shift shows no variance either", () => {
+    const h = view([shift({ state: "stale", closedAt: null, variance: POPULATED })]);
+    expectNoVariance(card(h, "stale"));
+  });
+
+  test("a complete shift's row is not on the loud ground", () => {
+    expect(card(view([shift()]), "complete")).not.toMatch(/border-t[^"]*bg-danger-soft/);
+  });
+
+  test("several shifts at once: each card carries only its own variance text", () => {
+    const h = view([
+      shift({ id: "a", variance: { expected: "231500.00", declared: "229000.00", diff: "-2500.00" } }),
+      shift({ id: "b", cashier: { id: "u2", name: "P. Habimana" }, variance: { expected: "158800.00", declared: "158800.00", diff: "0.00" } }),
+      shift({ id: "c", cashier: { id: "u3", name: "J. Mukamana" }, state: "short_count", tillSaleCount: 145, saleCount: 142, variance: POPULATED }),
+      shift({ id: "d", cashier: { id: "u4", name: "K. Nsabimana" }, state: "unknown", tillSaleCount: null, tillGross: null, variance: POPULATED }),
+      shift({ id: "e", cashier: { id: "u5", name: "A. Ingabire" }, state: "mismatch", variance: POPULATED }),
+      shift({ id: "f", cashier: { id: "u6", name: "C. Mugisha" }, state: "stale", closedAt: null, variance: POPULATED }),
+    ]);
+    const complete = h.match(/<article data-state="complete"[\s\S]*?<\/article>/g) ?? [];
+    expect(complete).toHaveLength(2);
+    const short = complete.find((c) => c.includes("M. Uwase"))!;
+    const balanced = complete.find((c) => c.includes("P. Habimana"))!;
+    expect(short).toContain("Short 2,500");
+    expect(short).not.toContain("Balanced");
+    expect(balanced).toContain("Balanced");
+    expect(balanced).not.toMatch(/Short|Over|2,500/);
+    for (const st of ["short_count", "unknown", "mismatch", "stale"]) expectNoVariance(card(h, st));
+  });
+
+  test("a shift's displayed time follows the org's zone, not the runtime's", () => {
+    const s = shift({ openedAt: "2026-11-21T22:30:00Z", closedAt: "2026-11-22T06:15:00Z" });
+    const kigali = view([s], { timezone: "Africa/Kigali" });
+    expect(card(kigali, "complete")).toContain("00:30 → 08:15");
+    const la = view([s], { timezone: "America/Los_Angeles" });
+    expect(card(la, "complete")).toContain("14:30 → 22:15");
+    expect(card(view([s], { timezone: "UTC" }), "complete")).toContain("22:30 → 06:15");
   });
 
   test("the six states do not render alike", () => {
