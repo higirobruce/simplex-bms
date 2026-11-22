@@ -569,9 +569,24 @@ pub struct LaneState {
     /// so a test can hold the worker and prove the caller did not wait on it.
     #[cfg(test)]
     pin_gate: Option<Receiver<()>>,
+    /// Pokes the cloud sync after a row is queued, so it drains now rather
+    /// than at its next heartbeat. `None` when sync is not configured.
+    sync_wake: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
 impl LaneState {
+    /// Connects the lane to the cloud sync's wake-up signal.
+    pub fn set_sync_wake(&mut self, wake: std::sync::Arc<tokio::sync::Notify>) {
+        self.sync_wake = Some(wake);
+    }
+
+    /// A row was just committed to the outbound queue. Never blocks, never fails.
+    fn wake_sync(&self) {
+        if let Some(w) = &self.sync_wake {
+            w.notify_one();
+        }
+    }
+
     pub async fn new(store: Store, cfg: LaneConfig) -> Result<LaneState, LaneError> {
         let timer = Timer::start();
         // A sale left `AwaitingVsdc` by a previous session (a crash between a
@@ -656,6 +671,7 @@ impl LaneState {
             shift_cashier,
             #[cfg(test)]
             pin_gate: None,
+            sync_wake: None,
         })
     }
 
@@ -1047,6 +1063,7 @@ impl LaneState {
             self.pending = Some(pending);
             return Err(LaneError::store(StoreOp::ConfirmSale, e));
         }
+        self.wake_sync();
 
         // Confirmed: only now may anything print.
         self.screen = Screen::Settled {
@@ -1311,6 +1328,7 @@ impl LaneState {
                 StoreError::ShiftAlreadyOpen { .. } => LaneError::ShiftAlreadyOpen,
                 e => LaneError::store(StoreOp::OpenShift, e),
             })?;
+        self.wake_sync();
         self.shift = Some(shift);
         self.screen = Screen::Selling;
         self.notice = Notice::Info("Shift opened. Ready to sell.".into());
@@ -1573,6 +1591,7 @@ impl LaneState {
             }
             Err(e) => return Err(LaneError::store(StoreOp::CloseShift, e)),
         };
+        self.wake_sync();
         self.end_shift();
         Ok(closed)
     }

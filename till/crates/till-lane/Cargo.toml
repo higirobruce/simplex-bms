@@ -9,11 +9,16 @@ eframe.workspace = true
 rust_decimal.workspace = true
 thiserror.workspace = true
 # The UI owns the runtime that drives the async store (see main.rs).
-tokio.workspace = true
+# `time` and `sync` are for the sync heartbeat and its wake-up signal.
+tokio = { workspace = true, features = ["time", "sync"] }
+reqwest.workspace = true
+keyring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 till-core = { path = "../till-core" }
 till-store = { path = "../till-store" }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "time"] }
 sqlx.workspace = true
 argon2.workspace = true

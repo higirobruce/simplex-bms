@@ -187,6 +187,13 @@ fn migrator() -> Migrator {
             Cow::Borrowed(include_str!("../migrations/0003_sync.sql")),
             false,
         ),
+        Migration::new(
+            4,
+            Cow::Borrowed("outbox_park"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0004_outbox_park.sql")),
+            false,
+        ),
     ]);
     m
 }
@@ -1133,7 +1140,7 @@ mod tests {
         migrator().run(&p).await.unwrap();
         migrator().run(&p).await.unwrap();
         assert_eq!(count(&p, "cashier").await, 1);
-        assert_eq!(count(&p, "_sqlx_migrations").await, 3);
+        assert_eq!(count(&p, "_sqlx_migrations").await, 4);
     }
 
     #[test]

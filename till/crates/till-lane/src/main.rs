@@ -26,6 +26,12 @@ mod lane;
 // Latency budgets and the timings `lane` records against them.
 mod latency;
 
+// Where the cloud address and lane token come from.
+mod config;
+
+// Drains the outbound queue to the cloud and pulls the cashier list.
+mod sync;
+
 mod demo;
 mod devices;
 mod ui;
@@ -63,6 +69,9 @@ struct Args {
     /// `--vsdc-offline`: start with the simulated VSDC unreachable, so the
     /// first sale hard stops. Shift+F12 switches it while the lane runs.
     vsdc_offline: bool,
+    /// `--set-token`: read a lane token from standard input, save it to the OS
+    /// credential store, and exit.
+    set_token: bool,
 }
 
 /// Reads the command line. An unknown flag is refused rather than ignored: a
@@ -72,12 +81,14 @@ fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         demo: false,
         db: None,
         vsdc_offline: false,
+        set_token: false,
     };
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--demo" => args.demo = true,
             "--vsdc-offline" => args.vsdc_offline = true,
+            "--set-token" => args.set_token = true,
             "--db" => {
                 let path = it
                     .next()
@@ -86,7 +97,7 @@ fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             }
             other => {
                 return Err(format!(
-                    "Unknown option {other}. Known: --demo, --db <path>, --vsdc-offline."
+                    "Unknown option {other}. Known: --demo, --db <path>, --vsdc-offline, --set-token."
                 ));
             }
         }
@@ -122,9 +133,10 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
         .sync_cashiers(&demo::cashiers())
         .await
         .map_err(|e| format!("The demo cashiers could not be loaded ({e})."))?;
-    let state = LaneState::new(store, demo::config())
+    let mut state = LaneState::new(store.clone(), demo::config())
         .await
         .map_err(|e| e.to_string())?;
+    start_sync(store, &mut state);
     eprintln!("{}", demo::cheat_sheet());
     if let Some(path) = &args.db {
         eprintln!("Data is kept in {} and survives a restart.", path.display());
@@ -138,6 +150,45 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
     })
 }
 
+/// Starts the cloud sync on the runtime (never the UI thread), if the lane has
+/// an address and a token. Without them the till still sells: sync is off, the
+/// queue just grows, and the reason goes to stderr (not to the cashier).
+fn start_sync(store: till_store::Store, state: &mut LaneState) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Cloud sync is off: {e}.");
+            return;
+        }
+    };
+    match sync::CloudSync::new(store, cfg) {
+        Ok(cloud) => {
+            state.set_sync_wake(cloud.waker());
+            tokio::spawn(std::sync::Arc::new(cloud).run());
+        }
+        Err(e) => eprintln!("Cloud sync is off: {e}."),
+    }
+}
+
+/// `--set-token`: the token is read from stdin so it never lands in shell history.
+fn set_token_from_stdin() -> i32 {
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        eprintln!("Could not read the token from standard input.");
+        return 1;
+    }
+    match config::store_token(&line) {
+        Ok(()) => {
+            eprintln!("Lane token saved to the OS credential store.");
+            0
+        }
+        Err(e) => {
+            eprintln!("Could not save the token: {e}.");
+            1
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
@@ -146,6 +197,9 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    if args.set_token {
+        std::process::exit(set_token_from_stdin());
+    }
 
     // The UI owns the runtime. `LaneState`'s methods are `async` because the
     // store's API is, but egui's update loop is synchronous, so `ui` blocks on

@@ -15,3 +15,8 @@ serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 eframe = "0.32"
+# No OpenSSL: TLS is rustls, so a Windows till needs no system crypto library.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# The lane token lives in the OS credential store (Windows Credential Manager,
+# macOS Keychain, Linux kernel keyring), never in a file beside the database.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
