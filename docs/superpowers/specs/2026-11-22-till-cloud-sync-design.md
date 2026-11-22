@@ -309,13 +309,60 @@ The back office runs on the developer's Mac and is exposed by `cloudflared`
 (already installed). The till reaches it over a public hostname; Cloudflare
 terminates TLS, so the till gets a real certificate without any local CA work.
 
-**Use a named tunnel, not a quick tunnel.** A quick tunnel's
-`*.trycloudflare.com` hostname changes every time `cloudflared` restarts. The
-till stores a base URL; if that URL changes daily, sync breaks daily and looks
-like a bug in the sync code. A named tunnel on a stable hostname is the
-difference between this working and this wasting a week. The till's base URL is
-therefore configuration, not a constant, and changing it must not need a
-rebuild.
+### The hostname must be stable. This is not a convenience.
+
+Making the till's base URL configuration is necessary but **does not solve
+this**. It turns "needs a rebuild" into "needs someone to notice and retype a
+URL". Three problems remain, and configuration touches none of them.
+
+**1. The failure is silent.** When the hostname dies the till does not break —
+it backs off and queues, exactly as designed. Nothing looks wrong. You find out
+when someone asks why today's sales are missing. This is why queue depth and
+oldest-unsent age are load-bearing here rather than polish.
+
+**2. A released hostname can be reassigned.** `*.trycloudflare.com` names go
+back in the pool. If one is handed to someone else, the till POSTs shop data
+**and its `Authorization: Bearer <lane token>`** to a stranger's server. That is
+a credential leak, not merely an outage, and no amount of configurability
+prevents it.
+
+**3. It breaks the back office too, not just the till.** `.env` carries
+`NEXTAUTH_URL="http://localhost:3000"`. Behind a tunnel, NextAuth redirects
+logins to `localhost:3000` and the back office is unusable in a browser from
+anywhere else. The public hostname is therefore **NextAuth's** base URL as well
+as the till's, and a rotating hostname breaks the operator's own login every
+day. This makes a stable hostname a requirement of the back office
+independently of anything to do with the till.
+
+**So: a stable hostname, then point both `NEXTAUTH_URL` and the till's base URL
+at it.** Base-URL-as-configuration is still worth having — for dev, staging and
+re-pointing without a rebuild — it is just not the mitigation.
+
+If a tunnel must run before a stable hostname exists, the only honest interim
+guard is **server identity rather than a URL**: the till fetches a known
+instance id and refuses to send anything that does not match, so it fails
+closed and a stranger's tunnel receives neither data nor token. That is real
+work, and a stable hostname is cheaper.
+
+### Hosting options, with the facts checked 2026-11-22
+
+| Option | Stable hostname | Commercial use | Notes |
+|---|---|---|---|
+| **Neon free** (Postgres) | n/a | **Permitted** | 0.5–1 GB, scales to zero after ~5 min idle and wakes in under a second. Prisma needs **two** connection strings: a direct one for `migrate deploy`, a pooled one (`-pooler`, PgBouncer transaction mode) for the app — migrations do not work correctly through transaction pooling. |
+| **Vercel Hobby** (app) | Yes, free `*.vercel.app` | **Not permitted** | Hobby is non-commercial only, and the definition is broad: any deployment "for the purpose of financial gain of anyone involved in any part of the production of the project, including a paid employee or consultant writing the code". A commercial POS does not qualify. Exceeding an allowance means waiting 30 days; overage cannot be bought. |
+| **Vercel Pro** (app) | Yes, free `*.vercel.app` | Permitted | ~$20/month. Needs no domain purchase, is always on, removes the Mac from the critical path, and makes the hostname stable by construction. Function max duration is **300 s**, so the 50-row catch-up batch is comfortable. |
+| **This Mac + named Cloudflare tunnel** | Only with a domain on Cloudflare | Permitted | Needs a domain (~$10/year); none is configured today. The Mac sleeping is tolerable because of the outbox, but it keeps a developer machine on the shop's critical path. |
+
+**Recommendation.** Put Postgres on **Neon free** — commercial use is permitted
+and it costs nothing. For the app, the honest options are **Vercel Pro** or the
+**Mac behind a named tunnel with a purchased domain**; Vercel Hobby is not
+legitimately available for this project. Vercel Pro is the cheaper of the two
+once the rotating-hostname guard, the domain and the always-on requirement are
+priced in, and it needs no domain at all.
+
+**None of this blocks the build.** The till's base URL is configuration, so the
+plan is hosting-agnostic and the decision can be made while the code is
+written.
 
 **The Mac is not always on, and that is fine.** When it sleeps the tunnel
 drops, the till's POSTs fail, and the outbox holds everything until it is back.
