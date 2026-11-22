@@ -2,7 +2,9 @@
 //!
 //! The sync loop publishes a [`SyncStatus`] after every pass; the screen only
 //! reads it. The UI therefore never touches the database, and the figures are
-//! at most one heartbeat (15 s) old, or newer when a sale wakes the loop.
+//! normally one heartbeat (15 s) old, or newer when a sale wakes the loop. While
+//! the cloud is unreachable a pass can take up to ~100 s (cashier pull timeout
+//! 20 s + drain timeout 20 s + 60 s maximum backoff).
 //!
 //! Everything here reports what LAST HAPPENED. Nothing is tested live, so no
 //! label claims the cloud is reachable now. A backlog is not a fault (it is the
@@ -20,9 +22,13 @@ pub type SharedSyncStatus = Arc<Mutex<SyncStatus>>;
 /// Under it, a queue is just the normal gap between a sale and the next beat.
 pub const AGE_SHOWN_AFTER_SECS: u64 = 15 * 60;
 /// A snapshot older than this (seconds) is not reported as current: a sync
-/// task that stalled or died must not read as "nothing waiting" forever. The
-/// loop publishes at least every 15 s heartbeat (60 s at worst under backoff).
-pub const STALE_AFTER_SECS: u64 = 120;
+/// task that stalled or died must not read as "nothing waiting" forever.
+/// `publish_status` runs after the cashier pull and the drain, so while the
+/// cloud is down the gap between publishes is up to ~100 s (a 20 s pull
+/// timeout, a 20 s drain timeout and a 60 s maximum backoff). The threshold must clear that
+/// with slack, or ordinary offline trading would raise a warning nobody
+/// believes. It catches a stall that matters over hours, not seconds.
+pub const STALE_AFTER_SECS: u64 = 180;
 /// No label is longer than this many characters; a test measures it.
 pub const LABEL_MAX_CHARS: usize = 40;
 
@@ -380,6 +386,29 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_row_beats_the_stale_state() {
+        let s = SyncStatus {
+            parked: 2,
+            published_at: Some(NOW - 600),
+            ..st()
+        };
+        let c = s.chips(NOW);
+        assert_eq!(c[0].label, "Sync: 2 refused by cloud");
+        assert_eq!(c[0].tone, Tone::Stopped);
+    }
+
+    #[test]
+    fn the_widest_backlog_label_is_the_one_measured() {
+        let s = SyncStatus {
+            depth: u32::MAX,
+            published_at: Some(NOW),
+            oldest: Some("1970-01-01T00:00:00Z".into()),
+            ..st()
+        };
+        assert_eq!(s.chips(NOW)[0].label, "Sync: 999+ waiting · oldest 99d+");
+    }
+
+    #[test]
     fn the_stale_time_is_the_kigali_clock() {
         assert_eq!(hhmm(1_795_355_100), "15:45");
     }
@@ -398,13 +427,18 @@ mod tests {
             },
             SyncStatus {
                 depth: u32::MAX,
-                published_at: Some(0),
+                published_at: Some(NOW),
                 oldest: Some("1970-01-01T00:00:00Z".into()),
                 ..st()
             },
         ];
         for s in worst {
             for c in s.chips(NOW) {
+                assert!(
+                    !c.label.contains("no report"),
+                    "{:?}: a stale row measures nothing",
+                    c.label
+                );
                 assert!(
                     c.label.chars().count() <= LABEL_MAX_CHARS,
                     "{:?} is too long",
