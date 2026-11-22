@@ -24,6 +24,8 @@ export const authOptions: NextAuthOptions = {
         });
 
         if (!user) return null;
+        // Defense in depth: cashiers are till-only; their password column is unusable anyway.
+        if (user.role === "CASHIER") return null;
 
         const isValid = await bcrypt.compare(credentials.password, user.password);
         if (!isValid) return null;
