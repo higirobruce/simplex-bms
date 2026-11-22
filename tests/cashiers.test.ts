@@ -9,6 +9,8 @@ import argon2 from "argon2";
 import bcrypt from "bcryptjs";
 import { POST, GET, PATCH } from "@/app/api/[slug]/cashiers/route";
 import { authOptions } from "@/lib/auth";
+import { PATCH as userPATCH, DELETE as userDELETE } from "@/app/api/[slug]/users/[id]/route";
+import { GET as usersGET } from "@/app/api/[slug]/users/route";
 
 const as = (userId: string, orgId: string, role = "ADMIN") =>
   getServerSession.mockResolvedValue({ user: { id: userId, orgId, role } });
@@ -140,5 +142,41 @@ describe("cashier accounts", () => {
     const audits = JSON.stringify(await prisma.auditLog.findMany());
     expect(audits).not.toContain("987654");
     expect(audits).not.toContain(after);
+  });
+
+  test("an admin-set bcrypt password on a CASHIER still cannot log in", async () => {
+    const s = await seedOrg();
+    const c = await prisma.user.create({
+      data: { email: "c1@x.cashier.invalid", password: await bcrypt.hash("real-pass", 4), role: "CASHIER", orgId: s.orgId },
+    });
+    // the bcrypt hash is genuinely valid, so only the auth.ts role guard blocks this
+    expect(await bcrypt.compare("real-pass", c.password)).toBe(true);
+    expect(await authorize(c.email, "real-pass")).toBeNull();
+  });
+
+  test("the generic users routes cannot touch or list cashiers", async () => {
+    const s = await seedOrg();
+    as(s.userId, s.orgId);
+    await post({ name: "Amy", pin: "123456" });
+    const c = await prisma.user.findFirstOrThrow({ where: { role: "CASHIER" } });
+    const ctx = { params: { id: c.id } };
+    const patch = (body: unknown) => userPATCH(req("PATCH", body), ctx);
+
+    expect((await patch({ password: "new-password-1" })).status).toBe(404);
+    expect((await patch({ role: "ADMIN" })).status).toBe(404);
+    expect((await userDELETE(req("DELETE"), ctx)).status).toBe(404);
+    const after = await prisma.user.findUniqueOrThrow({ where: { id: c.id } });
+    expect(after.role).toBe("CASHIER");
+    expect(after.password).toBe(c.password);
+    expect(after.pinHash).toBe(c.pinHash);
+
+    const web = await prisma.user.create({ data: { email: "w@t.local", password: "x", role: "VIEWER", orgId: s.orgId } });
+    const text = await (await usersGET(new Request(url))).text();
+    const ids = JSON.parse(text).data.map((u: any) => u.id);
+    expect(ids).toContain(web.id);
+    expect(ids).not.toContain(c.id);
+    expect(text).not.toContain(c.email);
+    const searched = await (await usersGET(new Request(url + "?search=cashier"))).text();
+    expect(searched).not.toContain(c.email);
   });
 });
