@@ -1,7 +1,7 @@
 # Till ↔ back office sync — design
 
 **Date:** 2026-11-22
-**Status:** awaiting sign-off
+**Status:** signed off 2026-11-22. All four open questions answered below.
 **Phase:** 2e (new). Sits between Phase 2d (merged) and Phase 3 (the VSDC client).
 
 ## Intent
@@ -282,24 +282,73 @@ Both migrations are hand-authored and applied with `migrate deploy`.
 - The cashier-sync trigger and how a deactivated cashier is revoked mid-shift.
 - Payload versioning: a `v` field now costs nothing and buys a migration path.
 
-## Open questions for sign-off
+## Decisions (signed off 2026-11-22)
 
-1. **Cashier emails.** `User.email` is required and `@@unique([email, orgId])`.
-   Do cashiers get real emails, synthetic ones (`alice.cashier@<slug>`), or
-   should `email` become nullable? Nullable touches NextAuth's credential login
-   and is the riskiest; synthetic is ugly but contained. **I would use
-   synthetic, generated at creation and never shown.**
-2. **Existing shift rows.** The till's `opened_by` currently holds free text
-   from testing. Backfill to a placeholder user, or drop pre-migration shifts as
-   test data? **I would drop them** — they are demo data and nothing depends on
-   them. This needs explicit authorisation under R112.
-3. **Where is the back office hosted, and does the pilot shop have reliable
-   internet?** Assumed cloud-hosted and reachable over the internet. If a shop
-   can be offline for hours, the queue depth and the status indicator matter more
-   than the latency target.
-4. **Who issues lane tokens, and what happens on loss?** Assumed ADMIN issues
-   and revokes from the back office; a lost token is revoked and reissued, and
-   the till re-enrols by hand.
+1. **Cashier emails — synthetic.** Generated at creation and never shown.
+   `User.email` stays required and unique per org; nothing touches NextAuth's
+   credential login. A cashier's synthetic address must not be a usable login
+   identity: it exists only to satisfy the constraint, and the account carries
+   `role: CASHIER` with a `pinHash` and a password that is never set to anything
+   guessable. The builder must not reuse the signup path, which would set a
+   password and create a web-login account.
+2. **Existing shift rows — dropped.** Authorised explicitly. These are demo
+   rows from Phase 2d testing, carrying free-text `opened_by`. Migration `0003`
+   deletes them, and the sales referencing them, in **one transaction** with
+   `ON_ERROR_STOP=1`, after a `pg_dump`-equivalent copy of the SQLite file is
+   taken (R112). Nothing in the cloud references them, because nothing has
+   ever synced.
+3. **Hosting — this Mac, behind a Cloudflare tunnel.** See *Deployment for the
+   pilot* below. This is a real change from the assumed cloud host and it
+   carries consequences worth writing down rather than discovering.
+4. **Lane tokens — as assumed.** An ADMIN issues and revokes them from the back
+   office; a lost token is revoked, reissued, and the till re-enrols by hand.
+
+## Deployment for the pilot
+
+The back office runs on the developer's Mac and is exposed by `cloudflared`
+(already installed). The till reaches it over a public hostname; Cloudflare
+terminates TLS, so the till gets a real certificate without any local CA work.
+
+**Use a named tunnel, not a quick tunnel.** A quick tunnel's
+`*.trycloudflare.com` hostname changes every time `cloudflared` restarts. The
+till stores a base URL; if that URL changes daily, sync breaks daily and looks
+like a bug in the sync code. A named tunnel on a stable hostname is the
+difference between this working and this wasting a week. The till's base URL is
+therefore configuration, not a constant, and changing it must not need a
+rebuild.
+
+**The Mac is not always on, and that is fine.** When it sleeps the tunnel
+drops, the till's POSTs fail, and the outbox holds everything until it is back.
+This is precisely the case the outbox was built for, and it makes the pilot a
+genuine test of the offline path rather than a happy-path demo. What it does
+mean is that **queue depth and oldest-unsent age matter more than the 2-second
+latency target** — those indicators are not optional polish here, they are how
+anyone will know whether the shop's data is current.
+
+**The production build works — verified 2026-11-22, exit 0.** So the tunnel
+points at `npm start`, a real optimised server, and not at `next dev`. That
+matters: a development server behind a public hostname is unoptimised, carries
+HMR, and is not something to expose.
+
+An earlier note in this project blamed a failing build on Node v24.12.0 with
+Next 14.2.35. **That was wrong.** The only cause was a global
+`NODE_ENV=development`, which makes Next load the dev and prod app-page
+runtimes together and fail every prerender with
+`Cannot read properties of null (reading 'useContext')`. It was removed from
+`~/.zshrc` on 2026-11-21; the retest that produced the Node theory ran in a
+shell that still carried the stale value.
+
+**The operational rule that follows:** build in a shell where `NODE_ENV` is
+unset. `env -u NODE_ENV npx next build` succeeds; a stale shell does not. Any
+deploy script should unset it rather than trust the environment, because the
+failure is loud but its message points nowhere near the cause.
+
+**Exposure.** A tunnel makes the whole app internet-reachable, not just the
+till route — the login page included. The lane token protects the ingest
+endpoint, but the pilot should also put Cloudflare Access in front of the
+browser routes, or at minimum confirm that no default or seeded credentials
+remain. This is a pilot on a developer machine, not a production deployment,
+and it should not be described as one.
 
 ## Risks
 
