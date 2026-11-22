@@ -734,7 +734,14 @@ mod tests {
 
     #[tokio::test]
     async fn the_token_is_never_written_to_a_log_or_to_disk() {
-        let dir = std::env::temp_dir().join(format!("till-sync-token-{}", std::process::id()));
+        // pid + clock: a reused pid must not see a stale directory.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir =
+            std::env::temp_dir().join(format!("till-sync-token-{}-{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("till.db");
         let store = Store::open(&db).await.unwrap();
@@ -780,10 +787,26 @@ mod tests {
             .execute(store.pool())
             .await;
         store.pool().close().await;
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
-            assert!(!bytes.windows(TOKEN.len()).any(|w| w == TOKEN.as_bytes()));
+        // read_dir is lazy and SQLite removes the -wal/-shm files as the pool
+        // closes (Windows reports them late), so an entry may name a file that
+        // is already gone. A file that no longer exists cannot hold the token,
+        // so NotFound alone is skipped; every other error fails the test.
+        let mut scanned = 0;
+        for entry in std::fs::read_dir(&dir).expect("the test directory is readable") {
+            let path = entry.expect("a directory entry is readable").path();
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => panic!("could not scan {}: {e}", path.display()),
+            };
+            scanned += 1;
+            assert!(
+                !bytes.windows(TOKEN.len()).any(|w| w == TOKEN.as_bytes()),
+                "the token is on disk in {}",
+                path.display()
+            );
         }
+        assert!(scanned >= 1, "the scan must have read the database file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
