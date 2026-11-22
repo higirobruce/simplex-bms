@@ -58,6 +58,27 @@ export async function POST(req: Request) {
       if (!declaredCash) return refuse("declaredCash must be a decimal string with at most 2 places");
     }
 
+    // The till's own totals for the shift, sent only on a close. Absent or null means "unknown"
+    // and is stored as null; zero is a real value (nothing sold) and is never defaulted to.
+    const hasSaleCount = body.saleCount !== undefined && body.saleCount !== null;
+    const hasGross = body.gross !== undefined && body.gross !== null;
+    if ((hasSaleCount || hasGross) && !hasClosedAt) return refuse("saleCount and gross are only accepted on a close");
+    let saleCount: number | undefined;
+    let gross: string | undefined;
+    if (hasSaleCount) {
+      const n = body.saleCount;
+      // Int4 column: an out-of-range value would fail in the database as a 5xx and retry forever.
+      if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 2147483647) {
+        return refuse("saleCount must be a non-negative integer");
+      }
+      saleCount = n;
+    }
+    if (hasGross) {
+      const g = money(body.gross);
+      if (g === null) return refuse("gross must be a decimal string with at most 2 places");
+      gross = g;
+    }
+
     const existing = await prisma.shift.findUnique({
       where: { id: body.id },
       select: { laneId: true, orgId: true, openedById: true },
@@ -89,9 +110,13 @@ export async function POST(req: Request) {
         openingFloat,
         closedAt,
         declaredCash,
+        saleCount: saleCount ?? null,
+        gross: gross ?? null,
       },
-      // A replayed open must not reopen a closed shift; a close fills in the two fields.
-      update: closedAt ? { closedAt, declaredCash } : {},
+      // A replayed open must not reopen a closed shift; a close fills in its fields. The totals
+      // are written here too (a retried close must not leave them null), but only when sent, so
+      // a close from an un-updated till never erases values already stored (undefined = untouched).
+      update: closedAt ? { closedAt, declaredCash, saleCount, gross } : {},
       select: { id: true },
     });
     return NextResponse.json({ id: shift.id });

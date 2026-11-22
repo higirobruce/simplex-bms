@@ -74,6 +74,74 @@ describe("POST /api/till/shift", () => {
     expect(await prisma.shift.count()).toBe(1);
   });
 
+  const CLOSE = { closedAt: "2026-11-22T17:00:00.000Z", declaredCash: "100.00" };
+
+  test("a close carrying saleCount and gross stores both", async () => {
+    const s = await seed();
+    await post(s.token, open(s));
+    const res = await post(s.token, open(s, { ...CLOSE, saleCount: 12, gross: "3380.30" }));
+    expect(res.status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.saleCount).toBe(12);
+    expect(row.gross?.toFixed(2)).toBe("3380.30");
+  });
+
+  test("a zero saleCount and gross are stored as zero, not null", async () => {
+    const s = await seed();
+    const res = await post(s.token, open(s, { ...CLOSE, saleCount: 0, gross: "0.00" }));
+    expect(res.status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.saleCount).toBe(0);
+    expect(row.gross?.toFixed(2)).toBe("0.00");
+  });
+
+  test("a close without them stores nulls and is still accepted", async () => {
+    const s = await seed();
+    await post(s.token, open(s));
+    expect((await post(s.token, open(s, CLOSE))).status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.closedAt).not.toBeNull();
+    expect(row.saleCount).toBeNull();
+    expect(row.gross).toBeNull();
+  });
+
+  test("they are refused on an OPEN payload with 422", async () => {
+    const s = await seed();
+    expect((await post(s.token, open(s, { saleCount: 3 }))).status).toBe(422);
+    expect((await post(s.token, open(s, { gross: "1.00" }))).status).toBe(422);
+    expect(await prisma.shift.count()).toBe(0);
+  });
+
+  test("a replayed close writes them on the existing row", async () => {
+    const s = await seed();
+    await post(s.token, open(s));
+    await post(s.token, open(s, CLOSE)); // first close arrived without them
+    expect((await post(s.token, open(s, { ...CLOSE, saleCount: 4, gross: "55.50" }))).status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.saleCount).toBe(4);
+    expect(row.gross?.toFixed(2)).toBe("55.50");
+  });
+
+  test("a replayed close without them does not erase stored totals", async () => {
+    const s = await seed();
+    await post(s.token, open(s, { ...CLOSE, saleCount: 4, gross: "55.50" }));
+    expect((await post(s.token, open(s, CLOSE))).status).toBe(200);
+    const row = await prisma.shift.findUniqueOrThrow({ where: { id: SID } });
+    expect(row.saleCount).toBe(4);
+    expect(row.gross?.toFixed(2)).toBe("55.50");
+  });
+
+  test("a non-integer saleCount or a bad money string is 422", async () => {
+    const s = await seed();
+    for (const extra of [
+      { saleCount: 1.5 }, { saleCount: -1 }, { saleCount: "3" }, { saleCount: 2147483648 }, { saleCount: 1e300 },
+      { gross: 12.5 }, { gross: "12.505" }, { gross: "-1.00" }, { gross: "abc" },
+    ]) {
+      expect((await post(s.token, open(s, { ...CLOSE, ...extra }))).status).toBe(422);
+    }
+    expect(await prisma.shift.count()).toBe(0);
+  });
+
   test("openedById must be a CASHIER in this org", async () => {
     const s = await seed();
     for (const id of [s.userId, "does-not-exist"]) {
