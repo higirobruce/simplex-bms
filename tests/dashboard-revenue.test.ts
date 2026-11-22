@@ -62,6 +62,7 @@ describe("GET /api/[slug]/dashboard/stats revenueMTD", () => {
   test("another org's sales and payments are not counted", async () => {
     const s = await seedOrg(); const t = await till(s); as(s.userId, s.orgId);
     await sale({ orgId: s.otherOrgId }, t, "700.00", [["CASH", "700.00"]]);
+    await payment({ orgId: s.otherOrgId }, "5000.00", "2026-11-05T10:00:00Z");
     expect((await stats()).revenueMTD).toEqual({ invoices: "0.00", counter: "0.00" });
   });
 
