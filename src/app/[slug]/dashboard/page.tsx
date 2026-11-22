@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { useTenant } from "@/lib/hooks";
 import { useMoney } from "@/lib/currency";
+import { groupMoney } from "@/lib/counter-view";
 import {
   ArrowUpRight,
   ArrowDownRight,
@@ -207,13 +208,17 @@ export default function DashboardPage() {
       </div>
 
       {/* Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         <StatCard
-          label="Revenue · MTD"
-          value={fmt(stats?.revenueMTD || 0)}
-          delta={{ value: "+12.4%", positive: true }}
-          caption="vs last month"
+          label="Invoice payments · MTD"
+          value={stats?.revenueMTD ? groupMoney(stats.revenueMTD.invoices) : "-"}
+          caption="paid against invoices"
           emphasis
+        />
+        <StatCard
+          label="Counter takings · MTD"
+          value={stats?.revenueMTD ? groupMoney(stats.revenueMTD.counter) : "-"}
+          caption="till sales, voids excluded"
         />
         <StatCard
           label="Expenses · MTD"

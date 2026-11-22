@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { getTenantContext, handleRouteError } from "@/lib/api";
+import { startOfMonthIn } from "@/lib/day";
+import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 
 export async function GET() {
@@ -7,22 +9,34 @@ export async function GET() {
     const { orgId } = await getTenantContext();
 
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const org = await prisma.org.findUniqueOrThrow({ where: { id: orgId }, select: { timezone: true } });
+    // Revenue months begin in the ORG's zone. Expenses keep the server-local
+    // boundary they always had: a separate variable so neither silently moves the other.
+    const revenueStart = startOfMonthIn(now, org.timezone);
+    const expenseStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    // Revenue MTD
+    // Invoice payments MTD
     const revenueResult = await prisma.payment.aggregate({
       _sum: { amount: true },
       where: {
-        date: { gte: startOfMonth },
+        date: { gte: revenueStart },
         invoice: { orgId },
       },
     });
-    const revenueMTD = Number(revenueResult._sum.amount || 0);
+    const invoicesMTD = new Prisma.Decimal(revenueResult._sum.amount ?? 0);
+
+    // Counter takings MTD: what customers were CHARGED (Sale.totAmt), never the
+    // tenders (gross of change). Voided sales are not takings.
+    const counterResult = await prisma.sale.aggregate({
+      _sum: { totAmt: true },
+      where: { orgId, voidedAt: null, soldAt: { gte: revenueStart } },
+    });
+    const counterMTD = new Prisma.Decimal(counterResult._sum.totAmt ?? 0);
 
     // Expenses MTD
     const expenseResult = await prisma.expense.aggregate({
       _sum: { amount: true },
-      where: { orgId, date: { gte: startOfMonth } },
+      where: { orgId, date: { gte: expenseStart } },
     });
     const expensesMTD = Number(expenseResult._sum.amount || 0);
 
@@ -71,7 +85,7 @@ export async function GET() {
     });
 
     return NextResponse.json({
-      revenueMTD,
+      revenueMTD: { invoices: invoicesMTD.toFixed(2), counter: counterMTD.toFixed(2) },
       expensesMTD,
       outstanding,
       lowStockCount,
