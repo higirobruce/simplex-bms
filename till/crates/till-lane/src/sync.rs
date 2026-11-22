@@ -28,6 +28,7 @@
 //! sensitive by reqwest). Error text stored or returned here is composed by
 //! this module, never copied from a request, so it cannot contain the token.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -105,6 +106,17 @@ pub enum PullError {
     Store,
 }
 
+/// What a successful cashier pull did.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Pulled {
+    /// Cashiers written to the local list.
+    pub synced: usize,
+    /// Records the till could not read. Each one that still had a readable id
+    /// keeps whatever row the till already holds; a record with no readable id
+    /// cannot be matched to anyone, so it is simply not represented.
+    pub skipped: usize,
+}
+
 /// One cashier as `GET /api/till/cashiers` sends it.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,6 +156,8 @@ pub struct CloudSync {
     client: reqwest::Client,
     /// Set when the token was rejected. While set, nothing is sent.
     halted: Mutex<Option<String>>,
+    /// Records the last successful cashier pull could not read.
+    last_skipped: AtomicUsize,
     wake: Arc<Notify>,
 }
 
@@ -163,6 +177,7 @@ impl CloudSync {
             token: cfg.token,
             client,
             halted: Mutex::new(None),
+            last_skipped: AtomicUsize::new(0),
             wake: Arc::new(Notify::new()),
         })
     }
@@ -175,6 +190,12 @@ impl CloudSync {
     /// Why the whole queue is held, if it is (the token was rejected).
     pub fn halted(&self) -> Option<String> {
         self.halted.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// How many records the last cashier pull could not read (0 when it read
+    /// them all). For the status surface.
+    pub fn skipped_cashiers(&self) -> usize {
+        self.last_skipped.load(Ordering::Relaxed)
     }
 
     fn halt(&self, status: u16) -> String {
@@ -279,7 +300,7 @@ impl CloudSync {
     /// Fetches the cashier list and replaces the local one with it. On ANY
     /// failure the list the till has is left exactly as it was: a stale list
     /// still opens a shift, an empty one cannot.
-    pub async fn pull_cashiers(&self) -> Result<usize, PullError> {
+    pub async fn pull_cashiers(&self) -> Result<Pulled, PullError> {
         if self.halted().is_some() {
             return Err(PullError::AuthRejected);
         }
@@ -295,23 +316,42 @@ impl CloudSync {
             }
             Reply::Refused(why) | Reply::Retry(why) => return Err(PullError::Http(why)),
         }
-        // Row by row: one bad record costs that cashier, never the shop's list.
+        // Row by row: one bad record costs that cashier an update, never the
+        // shop's list. But `sync_cashiers` deletes ids it was not given, so the
+        // id of EVERY record with a readable one is passed along to be spared,
+        // whether or not the rest of the record parsed.
         let rows: Vec<serde_json::Value> =
             serde_json::from_str(&body).map_err(|_| PullError::Malformed)?;
-        let cashiers: Vec<Cashier> = rows
-            .into_iter()
-            .filter_map(|v| serde_json::from_value::<CloudCashier>(v).ok())
-            .filter(|c| !c.id.is_empty())
-            .map(Cashier::from)
-            .collect();
+        let total = rows.len();
+        let mut keep: Vec<String> = Vec::new();
+        let mut cashiers: Vec<Cashier> = Vec::new();
+        for v in rows {
+            if let Some(id) = v
+                .get("id")
+                .and_then(|i| i.as_str())
+                .filter(|i| !i.is_empty())
+            {
+                keep.push(id.to_owned());
+            }
+            if let Ok(c) = serde_json::from_value::<CloudCashier>(v) {
+                if !c.id.is_empty() {
+                    cashiers.push(Cashier::from(c));
+                }
+            }
+        }
+        let skipped = total - cashiers.len();
+        self.last_skipped.store(skipped, Ordering::Relaxed);
         if cashiers.is_empty() {
-            return Ok(0);
+            return Ok(Pulled { synced: 0, skipped });
         }
         self.store
-            .sync_cashiers(&cashiers)
+            .sync_cashiers_keeping(&cashiers, &keep)
             .await
             .map_err(|_| PullError::Store)?;
-        Ok(cashiers.len())
+        Ok(Pulled {
+            synced: cashiers.len(),
+            skipped,
+        })
     }
 
     /// The background loop: pull cashiers now and every few minutes, drain on
@@ -326,7 +366,15 @@ impl CloudSync {
                 Some((at, ok)) => !ok || at.elapsed() >= CASHIER_REFRESH,
             };
             if due && self.halted().is_none() {
-                last_pull = Some((Instant::now(), self.pull_cashiers().await.is_ok()));
+                let pulled = self.pull_cashiers().await;
+                if pulled.is_ok() && self.skipped_cashiers() > 0 {
+                    // A log line for the operator, never a cashier notice.
+                    eprintln!(
+                        "Cloud sync: {} cashier record(s) could not be read and were left as they were.",
+                        self.skipped_cashiers()
+                    );
+                }
+                last_pull = Some((Instant::now(), pulled.is_ok()));
             }
             let wait = match self.drain_once().await {
                 DrainOutcome::Offline => {
@@ -854,7 +902,13 @@ mod tests {
             }])
             .await
             .unwrap();
-        assert_eq!(sync.pull_cashiers().await, Ok(2));
+        assert_eq!(
+            sync.pull_cashiers().await,
+            Ok(Pulled {
+                synced: 2,
+                skipped: 0
+            })
+        );
         let rows = names(&store).await;
         assert_eq!(rows.len(), 2, "the old cashier is gone");
         assert_eq!(rows[0], ("u1".into(), "$argon2id$fake".into(), 1));
@@ -922,7 +976,14 @@ mod tests {
         .to_string();
         let stub = stub(move |_| (200, body.clone())).await;
         let (sync, store) = sync_for(&stub.url).await;
-        assert_eq!(sync.pull_cashiers().await, Ok(3));
+        assert_eq!(
+            sync.pull_cashiers().await,
+            Ok(Pulled {
+                synced: 3,
+                skipped: 4
+            })
+        );
+        assert_eq!(sync.skipped_cashiers(), 4);
         let rows: Vec<(String, String)> =
             sqlx::query_as("select id, name from cashier order by id")
                 .fetch_all(store.pool())
@@ -936,6 +997,43 @@ mod tests {
                 ("u4".into(), "Dan".into()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_record_does_not_delete_the_cashier_it_names() {
+        use crate::lane::test_support::cashier;
+        let (alice, bob) = (cashier("u1", "Alice", "1111"), cashier("u2", "Bob", "2222"));
+        // The cloud sends Alice well-formed and Bob with a pinHash of the wrong type.
+        let body = serde_json::json!([
+            {"id":"u1","name":"Alice","pinHash":alice.pin_hash,"active":true},
+            {"id":"u2","name":"Bob","pinHash":42,"active":true},
+        ])
+        .to_string();
+        let stub = stub(move |_| (200, body.clone())).await;
+        let (sync, store) = sync_for(&stub.url).await;
+        store
+            .sync_cashiers(&[alice, bob, cashier("u3", "Carl", "3333")])
+            .await
+            .unwrap();
+        assert_eq!(
+            sync.pull_cashiers().await,
+            Ok(Pulled {
+                synced: 1,
+                skipped: 1
+            })
+        );
+        assert_eq!(sync.skipped_cashiers(), 1);
+        // Bob is still in the cloud, so he is still here and can still sign in.
+        assert_eq!(
+            store.verify_pin("u2", "2222").await.unwrap(),
+            Some("u2".into())
+        );
+        assert_eq!(
+            store.verify_pin("u1", "1111").await.unwrap(),
+            Some("u1".into())
+        );
+        // A cashier genuinely absent from the response is still removed.
+        assert_eq!(store.verify_pin("u3", "3333").await.unwrap(), None);
     }
 
     #[tokio::test]

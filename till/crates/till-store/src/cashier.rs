@@ -109,6 +109,18 @@ impl Store {
     /// cannot open a shift. Rows with an empty id are refused before the write
     /// lock is taken.
     pub async fn sync_cashiers(&self, cashiers: &[Cashier]) -> Result<(), StoreError> {
+        self.sync_cashiers_keeping(cashiers, &[]).await
+    }
+
+    /// [`Store::sync_cashiers`], except the ids in `keep` are also spared the
+    /// delete. For a caller that received records it could not read: such a
+    /// cashier is still in the cloud, so the row already held here must stay
+    /// (it is not upserted, there being nothing readable to upsert).
+    pub async fn sync_cashiers_keeping(
+        &self,
+        cashiers: &[Cashier],
+        keep: &[String],
+    ) -> Result<(), StoreError> {
         if cashiers.is_empty() {
             return Ok(());
         }
@@ -117,7 +129,13 @@ impl Store {
                 reason: "empty id".to_string(),
             });
         }
-        let ids = serde_json::to_string(&cashiers.iter().map(|c| &c.id).collect::<Vec<_>>())?;
+        let ids = serde_json::to_string(
+            &cashiers
+                .iter()
+                .map(|c| &c.id)
+                .chain(keep.iter())
+                .collect::<Vec<_>>(),
+        )?;
         let mut tx = self.begin_immediate().await?;
         sqlx::query("delete from cashier where id not in (select value from json_each(?))")
             .bind(&ids)
