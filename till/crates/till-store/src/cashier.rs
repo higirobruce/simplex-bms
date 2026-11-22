@@ -28,7 +28,7 @@
 
 use std::fmt;
 
-use argon2::{Argon2, PasswordVerifier};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use sqlx::Row;
 
 use crate::schema::{Store, StoreError};
@@ -66,13 +66,31 @@ pub struct CashierEntry {
     pub name: String,
 }
 
+/// The most memory (KiB) a stored hash may ask argon2 to allocate: 1 GiB, eight
+/// times the cloud's current 128 MiB (`m=131072`), so a legitimate retune still
+/// verifies. It exists because a failed allocation ABORTS the process rather
+/// than returning an error, and a corrupt row or tampered database file could
+/// otherwise carry an absurd `m`. The cost still comes from the hash; this only
+/// declines to honour an absurd one.
+const MAX_MEMORY_KIB: u32 = 1_048_576;
+
+// Compile-time guard: the ceiling must stay well above the cloud's m=131072.
+const _: () = assert!(MAX_MEMORY_KIB >= 131_072 * 4);
+
 /// Verifies `pin` against a PHC string, parameters taken from the string.
-/// Any failure, including a malformed hash, is a refusal; nothing panics.
+/// Any failure, including a malformed hash or an over-ceiling `m`, is a
+/// refusal; nothing panics.
 fn pin_matches(pin: &str, phc: &str) -> bool {
-    !phc.is_empty()
-        && Argon2::default()
-            .verify_password(pin.as_bytes(), phc)
-            .is_ok()
+    let Ok(parsed) = PasswordHash::new(phc) else {
+        return false;
+    };
+    match parsed.params.get_decimal("m") {
+        Some(m) if m <= MAX_MEMORY_KIB => {}
+        _ => return false,
+    }
+    Argon2::default()
+        .verify_password(pin.as_bytes(), &parsed)
+        .is_ok()
 }
 
 impl Store {
@@ -82,8 +100,10 @@ impl Store {
     /// removed upstream stops verifying here. The delete and the upserts commit
     /// together or not at all, so a failure part way cannot leave half a list.
     ///
-    /// A failed FETCH must not reach this function (the caller returns before
-    /// it), and an empty list is treated the same way: it is ignored, because
+    /// Unlike `sync_catalogue` (upsert-only, never deletes, no empty-list
+    /// rule), this DELETES rows absent from the list and treats an empty list
+    /// as a no-op. A failed FETCH must not reach this function (the caller
+    /// returns before it), and an empty list is ignored, because
     /// the cloud keeps a deactivated cashier in the list with no hash, so an
     /// empty list means a bad or partial response, and a till with no cashiers
     /// cannot open a shift. Rows with an empty id are refused before the write
@@ -260,10 +280,13 @@ mod tests {
         assert_eq!(listed, vec!["Bob"], "garbage is listed but still denied");
     }
 
-    /// Everything above ran against the database alone. This pins it: there is
-    /// no network type anywhere in the call, and the only input is the file.
+    /// Reopens the database file and verifies without any sync.
+    ///
+    /// What it proves is that the cached data is sufficient and persistent. The
+    /// no-network guarantee itself is structural: `till-store` has no HTTP
+    /// dependency, so a network call could not compile.
     #[tokio::test]
-    async fn verification_works_with_no_network() {
+    async fn verification_needs_only_the_reopened_file() {
         let dir = std::env::temp_dir().join(format!("till-cashier-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("till.db");
@@ -378,5 +401,22 @@ mod tests {
         assert_eq!(ok.as_deref(), Some("u1"));
         println!("verify_pin (m=131072,t=3,p=1) took {ms} ms");
         assert_eq!(s.verify_pin("Alice", "4822").await.unwrap(), None);
+    }
+
+    /// A valid argon2id PHC string asking for ~4 TiB. Honoured, it would abort
+    /// the process on allocation; it must be denied before argon2 runs.
+    #[tokio::test]
+    async fn a_hash_demanding_absurd_memory_is_denied_and_the_process_survives() {
+        let absurd = "$argon2id$v=19$m=4294967295,t=1,p=1$MDEyMzQ1Njc4OWFiY2RlZg$MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
+        assert!(PasswordHash::new(absurd).is_ok(), "the fixture must parse");
+        let s = store_with(&[Cashier {
+            id: "u1".into(),
+            name: "Alice".into(),
+            pin_hash: absurd.into(),
+            active: true,
+        }])
+        .await;
+        assert_eq!(s.verify_pin("Alice", "1234").await.unwrap(), None);
+        assert!(!pin_matches("1234", absurd));
     }
 }
