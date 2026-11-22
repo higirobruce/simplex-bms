@@ -81,8 +81,14 @@ async fn a_real_sale_lands_in_the_live_back_office_and_replays_idempotently() {
     eprintln!("till db: {}", path.display());
 
     // 2. Seed as main.rs's seed_demo does.
-    store.sync_catalogue(&demo::products()).await.expect("catalogue");
-    store.sync_cashiers(&demo::cashiers()).await.expect("cashiers");
+    store
+        .sync_catalogue(&demo::products())
+        .await
+        .expect("catalogue");
+    store
+        .sync_cashiers(&demo::cashiers())
+        .await
+        .expect("cashiers");
 
     // 3. Shift.
     let cfg = demo::config();
@@ -105,7 +111,9 @@ async fn a_real_sale_lands_in_the_live_back_office_and_replays_idempotently() {
         "5449000000996".to_string(),
     ] {
         assert!(code.len() == 13);
-        basket.push_line(line_for(&store, &code).await).expect("push");
+        basket
+            .push_line(line_for(&store, &code).await)
+            .expect("push");
     }
     assert_eq!(demo::tomato_label(1250), "2004087012503");
     let totals = basket.totals().expect("totals");
@@ -162,7 +170,14 @@ async fn a_real_sale_lands_in_the_live_back_office_and_replays_idempotently() {
     assert_eq!(rows.iter().filter(|r| r.kind == "sale").count(), 1);
 
     // 7. Real drain.
-    let cloud = CloudSync::new(store.clone(), SyncConfig { base_url: url, token }).expect("client");
+    let cloud = CloudSync::new(
+        store.clone(),
+        SyncConfig {
+            base_url: url,
+            token,
+        },
+    )
+    .expect("client");
     let first = cloud.drain_once().await;
     let after = counts(&store).await;
     eprintln!("DRAIN 1: {first:?}; (unsent, parked, sent) = {after:?}");
@@ -175,7 +190,11 @@ async fn a_real_sale_lands_in_the_live_back_office_and_replays_idempotently() {
     {
         eprintln!("  outbound #{} {} last_error={:?}", r.0, r.1, r.2);
     }
-    assert_eq!(first, DrainOutcome::Sent(2), "cloud did not accept both rows");
+    assert_eq!(
+        first,
+        DrainOutcome::Sent(2),
+        "cloud did not accept both rows"
+    );
     assert_eq!(after, (0, 0, 2));
 
     // 8. Genuine replay: clear sent_at so the same payloads are POSTed again.

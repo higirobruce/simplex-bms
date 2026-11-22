@@ -30,9 +30,9 @@ mod latency;
 mod config;
 
 // Drains the outbound queue to the cloud and pulls the cashier list.
-mod sync;
 #[cfg(test)]
 mod e2e;
+mod sync;
 mod sync_status;
 
 mod demo;
