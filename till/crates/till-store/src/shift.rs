@@ -287,6 +287,12 @@ impl Store {
                 "openingFloat": row.4,
                 "closedAt": row.5,
                 "declaredCash": row.6,
+                // The till's own tally, the same `totals` the cashier's close
+                // report prints. The cloud sees only what arrived, so these
+                // let it tell a complete shift from one missing a sale.
+                // `gross` goes through `Display` (exact `{:.2}`), never a float.
+                "saleCount": totals.sale_count,
+                "gross": totals.gross.to_string(),
             }))?;
             queue_shift(&mut *conn, payload).await?;
             Ok(ShiftClose {
@@ -969,6 +975,63 @@ mod tests {
         s.close_shift(&sh, m("0")).await.unwrap();
         assert_eq!(s.current_shift("d1").await.unwrap(), None);
         s.open_shift("d1", "bob", m("0")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_close_payload_carries_the_shifts_own_count_and_gross() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        seed_sale(
+            &s,
+            &sh,
+            1,
+            "Confirmed",
+            ("2380.10", "180.00"),
+            &[("01", "2380.10")],
+        )
+        .await;
+        seed_sale(
+            &s,
+            &sh,
+            2,
+            "Confirmed",
+            ("1000.20", "0.00"),
+            &[("01", "1000.20")],
+        )
+        .await;
+        // abandoned sales are in neither figure
+        seed_sale(&s, &sh, 3, "Voided", ("9.00", "0.00"), &[("01", "9.00")]).await;
+        let c = s.close_shift(&sh, m("3380.30")).await.unwrap();
+        let rows = shift_rows(&s).await;
+        let v = &rows[1].1;
+        assert_eq!(v["saleCount"], 2);
+        assert!(v["saleCount"].is_u64(), "a JSON number");
+        assert_eq!(v["gross"], "3380.30");
+        assert!(v["gross"].is_string(), "an exact decimal string");
+        // the same figures the close report showed
+        assert_eq!(c.totals.sale_count, 2);
+        assert_eq!(c.totals.gross.to_string(), v["gross"].as_str().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_close_with_no_sales_states_zero_not_absent() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        s.close_shift(&sh, m("0")).await.unwrap();
+        let v = &shift_rows(&s).await[1].1;
+        assert_eq!(v["saleCount"], 0);
+        assert_eq!(v["gross"], "0.00");
+    }
+
+    #[tokio::test]
+    async fn an_open_payload_still_carries_neither() {
+        let s = Store::open_in_memory().await.unwrap();
+        let sh = shift_with_float(&s, "0").await;
+        seed_sale(&s, &sh, 1, "Confirmed", ("5.00", "0.00"), &[("01", "5.00")]).await;
+        s.close_shift(&sh, m("5")).await.unwrap();
+        let open = &shift_rows(&s).await[0].1;
+        assert!(open.get("saleCount").is_none());
+        assert!(open.get("gross").is_none());
     }
 
     #[tokio::test]
