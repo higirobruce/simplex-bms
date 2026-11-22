@@ -38,7 +38,7 @@ use till_store::{Cashier, DrainOutcome, OutboxRow, Store};
 use tokio::sync::Notify;
 
 use crate::config::SyncConfig;
-use crate::sync_status::{SharedSyncStatus, SyncStatus};
+use crate::sync_status::{SharedSyncStatus, SyncStatus, now_unix};
 
 /// The most rows one pass sends.
 pub const BATCH_LIMIT: u32 = 50;
@@ -181,7 +181,11 @@ impl CloudSync {
             client,
             halted: Mutex::new(None),
             last_skipped: AtomicUsize::new(0),
-            status: SharedSyncStatus::default(),
+            // Stamped at start so a loop that never reports goes stale too.
+            status: Arc::new(Mutex::new(SyncStatus {
+                published_at: Some(now_unix()),
+                ..SyncStatus::default()
+            })),
             wake: Arc::new(Notify::new()),
         })
     }
@@ -196,25 +200,35 @@ impl CloudSync {
         Arc::clone(&self.status)
     }
 
-    /// Re-reads the queue and publishes it. A failed read leaves the previous
-    /// figures standing rather than showing a made-up zero.
+    /// Re-reads the queue and publishes it.
     async fn publish_status(&self) {
-        let Ok((depth, oldest)) = self.store.queue_depth().await else {
+        let reading = match (
+            self.store.queue_depth().await,
+            self.store.parked_count().await,
+        ) {
+            (Ok((depth, oldest)), Ok(parked)) => Some((depth, oldest, parked)),
+            _ => None,
+        };
+        self.publish_reading(reading, now_unix());
+    }
+
+    /// Publishes what is known. The hold and the unreadable-cashier count live
+    /// in memory, so they are refreshed even when the queue could not be read
+    /// (a revoked token must show during a database fault). A failed read
+    /// keeps the previous depth rather than a made-up zero, and does NOT renew
+    /// `published_at`, so those figures age honestly into "no report since".
+    fn publish_reading(&self, reading: Option<(u32, Option<String>, u32)>, now: u64) {
+        let Ok(mut g) = self.status.lock() else {
             return;
         };
-        let Ok(parked) = self.store.parked_count().await else {
-            return;
-        };
-        let snapshot = SyncStatus {
-            ran: true,
-            depth,
-            oldest,
-            parked,
-            held: self.halted().is_some(),
-            skipped_cashiers: self.skipped_cashiers(),
-        };
-        if let Ok(mut g) = self.status.lock() {
-            *g = snapshot;
+        g.held = self.halted().is_some();
+        g.skipped_cashiers = self.skipped_cashiers();
+        if let Some((depth, oldest, parked)) = reading {
+            g.ran = true;
+            g.depth = depth;
+            g.oldest = oldest;
+            g.parked = parked;
+            g.published_at = Some(now);
         }
     }
 
@@ -724,6 +738,53 @@ mod tests {
                 "{status}: a held queue makes no requests"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_revoked_token_reaches_the_published_status() {
+        let stub = stub(|_| (401, "{}".into())).await;
+        let (sync, store) = sync_for(&stub.url).await;
+        queue(&store, "sale", "{}").await;
+        let handle = sync.status_handle();
+        sync.drain_once().await;
+        sync.publish_status().await;
+        let s = handle.lock().unwrap().clone();
+        assert!(s.held, "the hold must reach the screen");
+        assert_eq!(s.depth, 1);
+        assert!(s.ran);
+    }
+
+    #[tokio::test]
+    async fn unreadable_cashiers_reach_the_published_status() {
+        let body = r#"[{"id":"u1","name":"A","pinHash":42,"active":true}]"#;
+        let stub = stub(move |_| (200, body.into())).await;
+        let (sync, _store) = sync_for(&stub.url).await;
+        sync.pull_cashiers().await.unwrap();
+        sync.publish_status().await;
+        assert_eq!(sync.status_handle().lock().unwrap().skipped_cashiers, 1);
+    }
+
+    #[tokio::test]
+    async fn a_hold_is_published_even_when_the_queue_cannot_be_read() {
+        let stub = stub(|_| (401, "{}".into())).await;
+        let (sync, store) = sync_for(&stub.url).await;
+        queue(&store, "sale", "{}").await;
+        sync.publish_status().await;
+        let before = sync.status_handle().lock().unwrap().clone();
+        assert!(before.ran && before.depth == 1 && !before.held);
+        sync.pull_cashiers().await.unwrap_err(); // the 401 halts
+        sync.publish_reading(None, before.published_at.unwrap() + 500);
+        let s = sync.status_handle().lock().unwrap().clone();
+        assert!(s.held, "a hold must show during a database fault");
+        assert_eq!(s.depth, 1, "the last known depth is kept, not zeroed");
+        assert_eq!(
+            s.published_at, before.published_at,
+            "a failed read is not a report"
+        );
+        // A first read that fails leaves "not run", never a made-up state.
+        let (fresh, _s2) = sync_for(&stub.url).await;
+        fresh.publish_reading(None, 0);
+        assert!(!fresh.status_handle().lock().unwrap().ran);
     }
 
     #[tokio::test]

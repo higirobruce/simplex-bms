@@ -536,18 +536,28 @@ fn sync_chips(ui: &mut Ui, state: &LaneState) {
     let Some(status) = state.sync_status() else {
         // Not configured: queued rows are not being sent, and saying so is
         // all this chip knows.
-        chip(ui, "Sync off", TOKENS.line, TOKENS.ink);
+        // Not "quiet": a till meant to sync with no token sends nothing,
+        // forever, and must not look like a healthy one.
+        let (fill, ink) = tone_colours(Tone::Notice);
+        chip(ui, "Sync off: not configured", fill, ink);
         return;
     };
     // Right-to-left layout: draw the least important first.
     let mut chips = status.chips(now_unix());
     chips.reverse();
     for c in chips {
-        match c.tone {
-            Tone::Quiet => chip(ui, &c.label, TOKENS.line, TOKENS.ink),
-            Tone::Notice => chip(ui, &c.label, TOKENS.hi_vis, TOKENS.ink),
-            Tone::Stopped => chip(ui, &c.label, TOKENS.danger, TOKENS.surface),
-        }
+        let (fill, ink) = tone_colours(c.tone);
+        chip(ui, &c.label, fill, ink);
+    }
+}
+
+/// Ground and ink for a sync tone. `hi_vis` is a ground for dark text only.
+fn tone_colours(tone: crate::sync_status::Tone) -> (Color32, Color32) {
+    use crate::sync_status::Tone;
+    match tone {
+        Tone::Quiet => (TOKENS.line, TOKENS.ink),
+        Tone::Notice => (TOKENS.hi_vis, TOKENS.ink),
+        Tone::Stopped => (TOKENS.danger, TOKENS.surface),
     }
 }
 
@@ -2390,13 +2400,14 @@ mod tests {
             held: true,
             skipped_cashiers: 1,
             oldest: None,
+            published_at: None,
         });
         let painted = r.frame(vec![]);
         assert!(
             painted.contains("SYNC STOPPED: TOKEN REJECTED"),
             "{painted}"
         );
-        assert!(painted.contains("1 CASHIER RECORDS UNREAD"), "{painted}");
+        assert!(painted.contains("1 CASHIER RECORD UNREAD"), "{painted}");
         // Not a notice, and the screen is still the selling one.
         assert_eq!(*r.state.notice(), crate::lane::Notice::None);
         assert_eq!(*r.state.screen(), Screen::Selling);
@@ -2414,7 +2425,16 @@ mod tests {
         assert!(painted.contains("SYNC: 5 WAITING"), "{painted}");
         assert!(!painted.contains("STOPPED"));
         let off = Rig::new().frame(vec![]);
-        assert!(off.contains("SYNC OFF"), "{off}");
+        assert!(off.contains("SYNC OFF: NOT CONFIGURED"), "{off}");
+    }
+
+    #[test]
+    fn tones_map_to_the_intended_colours() {
+        use crate::sync_status::Tone;
+        assert_eq!(tone_colours(Tone::Stopped), (TOKENS.danger, TOKENS.surface));
+        assert_eq!(tone_colours(Tone::Notice), (TOKENS.hi_vis, TOKENS.ink));
+        assert_eq!(tone_colours(Tone::Quiet), (TOKENS.line, TOKENS.ink));
+        assert_ne!(tone_colours(Tone::Quiet), tone_colours(Tone::Notice));
     }
 
     #[test]

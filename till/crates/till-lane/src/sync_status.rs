@@ -19,6 +19,10 @@ pub type SharedSyncStatus = Arc<Mutex<SyncStatus>>;
 /// The oldest unsent row must be this old (seconds) before its age is shown.
 /// Under it, a queue is just the normal gap between a sale and the next beat.
 pub const AGE_SHOWN_AFTER_SECS: u64 = 15 * 60;
+/// A snapshot older than this (seconds) is not reported as current: a sync
+/// task that stalled or died must not read as "nothing waiting" forever. The
+/// loop publishes at least every 15 s heartbeat (60 s at worst under backoff).
+pub const STALE_AFTER_SECS: u64 = 120;
 /// No label is longer than this many characters; a test measures it.
 pub const LABEL_MAX_CHARS: usize = 40;
 
@@ -36,6 +40,9 @@ pub struct SyncStatus {
     pub held: bool,
     /// Cashier records the last pull could not read.
     pub skipped_cashiers: usize,
+    /// Unix seconds of the last time the queue was read (or, before the first
+    /// read, when sync started). `None` is never reported stale.
+    pub published_at: Option<u64>,
 }
 
 /// How loudly a chip should be drawn.
@@ -71,6 +78,16 @@ impl SyncStatus {
                 format!("Sync: {} refused by cloud", count(self.parked)),
                 Tone::Stopped,
             ));
+        } else if let Some(at) = self
+            .published_at
+            .filter(|at| now.saturating_sub(*at) > STALE_AFTER_SECS)
+        {
+            // The loop has not reported lately; the figures below would be
+            // history, so none of them is shown as the current state.
+            out.push(chip(
+                format!("Sync: no report since {}", hhmm(at)),
+                Tone::Notice,
+            ));
         } else if !self.ran {
             out.push(chip("Sync: not run yet".into(), Tone::Quiet));
         } else if self.depth == 0 {
@@ -93,16 +110,22 @@ impl SyncStatus {
             out.push(chip(label, Tone::Quiet));
         }
         if self.skipped_cashiers > 0 {
-            out.push(chip(
-                format!(
-                    "{} cashier records unread",
-                    count_usize(self.skipped_cashiers)
-                ),
-                Tone::Notice,
-            ));
+            let n = count_usize(self.skipped_cashiers);
+            let noun = if self.skipped_cashiers == 1 {
+                "record"
+            } else {
+                "records"
+            };
+            out.push(chip(format!("{n} cashier {noun} unread"), Tone::Notice));
         }
         out
     }
+}
+
+/// Kigali clock time (UTC+2, as the rest of the lane shows it) of a Unix instant.
+fn hhmm(unix: u64) -> String {
+    let local = (unix + 2 * 3600) % 86_400;
+    format!("{:02}:{:02}", local / 3600, local % 3600 / 60)
 }
 
 fn count(n: u32) -> String {
@@ -305,7 +328,60 @@ mod tests {
         let c = s.chips(NOW);
         assert_eq!(c.len(), 2);
         assert_eq!(c[1].label, "2 cashier records unread");
+        let one = SyncStatus {
+            skipped_cashiers: 1,
+            ..st()
+        };
+        assert_eq!(one.chips(NOW)[1].label, "1 cashier record unread");
         assert_eq!(c[1].tone, Tone::Notice);
+    }
+
+    #[test]
+    fn a_silent_sync_is_not_reported_as_nothing_waiting() {
+        let mk = |ago| SyncStatus {
+            published_at: Some(NOW - ago),
+            ..st()
+        };
+        assert_eq!(
+            mk(STALE_AFTER_SECS).chips(NOW)[0].label,
+            "Sync: nothing waiting"
+        );
+        let c = mk(STALE_AFTER_SECS + 1).chips(NOW);
+        assert_eq!(c[0].tone, Tone::Notice);
+        assert_eq!(
+            c[0].label,
+            format!("Sync: no report since {}", hhmm(NOW - STALE_AFTER_SECS - 1))
+        );
+        // A backlog that has gone silent is stale too, not "N waiting".
+        let b = SyncStatus {
+            depth: 9,
+            published_at: Some(NOW - 600),
+            ..st()
+        };
+        assert!(b.chips(NOW)[0].label.starts_with("Sync: no report since"));
+        // A sync that never reported at all goes stale from its start time.
+        let never = SyncStatus {
+            ran: false,
+            published_at: Some(NOW - 600),
+            ..Default::default()
+        };
+        assert!(
+            never.chips(NOW)[0]
+                .label
+                .starts_with("Sync: no report since")
+        );
+        // A hold never clears by itself, so staleness does not hide it.
+        let held = SyncStatus {
+            held: true,
+            published_at: Some(NOW - 600),
+            ..st()
+        };
+        assert_eq!(held.chips(NOW)[0].label, "Sync stopped: token rejected");
+    }
+
+    #[test]
+    fn the_stale_time_is_the_kigali_clock() {
+        assert_eq!(hhmm(1_795_355_100), "15:45");
     }
 
     #[test]
@@ -322,6 +398,7 @@ mod tests {
             },
             SyncStatus {
                 depth: u32::MAX,
+                published_at: Some(0),
                 oldest: Some("1970-01-01T00:00:00Z".into()),
                 ..st()
             },
