@@ -527,6 +527,30 @@ fn shift_label(shift: Option<&till_store::OpenShift>, cashier: &str) -> String {
     }
 }
 
+/// The cloud-sync chips. Like the VSDC chip these report what LAST HAPPENED,
+/// never that the cloud is reachable now. They are ambient: not a `Notice`, no
+/// key, no effect on selling. Wording and tone are decided in `sync_status`;
+/// every label there is length-capped, so none can overrun the bar.
+fn sync_chips(ui: &mut Ui, state: &LaneState) {
+    use crate::sync_status::{Tone, now_unix};
+    let Some(status) = state.sync_status() else {
+        // Not configured: queued rows are not being sent, and saying so is
+        // all this chip knows.
+        chip(ui, "Sync off", TOKENS.line, TOKENS.ink);
+        return;
+    };
+    // Right-to-left layout: draw the least important first.
+    let mut chips = status.chips(now_unix());
+    chips.reverse();
+    for c in chips {
+        match c.tone {
+            Tone::Quiet => chip(ui, &c.label, TOKENS.line, TOKENS.ink),
+            Tone::Notice => chip(ui, &c.label, TOKENS.hi_vis, TOKENS.ink),
+            Tone::Stopped => chip(ui, &c.label, TOKENS.danger, TOKENS.surface),
+        }
+    }
+}
+
 fn status_bar(ctx: &Context, state: &LaneState, session: &Session, vsdc_switched_off: bool) {
     egui::TopBottomPanel::top("status")
         .frame(
@@ -574,6 +598,7 @@ fn status_bar(ctx: &Context, state: &LaneState, session: &Session, vsdc_switched
                             chip(ui, "VSDC not contacted yet", TOKENS.line, TOKENS.ink)
                         }
                     }
+                    sync_chips(ui, state);
                     ui.label(text(clock(), mono(14.0), TOKENS.line));
                     let shift =
                         shift_label(state.shift(), state.shift_cashier().unwrap_or_default());
@@ -2346,6 +2371,69 @@ mod tests {
             r.state.screen()
         );
         assert!(r.state.last_receipt().is_some());
+    }
+
+    fn rig_with_sync(status: crate::sync_status::SyncStatus) -> Rig {
+        let mut r = Rig::new();
+        r.state
+            .set_sync_status(std::sync::Arc::new(std::sync::Mutex::new(status)));
+        r
+    }
+
+    #[test]
+    fn the_status_bar_paints_a_stopped_sync_and_leaves_selling_alone() {
+        use crate::sync_status::SyncStatus;
+        let mut r = rig_with_sync(SyncStatus {
+            ran: true,
+            depth: 3,
+            parked: 0,
+            held: true,
+            skipped_cashiers: 1,
+            oldest: None,
+        });
+        let painted = r.frame(vec![]);
+        assert!(
+            painted.contains("SYNC STOPPED: TOKEN REJECTED"),
+            "{painted}"
+        );
+        assert!(painted.contains("1 CASHIER RECORDS UNREAD"), "{painted}");
+        // Not a notice, and the screen is still the selling one.
+        assert_eq!(*r.state.notice(), crate::lane::Notice::None);
+        assert_eq!(*r.state.screen(), Screen::Selling);
+    }
+
+    #[test]
+    fn the_status_bar_paints_a_quiet_backlog_and_says_when_sync_is_off() {
+        use crate::sync_status::SyncStatus;
+        let mut r = rig_with_sync(SyncStatus {
+            ran: true,
+            depth: 5,
+            ..Default::default()
+        });
+        let painted = r.frame(vec![]);
+        assert!(painted.contains("SYNC: 5 WAITING"), "{painted}");
+        assert!(!painted.contains("STOPPED"));
+        let off = Rig::new().frame(vec![]);
+        assert!(off.contains("SYNC OFF"), "{off}");
+    }
+
+    #[test]
+    fn the_widest_sync_label_fits_the_status_bar() {
+        use crate::sync_status::LABEL_MAX_CHARS;
+        let ctx = Context::default();
+        theme::apply(&ctx);
+        let widest = "W".repeat(LABEL_MAX_CHARS);
+        let mut width = 0.0;
+        let _ = ctx.run(RawInput::default(), |ctx| {
+            width = ctx.fonts(|f| {
+                f.layout_no_wrap(widest.clone(), mono_bold(12.0), Color32::WHITE)
+                    .size()
+                    .x
+            });
+        });
+        // Two such chips plus their padding, the clock and the shift label
+        // must still fit a 1280 px bar with room to spare.
+        assert!(2.0 * (width + 20.0) < 1280.0 * 0.6, "chip is {width}px");
     }
 
     #[test]

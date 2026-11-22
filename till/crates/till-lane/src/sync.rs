@@ -38,6 +38,7 @@ use till_store::{Cashier, DrainOutcome, OutboxRow, Store};
 use tokio::sync::Notify;
 
 use crate::config::SyncConfig;
+use crate::sync_status::{SharedSyncStatus, SyncStatus};
 
 /// The most rows one pass sends.
 pub const BATCH_LIMIT: u32 = 50;
@@ -158,6 +159,8 @@ pub struct CloudSync {
     halted: Mutex<Option<String>>,
     /// Records the last successful cashier pull could not read.
     last_skipped: AtomicUsize,
+    /// Published after every pass for the status bar.
+    status: SharedSyncStatus,
     wake: Arc<Notify>,
 }
 
@@ -178,6 +181,7 @@ impl CloudSync {
             client,
             halted: Mutex::new(None),
             last_skipped: AtomicUsize::new(0),
+            status: SharedSyncStatus::default(),
             wake: Arc::new(Notify::new()),
         })
     }
@@ -185,6 +189,33 @@ impl CloudSync {
     /// Signal this after queuing a row to drain now instead of at the next beat.
     pub fn waker(&self) -> Arc<Notify> {
         Arc::clone(&self.wake)
+    }
+
+    /// The snapshot the loop keeps current, for the screen to read.
+    pub fn status_handle(&self) -> SharedSyncStatus {
+        Arc::clone(&self.status)
+    }
+
+    /// Re-reads the queue and publishes it. A failed read leaves the previous
+    /// figures standing rather than showing a made-up zero.
+    async fn publish_status(&self) {
+        let Ok((depth, oldest)) = self.store.queue_depth().await else {
+            return;
+        };
+        let Ok(parked) = self.store.parked_count().await else {
+            return;
+        };
+        let snapshot = SyncStatus {
+            ran: true,
+            depth,
+            oldest,
+            parked,
+            held: self.halted().is_some(),
+            skipped_cashiers: self.skipped_cashiers(),
+        };
+        if let Ok(mut g) = self.status.lock() {
+            *g = snapshot;
+        }
     }
 
     /// Why the whole queue is held, if it is (the token was rejected).
@@ -376,7 +407,9 @@ impl CloudSync {
                 }
                 last_pull = Some((Instant::now(), pulled.is_ok()));
             }
-            let wait = match self.drain_once().await {
+            let outcome = self.drain_once().await;
+            self.publish_status().await;
+            let wait = match outcome {
                 DrainOutcome::Offline => {
                     failures = failures.saturating_add(1);
                     backoff(failures)

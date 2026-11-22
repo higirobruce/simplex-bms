@@ -572,12 +572,28 @@ pub struct LaneState {
     /// Pokes the cloud sync after a row is queued, so it drains now rather
     /// than at its next heartbeat. `None` when sync is not configured.
     sync_wake: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// What the sync loop last reported about itself, for the status bar.
+    /// `None` when sync is not configured.
+    sync_status: Option<crate::sync_status::SharedSyncStatus>,
 }
 
 impl LaneState {
     /// Connects the lane to the cloud sync's wake-up signal.
     pub fn set_sync_wake(&mut self, wake: std::sync::Arc<tokio::sync::Notify>) {
         self.sync_wake = Some(wake);
+    }
+
+    /// Connects the lane to the sync loop's published status.
+    pub fn set_sync_status(&mut self, status: crate::sync_status::SharedSyncStatus) {
+        self.sync_status = Some(status);
+    }
+
+    /// A copy of the sync status, or `None` when sync is off. Reads memory
+    /// only; the loop does the querying.
+    pub fn sync_status(&self) -> Option<crate::sync_status::SyncStatus> {
+        self.sync_status
+            .as_ref()
+            .and_then(|s| s.lock().ok().map(|g| g.clone()))
     }
 
     /// A row was just committed to the outbound queue. Never blocks, never fails.
@@ -672,6 +688,7 @@ impl LaneState {
             #[cfg(test)]
             pin_gate: None,
             sync_wake: None,
+            sync_status: None,
         })
     }
 

@@ -31,6 +31,7 @@ mod config;
 
 // Drains the outbound queue to the cloud and pulls the cashier list.
 mod sync;
+mod sync_status;
 
 mod demo;
 mod devices;
@@ -164,6 +165,7 @@ fn start_sync(store: till_store::Store, state: &mut LaneState) {
     match sync::CloudSync::new(store, cfg) {
         Ok(cloud) => {
             state.set_sync_wake(cloud.waker());
+            state.set_sync_status(cloud.status_handle());
             tokio::spawn(std::sync::Arc::new(cloud).run());
         }
         Err(e) => eprintln!("Cloud sync is off: {e}."),
