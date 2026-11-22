@@ -3,9 +3,20 @@
 **Date opened:** 2026-11-22
 **Hardware:** one Windows 10 x64 laptop, one barcode reader. No printer, no scale,
 no cash drawer.
-**Build:** cross-compiled on macOS to `x86_64-pc-windows-msvc` via `cargo-xwin`.
-The target triple is the one that will ship, so this is not a toolchain
-substitute.
+**Build:** `x86_64-pc-windows-msvc`, built natively on a Windows runner by
+`.github/workflows/till-windows.yml`. That is the triple that ships, so this is
+not a toolchain substitute. Two local cross-compiles were abandoned first — LLVM
+and mingw-w64 both died on the network — and the runner turned out to be the
+better answer anyway, because it also runs the test suite on Windows.
+
+**Getting the binary:** download the `simplex-lane-windows-x64` artifact from
+the workflow run, or `gh run download <run-id> -n simplex-lane-windows-x64`. It
+lands in the git-ignored `dist/` directory by convention. Rename to
+`simplex-lane.exe`; it is a single file with no installer and no dependencies.
+
+The suite passing on Windows is itself a result worth recording: 415 tests, and
+it had only ever run on macOS before. SQLite file locking and path handling are
+where a Unix-only green suite is most likely to have been lying.
 
 ## What this hardware can and cannot settle
 

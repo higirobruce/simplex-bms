@@ -12,3 +12,7 @@ tsconfig.tsbuildinfo
 
 # Rust build output for the till workspace
 till/target/
+
+# Cross-built binaries pulled from CI; never committed (see
+# .github/workflows/till-windows.yml).
+/dist/
