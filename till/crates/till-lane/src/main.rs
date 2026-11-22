@@ -126,7 +126,7 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
             .await
             .map_err(|e| format!("The demo database could not be opened ({e})."))?,
     };
-    seed_demo(&store, args.db.is_some()).await?;
+    seed_demo(&store, args.demo).await?;
     let mut state = LaneState::new(store.clone(), demo::config())
         .await
         .map_err(|e| e.to_string())?;
@@ -144,17 +144,18 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
     })
 }
 
-/// Loads the demo catalogue and cashiers into an in-memory demo store only.
+/// Loads the demo catalogue and cashiers, in demo mode only.
 ///
-/// A store on disk (`--db`) is a till whose cashiers and catalogue come from
-/// the cloud. `sync_cashiers` DELETES every cashier absent from the list it is
-/// handed, so seeding the demo cashier at each start would wipe the real ones
-/// and open shifts as `demo-cashier`, which the cloud refuses, withholding
-/// every sale of the shift. `sync_catalogue` never deletes, but seeding demo
-/// products into a real catalogue lets a cashier sell items the cloud has
-/// never heard of (their lines would be refused), so it is skipped too.
-async fn seed_demo(store: &till_store::Store, persistent: bool) -> Result<(), String> {
-    if persistent {
+/// `--demo` (simulated VSDC, demo data) and `--db` (persist instead of memory)
+/// are orthogonal: a persistent demo is legitimate and is seeded. A non-demo
+/// till gets its cashiers and catalogue from the cloud and must NOT be seeded:
+/// `sync_cashiers` DELETES every cashier absent from the list it is handed, so
+/// seeding would wipe the real ones and open shifts as `demo-cashier`, which
+/// the cloud refuses, withholding every sale of the shift; and demo products
+/// in a real catalogue would be sellable though the cloud has never seen them.
+/// `start()` refuses non-demo today, so this guard protects the future real mode.
+async fn seed_demo(store: &till_store::Store, demo_mode: bool) -> Result<(), String> {
+    if !demo_mode {
         return Ok(());
     }
     store
@@ -327,51 +328,77 @@ mod tests {
         }
     }
 
-    /// Startup on a `--db` store must leave the cloud's cashiers and catalogue
-    /// alone: `sync_cashiers` deletes whatever the list omits.
-    #[tokio::test]
-    async fn a_db_stores_cashiers_survive_startup() {
-        let path = std::env::temp_dir().join(format!(
+    async fn ids(store: &till_store::Store) -> Vec<String> {
+        store
+            .active_cashiers()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect()
+    }
+
+    fn temp_db() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
             "till-lane-seed-{}-{}.db",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
-        ));
-        let store = till_store::Store::open(&path).await.unwrap();
-        store
-            .sync_cashiers(&[real_cashier("real-1")])
-            .await
-            .unwrap();
-        seed_demo(&store, true).await.unwrap();
-        let ids: Vec<String> = store
-            .active_cashiers()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|c| c.id)
-            .collect();
-        assert_eq!(ids, vec!["real-1".to_string()]);
-        drop(store);
+        ))
+    }
+
+    fn remove_db(path: &std::path::Path) {
         for ext in ["", "-wal", "-shm"] {
-            let mut f = path.clone().into_os_string();
+            let mut f = path.to_path_buf().into_os_string();
             f.push(ext);
             let _ = std::fs::remove_file(f);
         }
     }
 
+    /// `start()` refuses non-demo, so `seed_demo` is tested directly with both
+    /// flag values. Non-demo must not touch a real till's cashiers.
     #[tokio::test]
-    async fn the_in_memory_demo_is_seeded_with_the_demo_cashier() {
-        let store = till_store::Store::open_in_memory().await.unwrap();
-        seed_demo(&store, false).await.unwrap();
-        let ids: Vec<String> = store
-            .active_cashiers()
+    async fn non_demo_mode_does_not_seed_so_a_real_tills_cashiers_survive() {
+        let path = temp_db();
+        let store = till_store::Store::open(&path).await.unwrap();
+        store
+            .sync_cashiers(&[real_cashier("real-1")])
             .await
-            .unwrap()
-            .into_iter()
-            .map(|c| c.id)
-            .collect();
-        assert_eq!(ids, vec!["demo-cashier".to_string()]);
+            .unwrap();
+        seed_demo(&store, false).await.unwrap();
+        assert_eq!(ids(&store).await, vec!["real-1".to_string()]);
+        assert!(store.search_by_name("milk", 5).await.unwrap().is_empty());
+        drop(store);
+        remove_db(&path);
+    }
+
+    /// `--demo --db` is a persistent demo: seeded, and the demo PIN signs in.
+    #[tokio::test]
+    async fn a_persistent_demo_is_seeded_and_the_demo_pin_signs_in() {
+        let path = temp_db();
+        let store = till_store::Store::open(&path).await.unwrap();
+        seed_demo(&store, true).await.unwrap();
+        assert_eq!(ids(&store).await, vec!["demo-cashier".to_string()]);
+        assert!(!store.search_by_name("milk", 5).await.unwrap().is_empty());
+        assert_eq!(
+            store
+                .verify_pin("demo-cashier", demo::DEMO_PIN)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("demo-cashier")
+        );
+        drop(store);
+        remove_db(&path);
+    }
+
+    #[tokio::test]
+    async fn the_in_memory_demo_is_seeded_with_the_demo_cashier_and_products() {
+        let store = till_store::Store::open_in_memory().await.unwrap();
+        seed_demo(&store, true).await.unwrap();
+        assert_eq!(ids(&store).await, vec!["demo-cashier".to_string()]);
+        assert!(!store.search_by_name("milk", 5).await.unwrap().is_empty());
     }
 }
