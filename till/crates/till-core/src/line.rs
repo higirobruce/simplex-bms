@@ -91,6 +91,10 @@ pub struct BasketLine {
     pub item_cls_cd: String,
     pub item_nm: String,
     pub bcd: Option<String>,
+    /// The cloud `Product.id` this line was rung against, from the catalogue
+    /// cache. `None` only for lines written before it was recorded; the cloud
+    /// then falls back to resolving `item_cd` against the SKU.
+    pub product_id: Option<String>,
     pub qty: Qty,
     pub prc: Money,
     pub tax_ty_cd: TaxType,
@@ -226,6 +230,7 @@ mod tests {
             item_cls_cd: "5020230602".to_string(),
             item_nm: "Test item".to_string(),
             bcd: None,
+            product_id: None,
             qty: Qty::try_from_str(qty).unwrap(),
             prc: Money::try_from_str(prc).unwrap(),
             tax_ty_cd: band,

@@ -141,8 +141,8 @@ impl Store {
             for (line, a) in &lines {
                 sqlx::query(
                     "insert into sale_line (sale_id, item_seq, item_cd, item_cls_cd, item_nm, \
-                     qty, prc, sply_amt, dc_rt, dc_amt, taxbl_amt, tax_amt, tax_ty_cd) \
-                     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     qty, prc, sply_amt, dc_rt, dc_amt, taxbl_amt, tax_amt, tax_ty_cd, product_id) \
+                     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(&id)
                 .bind(i64::from(line.item_seq))
@@ -157,6 +157,7 @@ impl Store {
                 .bind(a.taxbl_amt.to_string())
                 .bind(a.tax_amt.to_string())
                 .bind(line.tax_ty_cd.wire())
+                .bind(line.product_id.as_deref())
                 .execute(&mut *conn)
                 .await?;
             }
@@ -420,7 +421,7 @@ async fn cloud_payload(
     let mut lines = Vec::new();
     for l in sqlx::query(
         "select item_seq, item_cd, item_cls_cd, item_nm, qty, prc, sply_amt, dc_rt, dc_amt, \
-         taxbl_amt, tax_amt, tax_ty_cd from sale_line where sale_id = ? order by item_seq",
+         taxbl_amt, tax_amt, tax_ty_cd, product_id from sale_line where sale_id = ? order by item_seq",
     )
     .bind(&h.id)
     .fetch_all(&mut *conn)
@@ -431,6 +432,7 @@ async fn cloud_payload(
         };
         lines.push(serde_json::json!({
             "itemSeq": l.try_get::<i64, _>("item_seq")?,
+            "productId": l.try_get::<Option<String>, _>("product_id")?,
             "itemCd": l.try_get::<Option<String>, _>("item_cd")?,
             "itemClsCd": l.try_get::<Option<String>, _>("item_cls_cd")?,
             "itemNm": l.try_get::<String, _>("item_nm")?,
@@ -500,6 +502,7 @@ mod tests {
             item_cls_cd: "5020230602".to_string(),
             item_nm: cd.to_string(),
             bcd: None,
+            product_id: None,
             qty: Qty::try_from_str("1").unwrap(),
             prc: Money::try_from_str(prc).unwrap(),
             tax_ty_cd: band,
@@ -599,6 +602,53 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(v["shiftId"], "sh-test");
+    }
+
+    async fn line_payload(s: &Store, sale_id: &str) -> serde_json::Value {
+        let payload: String = sqlx::query_scalar("select payload from outbound where sale_id=?")
+            .bind(sale_id)
+            .fetch_one(s.pool())
+            .await
+            .unwrap();
+        serde_json::from_str(&payload).unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_cloud_payload_emits_product_id_per_line() {
+        let s = store().await;
+        let mut f = cash();
+        let mut b = Basket::new();
+        for (cd, pid) in [("MILK", "cloud-p-milk"), ("SOAP", "cloud-p-soap")] {
+            let mut l = line(
+                cd,
+                if cd == "MILK" { "1200" } else { "1180" },
+                if cd == "MILK" { TaxType::A } else { TaxType::B },
+            );
+            l.product_id = Some(pid.into());
+            b.push_line(l).unwrap();
+        }
+        f.basket = b;
+        let h = s.begin_sale(f.sale(DVC)).await.unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let v = line_payload(&s, &h.id).await;
+        assert_eq!(v["lines"][0]["productId"], "cloud-p-milk");
+        assert_eq!(v["lines"][1]["productId"], "cloud-p-soap");
+    }
+
+    #[tokio::test]
+    async fn a_line_written_before_0003_still_serialises_with_a_null_product_id() {
+        let s = store().await;
+        let h = s.begin_sale(cash().sale(DVC)).await.unwrap();
+        // A pre-0003 row has no product_id at all.
+        sqlx::query("update sale_line set product_id = null")
+            .execute(s.pool())
+            .await
+            .unwrap();
+        s.confirm_sale(&h, receipt()).await.unwrap();
+        let v = line_payload(&s, &h.id).await;
+        let l = &v["lines"][0];
+        assert!(l.as_object().unwrap().contains_key("productId"));
+        assert!(l["productId"].is_null());
     }
 
     #[tokio::test]

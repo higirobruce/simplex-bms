@@ -1594,6 +1594,7 @@ fn line_for(
         item_cls_cd,
         item_nm: p.name.clone(),
         bcd: p.barcode.clone(),
+        product_id: Some(p.id.clone()),
         qty,
         prc,
         tax_ty_cd: p.tax_ty_cd,
@@ -2510,6 +2511,46 @@ mod tests {
         assert_eq!(lines[0].qty, Qty::try_from_str("1").unwrap());
         assert_eq!(lines[0].item_cls_cd, "5020230602");
         assert_eq!(l.buffer(), "");
+    }
+
+    #[tokio::test]
+    async fn a_scanned_line_carries_the_cloud_product_id() {
+        let mut l = lane_with(
+            &[product("cloud-a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        scan(&mut l, EAN).await.unwrap();
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-a"));
+    }
+
+    #[tokio::test]
+    async fn a_line_keyed_by_plu_carries_it_too() {
+        let mut l = lane_with(
+            &[product("cloud-p", None, Some("4001"), false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "4001").await;
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-p"));
+    }
+
+    #[tokio::test]
+    async fn a_line_picked_by_name_carries_it_too() {
+        let mut l = lane_with(
+            &[
+                named("cloud-a", "Milk Full Cream 1L", None, false),
+                named("cloud-b", "Milk Skimmed 1L", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        let _ = key(&mut l, "2").await;
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-b"));
     }
 
     #[tokio::test]
