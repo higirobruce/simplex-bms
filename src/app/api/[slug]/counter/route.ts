@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getTenantContext, handleRouteError } from "@/lib/api";
-import { dayBounds } from "@/lib/day";
+import { dayBounds, safeZone } from "@/lib/day";
 import { instantOnDay, localDate, shiftState, splitTakings, variance } from "@/lib/counter";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
@@ -12,11 +12,13 @@ export async function GET(req: Request) {
   try {
     const { orgId } = await getTenantContext();
     const org = await prisma.org.findUniqueOrThrow({ where: { id: orgId }, select: { timezone: true } });
-    const tz = org.timezone;
+    // Sanitised once: bucketing AND the response use the same zone, so the browser never sees a bad one.
+    const tz = safeZone(org.timezone);
     const now = new Date();
 
     const dayParam = new URL(req.url).searchParams.get("day");
-    const day = dayParam ?? localDate(now, tz);
+    // A supplied day must parse: a typo is a 400, never silently today.
+    const day = dayParam === null ? localDate(now, tz) : dayParam;
     const anchor = instantOnDay(day, tz);
     if (!anchor) return NextResponse.json({ error: "day must be a real date, YYYY-MM-DD" }, { status: 400 });
     const { start, end } = dayBounds(anchor, tz);

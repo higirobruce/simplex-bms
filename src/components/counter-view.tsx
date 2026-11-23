@@ -1,8 +1,9 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useCurrency } from "@/lib/currency";
 import {
   absMoney, clock, clockWithDay, groupMoney, methodLabel, plainQty, splitShifts, varianceKind,
-  type CounterResponse, type CounterShift, type ShiftSale, type ShiftSalesResponse,
+  type CounterResponse, type CounterShift, type ShiftState, type ShiftSale, type ShiftSalesResponse,
 } from "@/lib/counter-view";
 
 /**
@@ -10,6 +11,14 @@ import {
  * buttons, no mutations: a fiscalised sale is a record. The variance leads
  * each closed shift; the shop total sits underneath.
  */
+
+/** Money as TEXT with the shop currency in front: never parsed, never routed through a float. */
+function useMoneyText() {
+  const currency = useCurrency();
+  const money = (v: string) => `${currency} ${groupMoney(v)}`;
+  money.abs = (v: string) => `${currency} ${absMoney(v)}`;
+  return { currency, money };
+}
 
 const MONO = "font-mono tabular-nums";
 const KICKER = "font-mono text-[0.65rem] uppercase tracking-[0.12em] text-ink-mute";
@@ -39,19 +48,20 @@ function Who({ s }: { s: CounterShift }) {
 }
 
 function Split({ s }: { s: CounterShift }) {
+  const { money } = useMoneyText();
   const hasChange = !/^0+(\.0+)?$/.test(s.changeGiven);
   return (
     <div className="flex flex-col gap-1.5 text-sm text-ink-soft">
       {s.methods.map((m) => (
         <div key={m.method} className="flex justify-between">
           <span>{methodLabel(m.method)} taken</span>
-          <b className={`${MONO} font-medium text-ink`}>{groupMoney(m.tendered)}</b>
+          <b className={`${MONO} font-medium text-ink`}>{money(m.tendered)}</b>
         </div>
       ))}
       {hasChange && (
         <div className="flex justify-between">
           <span>Change given</span>
-          <b className={`${MONO} font-medium text-ink`}>−{groupMoney(s.changeGiven)}</b>
+          <b className={`${MONO} font-medium text-ink`}>−{money(s.changeGiven)}</b>
         </div>
       )}
     </div>
@@ -59,6 +69,7 @@ function Split({ s }: { s: CounterShift }) {
 }
 
 function Verdict({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
+  const { money } = useMoneyText();
   const lane = s.lane.name;
   switch (s.state) {
     case "complete": {
@@ -72,18 +83,18 @@ function Verdict({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
         );
       }
       const kind = varianceKind(v.diff);
-      const why = `expected ${groupMoney(v.expected)} in the drawer, counted ${groupMoney(v.declared)}`;
+      const why = `expected ${money(v.expected)} in the drawer, counted ${money(v.declared)}`;
       if (kind === "short")
         return (
           <Row tone="bad" tag="Needs a word">
-            <span className={`${MONO} font-semibold text-danger`}>Short {absMoney(v.diff)}</span>
+            <span className={`${MONO} font-semibold text-danger`}>Short {money.abs(v.diff)}</span>
             <Why> · {why}</Why>
           </Row>
         );
       if (kind === "over")
         return (
           <Row tone="over" tag="Check the count">
-            <span className={`${MONO} font-semibold text-info`}>Over {absMoney(v.diff)}</span>
+            <span className={`${MONO} font-semibold text-info`}>Over {money.abs(v.diff)}</span>
             <Why> · {why}. A counting slip or an unrecorded sale, not a loss.</Why>
           </Row>
         );
@@ -125,8 +136,13 @@ function Verdict({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
       );
     case "stale":
       return <Stuck s={s} now={now} tz={tz} />;
-    default:
-      return null;
+    case "open":
+      return null; // trading shifts are drawn by LiveShift and have no verdict
+    default: {
+      // A new ShiftState must get a verdict row: this line stops compiling until it does.
+      const unhandled: never = s.state;
+      return unhandled;
+    }
   }
 }
 
@@ -143,7 +159,9 @@ function Row({ tone, tag, loud, children }: { tone: "ok" | "bad" | "warn" | "ove
   );
 }
 
-const BORDER: Record<string, string> = {
+const BORDER: Record<ShiftState, string> = {
+  open: "border-l-line",
+  stale: "border-l-danger",
   complete: "border-l-success",
   short_count: "border-l-warning",
   unknown: "border-l-line-strong",
@@ -152,6 +170,7 @@ const BORDER: Record<string, string> = {
 
 /** Presentational: the sales of one shift. Amounts are the stored strings, re-grouped as text only. */
 export function ShiftSales({ data, tz }: { data: ShiftSalesResponse; tz?: string }) {
+  const { currency, money } = useMoneyText();
   return (
     <div className="border-t border-line bg-surface-2 px-5 py-3">
       <p className="mb-3 text-[0.8125rem] text-warning">{data.record.note}</p>
@@ -173,11 +192,11 @@ export function ShiftSales({ data, tz }: { data: ShiftSalesResponse; tz?: string
             </div>
             {x.voidedAt ? (
               <div className="text-right">
-                <div className={`${MONO} font-medium text-ink-mute line-through`}>{groupMoney(x.totAmt)}</div>
+                <div className={`${MONO} font-medium text-ink-mute line-through`}>{money(x.totAmt)}</div>
                 <div className="text-[0.75rem] text-danger">Not counted in takings</div>
               </div>
             ) : (
-              <div className={`${MONO} font-semibold text-ink`}>{groupMoney(x.totAmt)}</div>
+              <div className={`${MONO} font-semibold text-ink`}>{money(x.totAmt)}</div>
             )}
           </div>
           <table className="mt-2 w-full text-sm">
@@ -185,9 +204,9 @@ export function ShiftSales({ data, tz }: { data: ShiftSalesResponse; tz?: string
               <tr className={KICKER}>
                 <th className="text-left font-normal">Item</th>
                 <th className="text-right font-normal">Qty</th>
-                <th className="text-right font-normal">Price</th>
-                <th className="text-right font-normal">Line</th>
-                <th className="text-right font-normal">Taxable</th>
+                <th className="text-right font-normal">Price ({currency})</th>
+                <th className="text-right font-normal">Line ({currency})</th>
+                <th className="text-right font-normal">Taxable ({currency})</th>
               </tr>
             </thead>
             <tbody>
@@ -203,8 +222,8 @@ export function ShiftSales({ data, tz }: { data: ShiftSalesResponse; tz?: string
             </tbody>
           </table>
           <div className="mt-2 flex flex-wrap justify-between gap-2 text-xs text-ink-mute">
-            <span>{x.tenders.map((t) => `${methodLabel(t.method)} ${groupMoney(t.amount)}`).join(" · ")}</span>
-            <span className={MONO}>Tax {groupMoney(x.totTaxAmt)}</span>
+            <span>{x.tenders.map((t) => `${methodLabel(t.method)} ${money(t.amount)}`).join(" · ")}</span>
+            <span className={MONO}>Tax {money(x.totTaxAmt)}</span>
           </div>
         </div>
       ))}
@@ -245,6 +264,7 @@ function Expander({ slug, shiftId, tz }: { slug: string; shiftId: string; tz?: s
 }
 
 function ClosedShift({ s, now, tz, slug }: { s: CounterShift; now: Date; tz?: string; slug?: string }) {
+  const { money } = useMoneyText();
   let border = BORDER[s.state];
   if (s.state === "complete" && s.variance?.diff) {
     const k = varianceKind(s.variance.diff);
@@ -262,7 +282,7 @@ function ClosedShift({ s, now, tz, slug }: { s: CounterShift; now: Date; tz?: st
         <Split s={s} />
         <div className="md:text-right">
           <div className={KICKER}>Took</div>
-          <div className={`${MONO} mt-0.5 text-xl font-semibold text-ink`}>{groupMoney(s.takings)}</div>
+          <div className={`${MONO} mt-0.5 text-xl font-semibold text-ink`}>{money(s.takings)}</div>
         </div>
       </div>
       <Verdict s={s} now={now} tz={tz} />
@@ -272,6 +292,7 @@ function ClosedShift({ s, now, tz, slug }: { s: CounterShift; now: Date; tz?: st
 }
 
 function Stuck({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
+  const { money } = useMoneyText();
   const reached = s.lastReachedAt
     ? `lane not reachable since ${clockWithDay(s.lastReachedAt, now, tz)}`
     : "this lane has never been reachable";
@@ -283,7 +304,7 @@ function Stuck({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
           {s.cashier.name ?? "Unknown cashier"} · still open from {clockWithDay(s.openedAt, now, tz)}
         </div>
         <div className={`${MONO} mt-0.5 text-xs text-ink-mute`}>
-          {s.saleCount} sales · {groupMoney(s.takings)} · {reached}. It may have closed on the till with the close never arriving.
+          {s.saleCount} sales · {money(s.takings)} · {reached}. It may have closed on the till with the close never arriving.
         </div>
       </div>
       <Tag tone="bad">Stuck — check this lane</Tag>
@@ -292,6 +313,7 @@ function Stuck({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
 }
 
 function LiveShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) {
+  const { money } = useMoneyText();
   if (s.state === "stale") {
     return (
       <article data-state="stale" className="my-2.5 rounded-[var(--radius)] border border-line border-l-4 border-l-danger bg-danger-soft">
@@ -307,7 +329,7 @@ function LiveShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) 
           {s.cashier.name ?? "Unknown cashier"} · open since {clock(s.openedAt, tz)}
         </div>
         <div className={`${MONO} mt-0.5 text-xs text-ink-mute`}>
-          {s.saleCount} sales · {groupMoney(s.takings)} so far{s.lastReachedAt ? ` · lane reachable ${clock(s.lastReachedAt, tz)}` : ""}
+          {s.saleCount} sales · {money(s.takings)} so far{s.lastReachedAt ? ` · lane reachable ${clock(s.lastReachedAt, tz)}` : ""}
         </div>
       </div>
       <Tag tone="live">Trading</Tag>
@@ -316,6 +338,7 @@ function LiveShift({ s, now, tz }: { s: CounterShift; now: Date; tz?: string }) 
 }
 
 export function CounterView({ data, now = new Date(), tz, dayLabel, slug }: { data: CounterResponse; now?: Date; tz?: string; dayLabel?: string; slug?: string }) {
+  const { money } = useMoneyText();
   const { closed, live } = splitShifts(data.shifts);
   const stale = live.filter((s) => s.state === "stale");
   const label = dayLabel ?? data.day;
@@ -340,7 +363,7 @@ export function CounterView({ data, now = new Date(), tz, dayLabel, slug }: { da
             <div className="mt-1 text-[0.8125rem] text-warning">Incomplete — some shifts are still open or not yet verified</div>
           )}
         </div>
-        <div className={`${MONO} text-2xl font-semibold text-ink`}>{groupMoney(data.total)}</div>
+        <div className={`${MONO} text-2xl font-semibold text-ink`}>{money(data.total)}</div>
       </div>
 
       {live.length > 0 && (

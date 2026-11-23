@@ -4,7 +4,8 @@
  * as text here, never parsed to a float.
  */
 
-export type ShiftState = "open" | "stale" | "complete" | "short_count" | "unknown" | "mismatch";
+import type { ShiftState } from "@/lib/counter";
+export type { ShiftState };
 
 export type CounterShift = {
   id: string;

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CounterView, ShiftSales } from "@/components/counter-view";
+import { CurrencyProvider } from "@/lib/currency";
 import { absMoney, groupMoney, shiftDay, varianceKind, type CounterResponse, type CounterShift } from "@/lib/counter-view";
 
 // No React testing library in this project: components are rendered to static
@@ -43,12 +44,17 @@ function card(h: string, state: string, id?: string): string {
   const re = new RegExp(`<article data-state="${state}"[^>]*>[\\s\\S]*?</article>`, "g");
   const all = h.match(re) ?? [];
   expect(all.length, `cards for ${state}`).toBeGreaterThan(0);
-  return id ? (all.find((c) => c.includes(id)) ?? "") : (all[0] ?? "");
+  if (!id) return all[0]!;
+  const hit = all.find((c) => c.includes(id));
+  // A miss must be loud: returning "" would make every negative assertion pass vacuously.
+  if (!hit) throw new Error(`card(): no ${state} card contains "${id}"`);
+  return hit;
 }
 
 // A real, populated variance. A withheld state must NOT print any part of it.
 const POPULATED = { expected: "123456.00", declared: "119135.00", diff: "-4321.00" };
-const POPULATED_TEXT = ["4,321", "123,456", "119,135", "Short", "Over", "Balanced", "expected"];
+// Formatted AND raw forms: a regression that leaks the unformatted string must fail too.
+const POPULATED_TEXT = ["4,321", "123,456", "119,135", "4321", "-4321.00", "123456.00", "119135.00", "Short", "Over", "Balanced", "expected"];
 function expectNoVariance(c: string) {
   for (const t of POPULATED_TEXT) expect(c, `card leaked "${t}"`).not.toContain(t);
 }
@@ -56,17 +62,17 @@ function expectNoVariance(c: string) {
 describe("counter page", () => {
   test("a short shows the shortfall, the expected drawer and the counted cash", () => {
     const h = view([shift()]);
-    expect(h).toContain("Short 2,500");
-    expect(h).toContain("expected 231,500 in the drawer, counted 229,000");
+    expect(h).toContain("Short RWF 2,500");
+    expect(h).toContain("expected RWF 231,500 in the drawer, counted RWF 229,000");
     expect(h).toContain("M. Uwase");
-    expect(h).toMatch(/<span class="[^"]*text-danger[^"]*">Short 2,500<\/span>/);
+    expect(h).toMatch(/<span class="[^"]*text-danger[^"]*">Short RWF 2,500<\/span>/);
   });
 
   test("an over reads as over, never as a negative short", () => {
     const h = view([shift({ variance: { expected: "231500.00", declared: "234000.00", diff: "2500.00" } })]);
-    expect(h).toContain("Over 2,500");
+    expect(h).toContain("Over RWF 2,500");
     expect(h).not.toMatch(/Short|-2,500|−2,500/);
-    expect(h).toMatch(/<span class="[^"]*text-info[^"]*">Over 2,500<\/span>/);
+    expect(h).toMatch(/<span class="[^"]*text-info[^"]*">Over RWF 2,500<\/span>/);
     expect(h).not.toMatch(/<span class="[^"]*text-danger[^"]*">Over/);
   });
 
@@ -113,7 +119,7 @@ describe("counter page", () => {
   test("an unknown shift shows its own takings and no variance", () => {
     const h = view([shift({ state: "unknown", tillSaleCount: null, tillGross: null, takings: "412350.00", variance: POPULATED })]);
     const c = card(h, "unknown");
-    expect(c).toContain("412,350");
+    expect(c).toContain("RWF 412,350");
     expect(c).toContain("Variance not available");
     expectNoVariance(c);
   });
@@ -149,7 +155,7 @@ describe("counter page", () => {
     expect(complete).toHaveLength(2);
     const short = complete.find((c) => c.includes("M. Uwase"))!;
     const balanced = complete.find((c) => c.includes("P. Habimana"))!;
-    expect(short).toContain("Short 2,500");
+    expect(short).toContain("Short RWF 2,500");
     expect(short).not.toContain("Balanced");
     expect(balanced).toContain("Balanced");
     expect(balanced).not.toMatch(/Short|Over|2,500/);
@@ -167,13 +173,18 @@ describe("counter page", () => {
 
   test("the six states do not render alike", () => {
     const states = ["open", "stale", "complete", "short_count", "unknown", "mismatch"] as const;
-    const out = new Set(states.map((state) => view([shift({ state, closedAt: state === "open" || state === "stale" ? null : "2026-11-21T14:10:00Z", variance: null })])));
+    // data-state alone would make the six strings distinct: compare the rendered content.
+    const out = new Set(
+      states.map((state) =>
+        view([shift({ state, closedAt: state === "open" || state === "stale" ? null : "2026-11-21T14:10:00Z", variance: null })]).replace(/data-state="[^"]*"/g, ""),
+      ),
+    );
     expect(out.size).toBe(6);
   });
 
   test("the shop total sits below the shifts and says when it is incomplete", () => {
     const h = view([shift()], { totalQualified: false, total: "882800.00" });
-    expect(h.indexOf("Short 2,500")).toBeLessThan(h.indexOf("882,800"));
+    expect(h.indexOf("Short RWF 2,500")).toBeLessThan(h.indexOf("RWF 882,800"));
     expect(h).toContain("Incomplete");
     expect(view([shift()])).not.toContain("Incomplete");
   });
@@ -182,6 +193,21 @@ describe("counter page", () => {
     const h = view([shift({ variance: null })]);
     expect(h).toContain("No cash count recorded");
     expect(h).not.toMatch(/Short \d|Over \d|Balanced/);
+  });
+
+  test("every money figure carries the shop currency, as text", () => {
+    const h = renderToStaticMarkup(
+      createElement(CurrencyProvider, {
+        currency: "USD",
+        children: createElement(CounterView, { data: { day: "2026-11-21", timezone: TZ, shifts: [shift()], total: "356500.00", totalQualified: true }, now: NOW, tz: TZ }),
+      }),
+    );
+    expect(h).toContain("USD 356,500"); // Took and the all-lanes total
+    expect(h).toContain("Short USD 2,500");
+    expect(h).toContain("USD 218,000"); // a method line
+    expect(h).toContain("−USD 6,500"); // change given
+    expect(h).not.toMatch(/>\s*356,500</); // no bare figure
+    expect(h).not.toContain("RWF");
   });
 
   test("nothing on the page is an input or a button that mutates", () => {
@@ -224,7 +250,7 @@ describe("ShiftSales (expanded row)", () => {
       totAmt: "1000.00", totTaxblAmt: "847.46", totTaxAmt: "152.54", buyerTin: null,
       lines: [
         { itemSeq: 1, name: "Rice 1kg", qty: "3.333", prc: "100.00", taxTyCd: "B", splyAmt: "334.00", taxblAmt: "283.05" },
-        { itemSeq: 2, name: "Old line", qty: "1.000", prc: "666.00", taxTyCd: "B", splyAmt: null, taxblAmt: null },
+        { itemSeq: 2, name: "Old line", qty: "2.000", prc: "250.00", taxTyCd: "B", splyAmt: null, taxblAmt: null },
       ],
       tenders: [{ seq: 1, method: "CASH", amount: "1000.00" }],
     }],
@@ -237,7 +263,9 @@ describe("ShiftSales (expanded row)", () => {
     expect(html()).not.toContain(">333<");
   });
   test("a line with no stored amount shows a dash, never a derived figure", () => {
-    expect(html()).not.toContain(">667<");
+    // qty x price would be 2 x 250 = 500: that must not appear anywhere.
+    expect(html()).not.toContain(">500<");
+    expect(html()).toContain(">250<");
     expect(html()).toContain(">—<");
   });
   test("carries the back-office flag and has no inputs or mutating controls", () => {

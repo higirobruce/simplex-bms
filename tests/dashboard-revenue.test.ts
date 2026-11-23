@@ -88,3 +88,17 @@ describe("GET /api/[slug]/dashboard/stats revenueMTD", () => {
     expect((await stats()).expensesMTD).toBe(22);
   });
 });
+
+describe("GET /api/[slug]/dashboard/stats trendData", () => {
+  test("months follow the org's zone and sums stay exact strings", async () => {
+    const s = await seedOrg(); as(s.userId, s.orgId); // Africa/Kigali, UTC+2
+    await payment(s, "100.10", "2026-10-31T22:30:00Z"); // 00:30 on 1 Nov in Kigali: November
+    await payment(s, "200.20", "2026-10-31T21:30:00Z"); // 23:30 on 31 Oct in Kigali: October
+    const { trendData } = await stats();
+    expect(trendData).toHaveLength(6);
+    expect(trendData.map((t: any) => t.date)).toEqual(["Jun 26", "Jul 26", "Aug 26", "Sep 26", "Oct 26", "Nov 26"]);
+    expect(trendData[5].revenue).toBe("100.10");
+    expect(trendData[4].revenue).toBe("200.20");
+    expect(trendData[0].revenue).toBe("0.00");
+  });
+});

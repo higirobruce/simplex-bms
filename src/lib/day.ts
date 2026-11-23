@@ -89,10 +89,11 @@ function zonedMidnight(y: number, m: number, d: number, tz: string): number {
   return t;
 }
 
-/** An Invalid Date falls back to now, so callers never pass NaN on to the database. */
+/** An Invalid Date is rejected, never silently swapped for "now": that would show another day's figures. */
 function validInstant(day: Date): number {
   const t = day instanceof Date ? day.getTime() : NaN;
-  return Number.isNaN(t) ? Date.now() : t;
+  if (Number.isNaN(t)) throw new RangeError("day is not a valid date");
+  return t;
 }
 
 /** UTC instants bounding the calendar day of `day` in `tz`; start inclusive, end exclusive. */

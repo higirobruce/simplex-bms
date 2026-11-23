@@ -50,17 +50,9 @@ describe("day bounds in the org's timezone", () => {
     warn.mockRestore();
   });
 
-  test("an invalid date falls back to the day containing now", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-11-21T10:00:00Z"));
-    try {
-      const { start, end } = dayBounds(new Date(NaN), KIGALI);
-      expect(start.toISOString()).toBe("2026-11-20T22:00:00.000Z");
-      expect(end.toISOString()).toBe("2026-11-21T22:00:00.000Z");
-      expect(startOfMonthIn(new Date(NaN), KIGALI).toISOString()).toBe("2026-10-31T22:00:00.000Z");
-    } finally {
-      vi.useRealTimers();
-    }
+  test("an invalid date is rejected, never silently replaced by today", () => {
+    expect(() => dayBounds(new Date(NaN), KIGALI)).toThrow(RangeError);
+    expect(() => startOfMonthIn(new Date(NaN), KIGALI)).toThrow(RangeError);
   });
 
   test("a runtime undefined or null zone falls back to UTC, not the host zone", () => {

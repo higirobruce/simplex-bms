@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getTenantContext, handleRouteError } from "@/lib/api";
-import { startOfMonthIn } from "@/lib/day";
+import { safeZone, startOfMonthIn } from "@/lib/day";
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 
@@ -59,20 +59,25 @@ export async function GET() {
     });
 
     // Revenue trend (last 6 months)
+    // Months are the ORG's calendar months (same zone as the revenue card) and the
+    // sum stays a Decimal. `revenue` is an exact string; the page converts it only to plot.
+    const zone = safeZone(org.timezone);
+    const starts: Date[] = [revenueStart];
+    for (let i = 0; i < 5; i++) starts.unshift(startOfMonthIn(new Date(starts[0].getTime() - 1), zone));
     const trendData = [];
-    for (let i = 5; i >= 0; i--) {
-      const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
+    for (let i = 0; i < starts.length; i++) {
+      const monthStart = starts[i];
+      const monthEnd = starts[i + 1];
       const monthRevenue = await prisma.payment.aggregate({
         _sum: { amount: true },
         where: {
-          date: { gte: monthStart, lt: monthEnd },
+          date: monthEnd ? { gte: monthStart, lt: monthEnd } : { gte: monthStart },
           invoice: { orgId },
         },
       });
       trendData.push({
-        date: monthStart.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
-        revenue: Number(monthRevenue._sum.amount || 0),
+        date: new Intl.DateTimeFormat("en-US", { timeZone: zone, month: "short", year: "2-digit" }).format(monthStart),
+        revenue: new Prisma.Decimal(monthRevenue._sum.amount ?? 0).toFixed(2),
       });
     }
 

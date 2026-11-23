@@ -36,7 +36,8 @@ export function shiftState(input: {
     if (!input.lastSeenAt) return "stale";
     return input.now.getTime() - input.lastSeenAt.getTime() > STALE_AFTER_MS ? "stale" : "open";
   }
-  // Both null = the till did not say; one alone is no better. Zero is a real value.
+  // The till reports a count and a gross together. Either one missing (alone or both) means
+  // completeness cannot be checked: withheld, never "complete". Zero is a real value.
   if (input.saleCount === null || input.gross === null) return "unknown";
   if (input.saleCount > input.heldCount) return "short_count";
   if (input.saleCount < input.heldCount) return "mismatch";

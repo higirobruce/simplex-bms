@@ -255,7 +255,7 @@ export default function DashboardPage() {
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <AreaChart
-              data={stats?.trendData || []}
+              data={(stats?.trendData ?? []).map((t: { date: string; revenue: string }) => ({ ...t, exact: t.revenue, revenue: Number(t.revenue) }))}
               margin={{ top: 8, right: 0, left: -12, bottom: 0 }}
             >
               <defs>
@@ -299,8 +299,8 @@ export default function DashboardPage() {
                   fontSize: "12px",
                   fontFamily: "var(--font-mono)",
                 }}
-                formatter={(value) => [
-                  fmt(Number(value)),
+                formatter={(_value, _name, item) => [
+                  money((item?.payload as { exact?: string } | undefined)?.exact),
                   "Revenue",
                 ]}
               />

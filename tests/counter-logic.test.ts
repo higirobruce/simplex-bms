@@ -35,6 +35,12 @@ describe("shiftState", () => {
   test("neither field present is unknown", () => {
     expect(shiftState({ ...closed, saleCount: null, gross: null })).toBe("unknown");
   });
+  test("a sale count without a gross is unknown, never complete", () => {
+    expect(shiftState({ ...closed, saleCount: 0, gross: null, heldCount: 0, heldGross: "0.00" })).toBe("unknown");
+  });
+  test("a gross without a sale count is unknown, never complete", () => {
+    expect(shiftState({ ...closed, saleCount: null, gross: "0.00", heldCount: 0, heldGross: "0.00" })).toBe("unknown");
+  });
   test("a till that reported zero sales is complete, not unknown", () => {
     expect(shiftState({ ...closed, saleCount: 0, gross: "0.00", heldCount: 0, heldGross: "0.00" })).toBe("complete");
   });

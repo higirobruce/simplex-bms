@@ -45,8 +45,7 @@ describe("GET /api/[slug]/counter", () => {
   test("the response names the org's timezone so times can be shown in it", async () => {
     const s = await seedOrg(); as(s.userId, s.orgId);
     const body = await (await get("2026-11-22")).json();
-    expect(typeof body.timezone).toBe("string");
-    expect(body.timezone.length).toBeGreaterThan(0);
+    expect(body.timezone).toBe("Africa/Kigali");
   });
 
   test("a shift opening 01:30 Kigali is not filed under the previous day", async () => {
@@ -128,9 +127,12 @@ describe("GET /api/[slug]/counter", () => {
     await sale(s, sh.id, l.id, "100.00", [["CASH", "100.00"]]);
     const body = await (await get("2026-11-22")).json();
     const r = body.shifts[0];
-    for (const v of [body.total, r.openingFloat, r.takings, r.changeGiven, r.variance.expected, r.variance.declared, r.variance.diff, r.methods[0].tendered]) {
-      expect(typeof v).toBe("string");
-    }
+    expect(body.total).toBe("100.00");
+    expect(r.openingFloat).toBe("20000.00");
+    expect(r.takings).toBe("100.00");
+    expect(r.changeGiven).toBe("0.00");
+    expect(r.variance).toEqual({ expected: "20100.00", declared: "20100.00", diff: "0.00" });
+    expect(r.methods[0].tendered).toBe("100.00");
   });
 
   test("another org's shifts never appear", async () => {
@@ -159,6 +161,44 @@ describe("GET /api/[slug]/counter", () => {
     const res = await get("2026-11-22");
     expect(res.status).toBe(200);
     expect((await res.json()).shifts).toHaveLength(1);
+  });
+
+  test("a bad stored zone is returned as UTC, never as the bad value", async () => {
+    const s = await seedOrg(); as(s.userId, s.orgId);
+    await prisma.org.update({ where: { id: s.orgId }, data: { timezone: "Kigali" } });
+    const body = await (await get("2026-11-22")).json();
+    expect(body.timezone).toBe("UTC");
+    expect(body.timezone).not.toBe("Kigali");
+  });
+
+  test("a tender split that does not reconcile is a mismatch with no variance", async () => {
+    const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
+    // Count and gross agree with the till, but the tenders (50) do not add up to the sale (100).
+    const sh = await shift(s, l.id, { closedAt: new Date("2026-11-22T14:00:00Z"), saleCount: 1, gross: "100.00", declaredCash: "20100.00" });
+    await sale(s, sh.id, l.id, "100.00", [["CASH", "50.00"]]);
+    const [row] = (await (await get("2026-11-22")).json()).shifts;
+    expect(row.state).toBe("mismatch");
+    expect(row.variance).toBeNull();
+  });
+
+  test("a sale count without a gross, or a gross without a count, is unknown with no variance", async () => {
+    const s = await seedOrg(); const l = await lane(s); as(s.userId, s.orgId);
+    await shift(s, l.id, { closedAt: new Date("2026-11-22T14:00:00Z"), saleCount: 0, declaredCash: "20000.00" });
+    await shift(s, l.id, { closedAt: new Date("2026-11-22T15:00:00Z"), gross: "0.00", declaredCash: "20000.00" });
+    const rows = (await (await get("2026-11-22")).json()).shifts;
+    expect(rows).toHaveLength(2);
+    for (const r of rows) {
+      expect(r.state).toBe("unknown");
+      expect(r.variance).toBeNull();
+    }
+  });
+
+  test("an unparseable day is a 400, never today's figures", async () => {
+    const s = await seedOrg(); as(s.userId, s.orgId);
+    for (const d of ["garbage", "2026-1-5", "", "2026-13-01"]) {
+      const res = await GET(new Request(`http://x.local/api/shop/counter?day=${d}`));
+      expect(res.status, `day=${JSON.stringify(d)}`).toBe(400);
+    }
   });
 
   test("a PATCH with a non-IANA timezone is refused and not stored", async () => {
