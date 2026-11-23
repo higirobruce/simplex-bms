@@ -247,3 +247,16 @@ fail (recommendation: delete it rather than patch a third time), and three figur
 - Six assertions in this slice would have passed against the exact bug they guarded. The recurring
   shape: the negative control asserts a value the bug would not produce (`333` where a recompute
   renders `333.30`), or the comparison is held apart by an attribute rather than by content.
+
+## On the plan workspace
+
+**R19.** The finish step calls for deleting the plan's workspace outright, on the grounds that git
+history is the record. I removed only the 14 review-package diffs from it (368 KB), because those
+are pure `git diff` output and reproduce verbatim from the commit range in the heading. The 8 task
+briefs, the 8 implementer reports, the final fix report and the ledger stay at
+`.superpowers/sdd/2026-11-22-counter-view/` — 132 KB, git-ignored. Those reports are the
+implementers' own accounts of what they did and could not verify, and git history does not contain
+them, so deleting them destroys the only copy to satisfy a tidiness step.
+Cost if wrong: 132 KB of git-ignored markdown stays on disk. Remove it with
+`rm -rf .superpowers/sdd/2026-11-22-counter-view` whenever you want; the two sibling plan
+directories belong to other plans and are untouched.
