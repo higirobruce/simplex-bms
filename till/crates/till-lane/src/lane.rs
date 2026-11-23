@@ -56,6 +56,8 @@ use crate::fmt;
 use crate::latency::{Timer, Timings};
 use crate::receipt::{ReceiptInput, compose};
 use crate::report::{self, shift_close_report, shift_close_report_copy, shift_report};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use till_core::codes::{PmtTyCd, RcptTyCd, SalesTyCd};
 use till_core::scan::{EmbeddedMode, ScanError, Scanned, classify};
@@ -64,13 +66,52 @@ use till_core::{
     TenderEntry, TenderError, TenderSet,
 };
 use till_store::{
-    CachedProduct, Counter, MIN_SEARCH_LEN, NewSale, OpenShift, SaleHandle, ShiftClose, Store,
-    StoreError, VsdcReceipt,
+    CachedProduct, CashierEntry, Counter, MIN_SEARCH_LEN, NewSale, OpenShift, SaleHandle,
+    ShiftClose, Store, StoreError, VsdcReceipt,
 };
+use tokio::runtime::Handle;
 
 /// Longest scan buffer kept. Longer than any code (EAN-13 is 13); the excess
 /// is dropped so the resulting `BadLength` still tells the cashier it was wrong.
 const MAX_BUFFER: usize = 32;
+
+/// Wrong PINs in a row the till tolerates before it locks sign-in.
+const PIN_FREE_TRIES: u32 = 5;
+
+/// The first lockout. Each further wrong PIN doubles it, up to the cap below,
+/// so a guesser is held to a handful of tries per hour but a cashier who
+/// fumbled once is never stuck for long.
+const PIN_LOCK_BASE: Duration = Duration::from_secs(30);
+
+/// The longest a lockout grows to.
+const PIN_LOCK_MAX: Duration = Duration::from_secs(15 * 60);
+
+/// The most digits a PIN entry holds. The cloud's policy is 6 to 12 digits
+/// (`PIN_MIN_LENGTH` and `PIN_MAX_LENGTH` in `src/lib/cashier.ts`), so 12 must
+/// be accepted or a cashier with a long PIN could never sign in. A 13-digit
+/// EAN-13 is still "too long" and not counted as a guess; an 8 to 12 digit
+/// barcode scanned here is counted as a wrong guess, a known and accepted trade.
+const MAX_PIN_DIGITS: usize = 12;
+
+/// How long sign-in is locked after `failures` wrong PINs in a row, or `None`
+/// while the cashier still has tries left.
+fn lockout_for(failures: u32) -> Option<Duration> {
+    let over = failures.checked_sub(PIN_FREE_TRIES)?;
+    let factor = 2u32.checked_pow(over.min(16)).unwrap_or(u32::MAX);
+    Some(PIN_LOCK_BASE.saturating_mul(factor).min(PIN_LOCK_MAX))
+}
+
+/// A wait in words a cashier can act on.
+fn wait_words(d: Duration) -> String {
+    let secs = d.as_secs() + u64::from(d.subsec_nanos() > 0);
+    if secs >= 120 {
+        format!("{} minutes", secs.div_ceil(60))
+    } else if secs == 1 {
+        "1 second".into()
+    } else {
+        format!("{secs} seconds")
+    }
+}
 
 /// The character that separates a count from the item it multiplies: `3*1234`.
 /// A symbol, not a letter, because a letter in the buffer means a name search
@@ -170,6 +211,28 @@ pub enum LaneError {
     ShiftAlreadyOpen,
     #[error("The opening float cannot be negative. Count the drawer again.")]
     NegativeFloat,
+    #[error("Choose your name and key your PIN before opening the shift.")]
+    NoCashier,
+    #[error("That is not a number on the list. Key the number beside your name, then press Enter.")]
+    NotACashier,
+    #[error(
+        "No cashier can sign in on this till yet. Ask the back office to set up cashiers and PINs; the till fetches them when it next reaches the cloud."
+    )]
+    NoCashiersSaved,
+    #[error("Key your PIN, then press Enter.")]
+    EmptyPin,
+    #[error("That is too long to be a PIN, so it was not checked. Key just your PIN.")]
+    PinTooLong,
+    #[error(
+        "Wrong PIN for {name}. {left} more wrong tries and sign-in locks for a while. Key it again, or press Esc to choose another name."
+    )]
+    WrongPin { name: String, left: u32 },
+    #[error(
+        "Wrong PIN for {name}. Too many wrong PINs: sign-in is locked for {wait}. Ask a supervisor if you are locked out of your own PIN."
+    )]
+    WrongPinLocked { name: String, wait: String },
+    #[error("Sign-in is locked after too many wrong PINs. Wait {wait}, then key your PIN again.")]
+    PinLocked { wait: String },
     #[error("{0}. Correct the payment and try again; nothing was recorded.")]
     Tender(#[from] TenderError),
     #[error("There is no receipt to reprint.")]
@@ -268,6 +331,10 @@ pub enum StoreOp {
     RetireOverlapped,
     /// Noting a VSDC rejection against a held sale.
     RecordRejection,
+    /// Reading the list of cashiers for the sign-in screen.
+    Cashiers,
+    /// Checking a PIN against the saved cashiers.
+    VerifyPin,
 }
 
 /// A [`StoreError`] together with the operation it interrupted.
@@ -314,6 +381,12 @@ impl StoreOp {
             ),
             StoreOp::RetireOverlapped => format!(
                 "The VSDC already holds this invoice number, and the till could not retire it ({e}). Nothing was printed. Call support before ringing the basket again."
+            ),
+            StoreOp::Cashiers => format!(
+                "The list of cashiers could not be read ({e}). Try again; if it repeats, call support."
+            ),
+            StoreOp::VerifyPin => format!(
+                "The PIN could not be checked ({e}). It was not counted as wrong. Key it again; if it repeats, call support."
             ),
             StoreOp::RecordRejection => format!(
                 "The VSDC refused this sale, and the till could not note the refusal ({e}). The sale is still held; press pay to retry it, or ask a supervisor to cancel it. If it repeats, call support."
@@ -399,6 +472,64 @@ struct LastZ {
     printed: bool,
 }
 
+/// A PIN being keyed. It is its own buffer, never the scan buffer, so no
+/// screen that draws the scan buffer can ever draw it. The digits are private
+/// and only a mask leaves this type.
+struct PinEntry {
+    cashier: CashierEntry,
+    digits: String,
+    /// More digits were keyed than any PIN has (a barcode, a stuck key).
+    overflow: bool,
+}
+
+impl PinEntry {
+    fn new(cashier: CashierEntry) -> PinEntry {
+        PinEntry {
+            cashier,
+            digits: String::new(),
+            overflow: false,
+        }
+    }
+}
+
+// Not derived: a derive would print the digits into any log or test failure.
+impl std::fmt::Debug for PinEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinEntry")
+            .field("cashier", &self.cashier)
+            .field("digits", &format_args!("<{} hidden>", self.digits.len()))
+            .finish()
+    }
+}
+
+/// A PIN check running off the UI thread.
+struct Checking {
+    cashier: CashierEntry,
+    rx: Receiver<Result<Option<String>, StoreError>>,
+}
+
+/// Where the no-shift screen is in signing a cashier in.
+enum SignIn {
+    /// Picking a name from the list.
+    Choosing,
+    Pin(PinEntry),
+    Checking(Checking),
+    /// The PIN was right; the opening float is next. Carries the cloud id.
+    Float {
+        id: String,
+        name: String,
+    },
+}
+
+/// What the screen may know about sign-in. No digit of a PIN, only a mask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInView<'a> {
+    Choosing { cashiers: &'a [CashierEntry] },
+    Pin { name: &'a str, mask: String },
+    Checking { name: &'a str },
+    Float { name: &'a str },
+}
+
 pub struct LaneState {
     store: Store,
     cfg: LaneConfig,
@@ -425,9 +556,53 @@ pub struct LaneState {
     vsdc_outcome: VsdcOutcome,
     /// The last measurement of each latency path (see `crate::latency`).
     timings: Timings,
+    signin: SignIn,
+    /// Cashiers who may sign in, read from the local cache.
+    cashiers: Vec<CashierEntry>,
+    cashiers_loaded: bool,
+    /// Wrong PINs in a row on this till, across every cashier.
+    pin_failures: u32,
+    locked_until: Option<Instant>,
+    /// The name of whoever opened the open shift, for the screen.
+    shift_cashier: Option<String>,
+    /// Test only: the PIN check waits (up to 5 s) for this before verifying,
+    /// so a test can hold the worker and prove the caller did not wait on it.
+    #[cfg(test)]
+    pin_gate: Option<Receiver<()>>,
+    /// Pokes the cloud sync after a row is queued, so it drains now rather
+    /// than at its next heartbeat. `None` when sync is not configured.
+    sync_wake: Option<std::sync::Arc<tokio::sync::Notify>>,
+    /// What the sync loop last reported about itself, for the status bar.
+    /// `None` when sync is not configured.
+    sync_status: Option<crate::sync_status::SharedSyncStatus>,
 }
 
 impl LaneState {
+    /// Connects the lane to the cloud sync's wake-up signal.
+    pub fn set_sync_wake(&mut self, wake: std::sync::Arc<tokio::sync::Notify>) {
+        self.sync_wake = Some(wake);
+    }
+
+    /// Connects the lane to the sync loop's published status.
+    pub fn set_sync_status(&mut self, status: crate::sync_status::SharedSyncStatus) {
+        self.sync_status = Some(status);
+    }
+
+    /// A copy of the sync status, or `None` when sync is off. Reads memory
+    /// only; the loop does the querying.
+    pub fn sync_status(&self) -> Option<crate::sync_status::SyncStatus> {
+        self.sync_status
+            .as_ref()
+            .and_then(|s| s.lock().ok().map(|g| g.clone()))
+    }
+
+    /// A row was just committed to the outbound queue. Never blocks, never fails.
+    fn wake_sync(&self) {
+        if let Some(w) = &self.sync_wake {
+            w.notify_one();
+        }
+    }
+
     pub async fn new(store: Store, cfg: LaneConfig) -> Result<LaneState, LaneError> {
         let timer = Timer::start();
         // A sale left `AwaitingVsdc` by a previous session (a crash between a
@@ -475,6 +650,16 @@ impl LaneState {
         } else {
             Screen::NoShift
         };
+        let cashiers = store
+            .active_cashiers()
+            .await
+            .map_err(|e| LaneError::store(StoreOp::Startup, e))?;
+        let shift_cashier = shift.as_ref().and_then(|s| {
+            cashiers
+                .iter()
+                .find(|c| c.id == s.opened_by)
+                .map(|c| c.name.clone())
+        });
         let timings = Timings {
             cold_start: Some(timer.elapsed()),
             ..Timings::default()
@@ -494,6 +679,16 @@ impl LaneState {
             last_z: None,
             vsdc_outcome: VsdcOutcome::NoneYet,
             timings,
+            signin: SignIn::Choosing,
+            cashiers,
+            cashiers_loaded: true,
+            pin_failures: 0,
+            locked_until: None,
+            shift_cashier,
+            #[cfg(test)]
+            pin_gate: None,
+            sync_wake: None,
+            sync_status: None,
         })
     }
 
@@ -514,6 +709,27 @@ impl LaneState {
     /// A character from the wedge. Starting a new scan clears the previous notice.
     pub fn key(&mut self, c: char) {
         let timer = Timer::start();
+        if self.screen == Screen::NoShift {
+            match &mut self.signin {
+                // A PIN goes to its own masked entry, never the scan buffer.
+                SignIn::Pin(p) => {
+                    if c.is_ascii_digit() {
+                        if p.digits.is_empty() {
+                            self.notice = Notice::None;
+                        }
+                        if p.digits.len() >= MAX_PIN_DIGITS {
+                            p.overflow = true;
+                        } else {
+                            p.digits.push(c);
+                        }
+                    }
+                    return;
+                }
+                // The check is already running; keys are not queued behind it.
+                SignIn::Checking(_) => return,
+                SignIn::Choosing | SignIn::Float { .. } => {}
+            }
+        }
         if !matches!(self.screen, Screen::Selling | Screen::NoShift)
             || c.is_control()
             || self.buffer.chars().count() >= MAX_BUFFER
@@ -528,6 +744,17 @@ impl LaneState {
     }
 
     pub fn backspace(&mut self) {
+        if self.screen == Screen::NoShift {
+            match &mut self.signin {
+                SignIn::Pin(p) => {
+                    p.digits.pop();
+                    p.overflow = false;
+                    return;
+                }
+                SignIn::Checking(_) => return,
+                SignIn::Choosing | SignIn::Float { .. } => {}
+            }
+        }
         self.buffer.pop();
     }
 
@@ -853,6 +1080,7 @@ impl LaneState {
             self.pending = Some(pending);
             return Err(LaneError::store(StoreOp::ConfirmSale, e));
         }
+        self.wake_sync();
 
         // Confirmed: only now may anything print.
         self.screen = Screen::Settled {
@@ -1065,11 +1293,30 @@ impl LaneState {
         self.shift.as_ref()
     }
 
-    /// Opens a shift and moves the lane from `NoShift` to `Selling`. `opened_by`
-    /// is whoever the UI says is at the till; the lane has no identity of its
-    /// own. A refusal the cashier can act on (a negative float, a shift that is
-    /// already open) is `Ok(())` with a `Problem` notice; `Err` is a store fault.
-    pub async fn open_shift(
+    /// Opens a shift in the name of the cashier who has signed in (chosen from
+    /// the list and PIN verified) and moves the lane from `NoShift` to
+    /// `Selling`. Without that sign-in nothing opens. A refusal the cashier can
+    /// act on (no sign-in, a negative float, a shift already open) is `Ok(())`
+    /// with a `Problem` notice; `Err` is a store fault.
+    pub async fn open_shift(&mut self, opening_float: Money) -> Result<(), LaneError> {
+        self.buffer.clear();
+        let who = match &self.signin {
+            SignIn::Float { id, name } => (id.clone(), name.clone()),
+            _ => return self.refuse(LaneError::NoCashier),
+        };
+        match self.try_open_shift(&who.0, opening_float).await {
+            Ok(()) => {
+                self.shift_cashier = Some(who.1);
+                self.signin = SignIn::Choosing;
+                Ok(())
+            }
+            Err(e) => self.refuse(e),
+        }
+    }
+
+    /// Test fixture: a shift opened in this id's name without the sign-in.
+    #[cfg(test)]
+    pub async fn open_shift_as(
         &mut self,
         opened_by: &str,
         opening_float: Money,
@@ -1098,10 +1345,215 @@ impl LaneState {
                 StoreError::ShiftAlreadyOpen { .. } => LaneError::ShiftAlreadyOpen,
                 e => LaneError::store(StoreOp::OpenShift, e),
             })?;
+        self.wake_sync();
         self.shift = Some(shift);
         self.screen = Screen::Selling;
         self.notice = Notice::Info("Shift opened. Ready to sell.".into());
         Ok(())
+    }
+
+    /// What the sign-in screen shows. Only a mask of a PIN ever leaves here.
+    pub fn signin(&self) -> SignInView<'_> {
+        match &self.signin {
+            SignIn::Choosing => SignInView::Choosing {
+                cashiers: &self.cashiers,
+            },
+            SignIn::Pin(p) => SignInView::Pin {
+                name: &p.cashier.name,
+                mask: "\u{2022}".repeat(p.digits.len()),
+            },
+            SignIn::Checking(c) => SignInView::Checking {
+                name: &c.cashier.name,
+            },
+            SignIn::Float { name, .. } => SignInView::Float { name },
+        }
+    }
+
+    /// The name of whoever opened the open shift, for the status bar. Falls
+    /// back to the stored id for a shift whose cashier is no longer cached.
+    pub fn shift_cashier(&self) -> Option<&str> {
+        self.shift_cashier
+            .as_deref()
+            .or_else(|| self.shift.as_ref().map(|s| s.opened_by.as_str()))
+    }
+
+    /// A PIN check is running in the background.
+    pub fn is_checking_pin(&self) -> bool {
+        matches!(self.signin, SignIn::Checking(_))
+    }
+
+    /// Reads the cashier list again if a shift has closed since it was read.
+    pub async fn ensure_cashiers(&mut self) -> Result<(), LaneError> {
+        if self.cashiers_loaded {
+            return Ok(());
+        }
+        self.cashiers = self
+            .store
+            .active_cashiers()
+            .await
+            .map_err(|e| LaneError::store(StoreOp::Cashiers, e))?;
+        self.cashiers_loaded = true;
+        Ok(())
+    }
+
+    /// Enter while choosing a name: the keyed number picks a cashier. Nothing
+    /// keyed re-reads the list, in case the cloud has synced new cashiers.
+    pub async fn choose_cashier(&mut self) -> Result<(), LaneError> {
+        if !matches!(self.signin, SignIn::Choosing) {
+            return Ok(());
+        }
+        let raw = std::mem::take(&mut self.buffer);
+        let raw = raw.trim();
+        if raw.is_empty() {
+            self.cashiers_loaded = false;
+            self.ensure_cashiers().await?;
+            self.notice = if self.cashiers.is_empty() {
+                Notice::Problem(LaneError::NoCashiersSaved.to_string())
+            } else {
+                Notice::None
+            };
+            return Ok(());
+        }
+        let picked = raw
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| self.cashiers.get(i).cloned());
+        match picked {
+            Some(c) => {
+                self.signin = SignIn::Pin(PinEntry::new(c));
+                self.notice = Notice::None;
+                Ok(())
+            }
+            None => self.refuse(LaneError::NotACashier),
+        }
+    }
+
+    /// Esc: back to the list of names, throwing away any PIN keyed so far.
+    pub fn back_to_cashiers(&mut self) {
+        if self.screen == Screen::NoShift && !matches!(self.signin, SignIn::Checking(_)) {
+            self.signin = SignIn::Choosing;
+            self.buffer.clear();
+            self.notice = Notice::None;
+        }
+    }
+
+    /// Enter on the PIN: starts the check and returns at once. The argon2
+    /// verification is deliberately slow (about 290 ms in a release build), so
+    /// it runs on the runtime's blocking pool and the UI thread keeps drawing;
+    /// [`LaneState::poll_pin_check`] collects the answer on a later frame.
+    ///
+    /// A PIN that is empty, too long, or keyed while locked out is refused here
+    /// with a `Problem` notice and is not counted as a guess.
+    pub fn begin_pin_check(&mut self) -> Result<(), LaneError> {
+        let SignIn::Pin(entry) = &mut self.signin else {
+            return Ok(());
+        };
+        let cashier = entry.cashier.clone();
+        let digits = std::mem::take(&mut entry.digits);
+        let overflow = std::mem::take(&mut entry.overflow);
+        self.buffer.clear();
+        if let Some(until) = self.locked_until {
+            let now = Instant::now();
+            if now < until {
+                return self.refuse(LaneError::PinLocked {
+                    wait: wait_words(until - now),
+                });
+            }
+        }
+        if overflow {
+            return self.refuse(LaneError::PinTooLong);
+        }
+        if digits.is_empty() {
+            return self.refuse(LaneError::EmptyPin);
+        }
+        let Ok(handle) = Handle::try_current() else {
+            return self.refuse(LaneError::Internal(
+                "no async runtime for the PIN check".into(),
+            ));
+        };
+        let (tx, rx) = mpsc::channel();
+        let store = self.store.clone();
+        let who = cashier.id.clone();
+        let rt = handle.clone();
+        #[cfg(test)]
+        let gate = self.pin_gate.take();
+        // The JoinHandle is dropped on purpose: the result comes back on `tx`,
+        // and a panic drops `tx`, which `poll_pin_check` reads as a fault.
+        drop(handle.spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(g) = gate {
+                let _ = g.recv_timeout(Duration::from_secs(5));
+            }
+            let _ = tx.send(rt.block_on(store.verify_pin(&who, &digits)));
+        }));
+        self.notice = Notice::None;
+        self.signin = SignIn::Checking(Checking { cashier, rx });
+        Ok(())
+    }
+
+    /// Collects a finished PIN check, if there is one. Cheap and non-blocking,
+    /// so the UI calls it every frame while [`LaneState::is_checking_pin`].
+    ///
+    /// A wrong PIN is `Ok` with a `Problem` notice; `Err` is only a fault the
+    /// cashier cannot act on, and does not count against them.
+    pub fn poll_pin_check(&mut self) -> Result<(), LaneError> {
+        let SignIn::Checking(c) = &self.signin else {
+            return Ok(());
+        };
+        let answer = match c.rx.try_recv() {
+            Err(TryRecvError::Empty) => return Ok(()),
+            Err(TryRecvError::Disconnected) => {
+                self.signin = SignIn::Choosing;
+                return self.refuse(LaneError::Internal("the PIN check did not finish".into()));
+            }
+            Ok(a) => a,
+        };
+        let cashier = c.cashier.clone();
+        match answer {
+            Ok(Some(id)) => {
+                self.pin_failures = 0;
+                self.locked_until = None;
+                self.signin = SignIn::Float {
+                    id,
+                    name: cashier.name.clone(),
+                };
+                self.notice = Notice::Info(format!(
+                    "Welcome, {}. Count the drawer and key the opening float.",
+                    cashier.name
+                ));
+                Ok(())
+            }
+            Ok(None) => {
+                self.pin_failures = self.pin_failures.saturating_add(1);
+                let name = cashier.name.clone();
+                let problem = match lockout_for(self.pin_failures) {
+                    Some(wait) => {
+                        self.locked_until = Some(Instant::now() + wait);
+                        LaneError::WrongPinLocked {
+                            name,
+                            wait: wait_words(wait),
+                        }
+                    }
+                    None => LaneError::WrongPin {
+                        name,
+                        left: PIN_FREE_TRIES - self.pin_failures,
+                    },
+                };
+                self.signin = SignIn::Pin(PinEntry::new(cashier));
+                self.refuse(problem)
+            }
+            Err(e) => {
+                self.signin = SignIn::Pin(PinEntry::new(cashier));
+                self.refuse(LaneError::store(StoreOp::VerifyPin, e))
+            }
+        }
+    }
+
+    /// Test fixture: the lockout has run out.
+    #[cfg(test)]
+    fn expire_lockout(&mut self) {
+        self.locked_until = Some(Instant::now());
     }
 
     /// Closes the shift with the cash the cashier counted. A short (or over)
@@ -1156,6 +1608,7 @@ impl LaneState {
             }
             Err(e) => return Err(LaneError::store(StoreOp::CloseShift, e)),
         };
+        self.wake_sync();
         self.end_shift();
         Ok(closed)
     }
@@ -1314,6 +1767,10 @@ impl LaneState {
     /// Back to the start of the day: no shift, nothing in the basket.
     fn end_shift(&mut self) {
         self.shift = None;
+        self.shift_cashier = None;
+        // Whatever was half-keyed is gone with the screen.
+        self.signin = SignIn::Choosing;
+        self.cashiers_loaded = false;
         self.screen = Screen::NoShift;
         self.basket = Basket::new();
         self.tenders = TenderSet::default();
@@ -1594,6 +2051,7 @@ fn line_for(
         item_cls_cd,
         item_nm: p.name.clone(),
         bcd: p.barcode.clone(),
+        product_id: Some(p.id.clone()),
         qty,
         prc,
         tax_ty_cd: p.tax_ty_cd,
@@ -1612,6 +2070,36 @@ fn count_qty(times: Option<u32>) -> Result<Qty, LaneError> {
         Some(n) => {
             Qty::try_from_str(&n.to_string()).map_err(|e| LaneError::Internal(e.to_string()))
         }
+    }
+}
+
+/// Cashiers with cheap argon2 hashes, so tests do not each pay the cloud's
+/// 128 MiB; verification reads the parameters from the string.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use argon2::{Algorithm, Argon2, Params, PasswordHasher, Version};
+    use till_store::Cashier;
+
+    pub fn cashier(id: &str, name: &str, pin: &str) -> Cashier {
+        let params = Params::new(8, 1, 1, None).unwrap();
+        let hash = Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+            .hash_password_with_salt(pin.as_bytes(), b"0123456789abcdef")
+            .unwrap()
+            .to_string();
+        Cashier {
+            id: id.into(),
+            name: name.into(),
+            pin_hash: hash,
+            active: true,
+        }
+    }
+
+    /// Alice (PIN 1234) and Bob (PIN 5678).
+    pub fn cashiers() -> Vec<Cashier> {
+        vec![
+            cashier("u-alice", "Alice", "1234"),
+            cashier("u-bob", "Bob", "5678"),
+        ]
     }
 }
 
@@ -1780,6 +2268,22 @@ mod tests {
             "Inyange Fresh Milk 1L"
         );
         assert!(l.search_matches().is_empty(), "nothing left to pick");
+    }
+
+    #[tokio::test]
+    async fn a_single_name_match_added_directly_carries_the_cloud_product_id() {
+        let mut l = lane_with(
+            &[
+                named("cloud-m", "Inyange Fresh Milk 1L", None, false),
+                named("cloud-s", "Kabuye Sugar 1kg", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        assert!(l.search_matches().is_empty(), "no picker for one match");
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-m"));
     }
 
     #[tokio::test]
@@ -1970,7 +2474,7 @@ mod tests {
     #[tokio::test]
     async fn opening_a_shift_moves_the_lane_to_selling() {
         let mut l = lane_without_shift().await;
-        l.open_shift("alice", rwf("5000")).await.unwrap();
+        l.open_shift_as("alice", rwf("5000")).await.unwrap();
         assert_eq!(l.screen(), &Screen::Selling);
         let s = l.shift().expect("the lane holds its shift");
         assert_eq!(s.opened_by, "alice");
@@ -1982,7 +2486,7 @@ mod tests {
     #[tokio::test]
     async fn a_sale_is_recorded_against_the_lanes_own_shift() {
         let mut l = lane_without_shift().await;
-        l.open_shift("alice", Money::zero()).await.unwrap();
+        l.open_shift_as("alice", Money::zero()).await.unwrap();
         let id = l.shift().unwrap().id.clone();
         scan(&mut l, EAN).await.unwrap();
         l.add_tender(PmtTyCd::Cash, rwf("5000")).unwrap();
@@ -2001,7 +2505,7 @@ mod tests {
     #[tokio::test]
     async fn a_negative_opening_float_is_a_problem_and_the_lane_stays_closed() {
         let mut l = lane_without_shift().await;
-        l.open_shift("alice", rwf("-1")).await.unwrap();
+        l.open_shift_as("alice", rwf("-1")).await.unwrap();
         assert_eq!(l.screen(), &Screen::NoShift);
         assert!(matches!(l.notice(), Notice::Problem(_)));
     }
@@ -2009,8 +2513,8 @@ mod tests {
     #[tokio::test]
     async fn opening_a_second_shift_is_a_problem_and_keeps_the_first() {
         let mut l = lane_without_shift().await;
-        l.open_shift("alice", rwf("100")).await.unwrap();
-        l.open_shift("bob", rwf("200")).await.unwrap();
+        l.open_shift_as("alice", rwf("100")).await.unwrap();
+        l.open_shift_as("bob", rwf("200")).await.unwrap();
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert_eq!(l.shift().unwrap().opened_by, "alice");
     }
@@ -2019,7 +2523,7 @@ mod tests {
     async fn a_store_fault_opening_a_shift_is_err() {
         let mut l = lane_without_shift().await;
         l.store.pool().close().await;
-        let r = l.open_shift("alice", Money::zero()).await;
+        let r = l.open_shift_as("alice", Money::zero()).await;
         assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
         assert_eq!(l.screen(), &Screen::NoShift);
     }
@@ -2040,7 +2544,7 @@ mod tests {
     #[tokio::test]
     async fn closing_a_short_till_succeeds_and_returns_to_no_shift() {
         let mut l = lane_without_shift().await;
-        l.open_shift("alice", rwf("1000")).await.unwrap();
+        l.open_shift_as("alice", rwf("1000")).await.unwrap();
         scan(&mut l, EAN).await.unwrap();
         l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
         let (mut p, mut d) = devices();
@@ -2059,7 +2563,7 @@ mod tests {
         assert!(l.shift().is_none());
         assert!(matches!(l.notice(), Notice::Info(_)));
         // the next morning: a new shift opens
-        l.open_shift("bob", rwf("0")).await.unwrap();
+        l.open_shift_as("bob", rwf("0")).await.unwrap();
         assert_eq!(l.screen(), &Screen::Selling);
     }
 
@@ -2086,7 +2590,7 @@ mod tests {
         let mut l = lane_without_shift().await;
         assert!(matches!(l.close_shift(rwf("0")).await, Ok(None)));
         assert!(matches!(l.notice(), Notice::Problem(_)));
-        l.open_shift("alice", rwf("0")).await.unwrap();
+        l.open_shift_as("alice", rwf("0")).await.unwrap();
         assert!(matches!(l.close_shift(rwf("-1")).await, Ok(None)));
         assert!(matches!(l.notice(), Notice::Problem(_)));
         assert!(l.shift().is_some());
@@ -2128,7 +2632,7 @@ mod tests {
     #[tokio::test]
     async fn a_store_fault_closing_a_shift_leaves_the_lane_open() {
         let mut l = lane_without_shift().await;
-        l.open_shift("alice", rwf("0")).await.unwrap();
+        l.open_shift_as("alice", rwf("0")).await.unwrap();
         l.store.pool().close().await;
         let r = l.close_shift(rwf("0")).await;
         assert!(matches!(r, Err(LaneError::Store(_))), "{r:?}");
@@ -2439,7 +2943,7 @@ mod tests {
     async fn the_z_report_prints_the_variance_with_its_sign() {
         for (counted, want) in [("250", "-2,000"), ("4250", "+2,000"), ("2250", "0")] {
             let mut l = lane_without_shift().await;
-            l.open_shift("alice", rwf("1000")).await.unwrap();
+            l.open_shift_as("alice", rwf("1000")).await.unwrap();
             scan(&mut l, EAN).await.unwrap();
             l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
             let (mut p, mut d) = devices();
@@ -2510,6 +3014,46 @@ mod tests {
         assert_eq!(lines[0].qty, Qty::try_from_str("1").unwrap());
         assert_eq!(lines[0].item_cls_cd, "5020230602");
         assert_eq!(l.buffer(), "");
+    }
+
+    #[tokio::test]
+    async fn a_scanned_line_carries_the_cloud_product_id() {
+        let mut l = lane_with(
+            &[product("cloud-a", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        scan(&mut l, EAN).await.unwrap();
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-a"));
+    }
+
+    #[tokio::test]
+    async fn a_line_keyed_by_plu_carries_it_too() {
+        let mut l = lane_with(
+            &[product("cloud-p", None, Some("4001"), false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "4001").await;
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-p"));
+    }
+
+    #[tokio::test]
+    async fn a_line_picked_by_name_carries_it_too() {
+        let mut l = lane_with(
+            &[
+                named("cloud-a", "Milk Full Cream 1L", None, false),
+                named("cloud-b", "Milk Skimmed 1L", None, false),
+            ],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        let _ = key(&mut l, "milk").await;
+        let _ = key(&mut l, "2").await;
+        let line = l.basket().lines().last().unwrap();
+        assert_eq!(line.product_id.as_deref(), Some("cloud-b"));
     }
 
     #[tokio::test]
@@ -2803,6 +3347,33 @@ mod tests {
         let t = l.timings().tender_to_bytes.expect("settle measured");
         assert!(t.as_millis() < Budget::TENDER_TO_BYTES_MS);
         eprintln!("tender_to_bytes: {t:?}");
+    }
+
+    #[tokio::test]
+    async fn a_scanned_product_reaches_the_queued_payload_with_its_cloud_id() {
+        // Crosses the lane -> store seam: scan, settle, then read the payload
+        // the sync queue actually holds.
+        let mut l = lane_with(
+            &[product("cloud-e2e", Some(EAN), None, false)],
+            EmbeddedMode::Weight,
+        )
+        .await;
+        scan(&mut l, EAN).await.unwrap();
+        l.add_tender(PmtTyCd::Cash, rwf("1250")).unwrap();
+        let (mut p, mut d) = devices();
+        l.settle(&mut fiscal(SimMode::Succeed), &mut p, &mut d)
+            .await
+            .unwrap()
+            .expect("settled");
+        let payload: String =
+            sqlx::query_scalar("select payload from outbound where kind = 'sale'")
+                .fetch_one(l.store.pool())
+                .await
+                .unwrap();
+        assert!(
+            payload.contains(r#""productId":"cloud-e2e""#),
+            "the scanned product's cloud id must be in the payload: {payload}"
+        );
     }
 
     #[tokio::test]
@@ -3510,5 +4081,293 @@ mod tests {
         assert_eq!(kigali_stamp(0), "19700101020000");
         // 2024-02-29 (leap day) 12:00:00 UTC.
         assert_eq!(kigali_stamp(1_709_208_000), "20240229140000");
+    }
+
+    // ------------------------------------------------------------ sign-in
+
+    /// A lane with no shift and two cashiers cached: Alice (1234), Bob (5678).
+    async fn lane_with_cashiers() -> LaneState {
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .sync_catalogue(&[product("a", Some(EAN), None, false)])
+            .await
+            .unwrap();
+        store
+            .sync_cashiers(&crate::lane::test_support::cashiers())
+            .await
+            .unwrap();
+        LaneState::new(store, test_config()).await.unwrap()
+    }
+
+    fn type_digits(l: &mut LaneState, s: &str) {
+        s.chars().for_each(|c| l.key(c));
+    }
+
+    /// Waits for the background PIN check, as the UI does frame by frame.
+    fn finish_check(l: &mut LaneState) -> Result<(), LaneError> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while l.is_checking_pin() {
+            assert!(Instant::now() < deadline, "the PIN check never finished");
+            l.poll_pin_check()?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
+    /// Choose Alice (number 1), key a PIN, wait for the answer.
+    async fn try_pin(l: &mut LaneState, who: &str, pin: &str) -> Result<(), LaneError> {
+        l.back_to_cashiers();
+        type_digits(l, who);
+        l.choose_cashier().await?;
+        type_digits(l, pin);
+        l.begin_pin_check()?;
+        finish_check(l)
+    }
+
+    fn problem(l: &LaneState) -> String {
+        match l.notice() {
+            Notice::Problem(m) => m.clone(),
+            n => panic!("expected a problem, got {n:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn opening_a_shift_requires_a_cashier_and_a_pin() {
+        let mut l = lane_with_cashiers().await;
+        // No name chosen, no PIN: nothing opens.
+        l.open_shift(Money::zero()).await.unwrap();
+        assert_eq!(l.screen(), &Screen::NoShift);
+        assert!(l.shift().is_none());
+        assert!(problem(&l).contains("PIN"), "{}", problem(&l));
+        // A name alone is not enough.
+        type_digits(&mut l, "1");
+        l.choose_cashier().await.unwrap();
+        assert!(matches!(l.signin(), SignInView::Pin { name: "Alice", .. }));
+        l.open_shift(Money::zero()).await.unwrap();
+        assert_eq!(l.screen(), &Screen::NoShift);
+        // Name and PIN: the float step opens, and only then does the shift.
+        type_digits(&mut l, "1234");
+        l.begin_pin_check().unwrap();
+        finish_check(&mut l).unwrap();
+        assert!(matches!(l.signin(), SignInView::Float { name: "Alice" }));
+        l.open_shift(rwf("5000")).await.unwrap();
+        assert_eq!(l.screen(), &Screen::Selling);
+        assert_eq!(l.shift_cashier(), Some("Alice"));
+        // After the shift closes the next cashier starts from the list again.
+        l.close_shift(rwf("5000")).await.unwrap();
+        assert!(matches!(l.signin(), SignInView::Choosing { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wrong_pin_is_a_problem_the_cashier_can_act_on_not_an_err() {
+        let mut l = lane_with_cashiers().await;
+        let r = try_pin(&mut l, "1", "9999").await;
+        assert!(r.is_ok(), "a wrong PIN is not an Err: {r:?}");
+        let m = problem(&l);
+        assert!(m.contains("Wrong PIN") && m.contains("Alice"), "{m}");
+        assert!(!m.contains("9999"), "the message never echoes the PIN: {m}");
+        assert_eq!(l.screen(), &Screen::NoShift);
+        // The cashier can simply try again with the right one.
+        type_digits(&mut l, "1234");
+        l.begin_pin_check().unwrap();
+        finish_check(&mut l).unwrap();
+        assert!(matches!(l.signin(), SignInView::Float { .. }));
+        // An empty or overlong entry is a problem too, and costs no attempt.
+        let mut l = lane_with_cashiers().await;
+        type_digits(&mut l, "1");
+        l.choose_cashier().await.unwrap();
+        assert!(l.begin_pin_check().is_ok());
+        assert!(problem(&l).contains("Key your PIN"));
+        type_digits(&mut l, "5612345000017");
+        assert!(l.begin_pin_check().is_ok());
+        assert!(problem(&l).contains("too long"), "{}", problem(&l));
+        assert_eq!(l.pin_failures, 0, "neither was counted as a guess");
+        // A cashier number that is not on the list is a problem, not an Err.
+        l.back_to_cashiers();
+        type_digits(&mut l, "9");
+        assert!(l.choose_cashier().await.is_ok());
+        assert!(problem(&l).contains("not a number on the list"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_opened_shift_records_the_cloud_user_id() {
+        let mut l = lane_with_cashiers().await;
+        try_pin(&mut l, "2", "5678").await.unwrap();
+        l.open_shift(rwf("100")).await.unwrap();
+        // The id, not the name and not free text.
+        assert_eq!(l.shift().unwrap().opened_by, "u-bob");
+        let stored: String = sqlx::query_scalar("select opened_by from shift")
+            .fetch_one(l.store.pool())
+            .await
+            .unwrap();
+        assert_eq!(stored, "u-bob");
+        assert_eq!(l.shift_cashier(), Some("Bob"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[expect(non_snake_case, reason = "named for the JSON key it checks")]
+    async fn the_shift_payload_sends_openedById() {
+        let mut l = lane_with_cashiers().await;
+        try_pin(&mut l, "1", "1234").await.unwrap();
+        l.open_shift(rwf("100")).await.unwrap();
+        let (by_id, old_key): (Option<String>, Option<String>) = sqlx::query_as(
+            "select json_extract(payload, '$.openedById'), json_extract(payload, '$.openedBy') \
+             from outbound where kind = 'shift' order by id limit 1",
+        )
+        .fetch_one(l.store.pool())
+        .await
+        .unwrap();
+        assert_eq!(by_id.as_deref(), Some("u-alice"));
+        assert_eq!(old_key, None, "the old key is gone");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_pin_is_never_drawn_on_screen_or_left_in_the_buffer() {
+        let mut l = lane_with_cashiers().await;
+        type_digits(&mut l, "1");
+        l.choose_cashier().await.unwrap();
+        type_digits(&mut l, "1234");
+        // Not in the scan buffer, which other screens draw.
+        assert_eq!(l.buffer(), "");
+        // The screen is given a mask, and only a mask.
+        match l.signin() {
+            SignInView::Pin { mask, .. } => {
+                assert_eq!(mask.chars().count(), 4);
+                assert!(mask.chars().all(|c| c == '\u{2022}'), "{mask}");
+            }
+            v => panic!("{v:?}"),
+        }
+        // Nor does a Debug of what the screen sees carry it.
+        assert!(!format!("{:?}", l.signin()).contains("1234"));
+        // A wrong PIN leaves nothing behind.
+        l.begin_pin_check().unwrap();
+        finish_check(&mut l).unwrap();
+        l.back_to_cashiers();
+        type_digits(&mut l, "2");
+        l.choose_cashier().await.unwrap();
+        type_digits(&mut l, "0000");
+        l.begin_pin_check().unwrap();
+        finish_check(&mut l).unwrap();
+        assert_eq!(l.buffer(), "");
+        assert!(matches!(l.signin(), SignInView::Pin { mask, .. } if mask.is_empty()));
+        // A half-keyed PIN does not survive leaving the screen.
+        type_digits(&mut l, "55");
+        l.back_to_cashiers();
+        type_digits(&mut l, "2");
+        l.choose_cashier().await.unwrap();
+        assert!(matches!(l.signin(), SignInView::Pin { mask, .. } if mask.is_empty()));
+        // Nor a correct one once the shift opens and closes again.
+        type_digits(&mut l, "5678");
+        l.begin_pin_check().unwrap();
+        finish_check(&mut l).unwrap();
+        l.open_shift(Money::zero()).await.unwrap();
+        assert_eq!(l.buffer(), "");
+        l.close_shift(Money::zero()).await.unwrap();
+        assert!(matches!(l.signin(), SignInView::Choosing { .. }));
+        assert_eq!(l.buffer(), "");
+    }
+
+    #[test]
+    fn the_lockout_backs_off_from_thirty_seconds_to_a_cap() {
+        for n in 0..PIN_FREE_TRIES {
+            assert_eq!(lockout_for(n), None, "{n} wrong PINs is still free");
+        }
+        let secs = |n| lockout_for(n).unwrap().as_secs();
+        assert_eq!(secs(5), 30);
+        assert_eq!(secs(6), 60);
+        assert_eq!(secs(7), 120);
+        assert_eq!(secs(40), 15 * 60, "capped, and no overflow");
+        assert_eq!(secs(u32::MAX), 15 * 60);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lockout_after_repeated_wrong_pins() {
+        let mut l = lane_with_cashiers().await;
+        for n in 1..PIN_FREE_TRIES {
+            try_pin(&mut l, "1", "0000").await.unwrap();
+            assert!(!problem(&l).contains("locked"), "try {n}: {}", problem(&l));
+        }
+        // The fifth wrong PIN locks sign-in, and says for how long.
+        try_pin(&mut l, "1", "0000").await.unwrap();
+        let m = problem(&l);
+        assert!(m.contains("locked for 30 seconds"), "{m}");
+        // While locked even the RIGHT PIN is refused, and is not checked.
+        try_pin(&mut l, "1", "1234").await.unwrap();
+        let m = problem(&l);
+        assert!(m.contains("locked") && m.contains("Wait"), "{m}");
+        assert!(matches!(l.signin(), SignInView::Pin { .. }));
+        // Another cashier does not get around it: the lock is the till's.
+        try_pin(&mut l, "2", "5678").await.unwrap();
+        assert!(problem(&l).contains("locked"));
+        assert_eq!(l.screen(), &Screen::NoShift);
+        // When it runs out, the right PIN works, and clears the count.
+        l.expire_lockout();
+        try_pin(&mut l, "1", "1234").await.unwrap();
+        assert!(matches!(l.signin(), SignInView::Float { .. }));
+        assert_eq!(l.pin_failures, 0);
+        // A wrong PIN after a lockout backs off for longer.
+        let mut l = lane_with_cashiers().await;
+        for _ in 0..PIN_FREE_TRIES {
+            try_pin(&mut l, "1", "0000").await.unwrap();
+        }
+        l.expire_lockout();
+        try_pin(&mut l, "1", "0000").await.unwrap();
+        assert!(
+            problem(&l).contains("locked for 60 seconds"),
+            "{}",
+            problem(&l)
+        );
+    }
+
+    /// The worker is held at a gate the test controls. If `begin_pin_check`
+    /// waited for the check (ran it inline), it would sit at the gate for the
+    /// full 5 s timeout and this would fail.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_pin_check_does_not_wait_for_the_verification() {
+        let mut l = lane_with_cashiers().await;
+        type_digits(&mut l, "1");
+        l.choose_cashier().await.unwrap();
+        type_digits(&mut l, "1234");
+        let (open_gate, gate) = mpsc::channel();
+        l.pin_gate = Some(gate);
+        let started = Instant::now();
+        l.begin_pin_check().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "begin_pin_check waited for the verification: {:?}",
+            started.elapsed()
+        );
+        // The gate is still held: the check is pending and polling does not block.
+        std::thread::sleep(Duration::from_millis(150));
+        l.poll_pin_check().unwrap();
+        assert!(l.is_checking_pin(), "the answer cannot exist while gated");
+        open_gate.send(()).unwrap();
+        finish_check(&mut l).unwrap();
+        assert!(matches!(l.signin(), SignInView::Float { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_twelve_digit_pin_verifies_and_opens_a_shift() {
+        let store = Store::open_in_memory().await.unwrap();
+        store
+            .sync_cashiers(&[crate::lane::test_support::cashier(
+                "u-long",
+                "Long",
+                "123456789012",
+            )])
+            .await
+            .unwrap();
+        let mut l = LaneState::new(store, test_config()).await.unwrap();
+        try_pin(&mut l, "1", "123456789012").await.unwrap();
+        l.open_shift(Money::zero()).await.unwrap();
+        assert_eq!(l.shift().unwrap().opened_by, "u-long");
+        // A 13-digit barcode is still too long, and is not a guess.
+        l.close_shift(Money::zero()).await.unwrap();
+        type_digits(&mut l, "1");
+        l.choose_cashier().await.unwrap();
+        type_digits(&mut l, "5612345000017");
+        l.begin_pin_check().unwrap();
+        assert!(problem(&l).contains("too long"));
+        assert_eq!(l.pin_failures, 0);
     }
 }

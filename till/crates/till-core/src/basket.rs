@@ -335,6 +335,7 @@ mod tests {
             item_cls_cd: "5020230602".to_string(),
             item_nm: "Test item".to_string(),
             bcd: None,
+            product_id: None,
             qty: Qty::try_from_str(qty).unwrap(),
             prc: Money::try_from_str(prc).unwrap(),
             tax_ty_cd: band,

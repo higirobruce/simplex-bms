@@ -12,7 +12,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { useTenant } from "@/lib/hooks";
-import { useMoney } from "@/lib/currency";
+import { useMoney, useCurrency } from "@/lib/currency";
+import { groupMoney } from "@/lib/counter-view";
 import {
   ArrowUpRight,
   ArrowDownRight,
@@ -103,6 +104,9 @@ function StatCard({ label, value, delta, caption, emphasis }: StatCardProps) {
 export default function DashboardPage() {
   const { slug, user } = useTenant();
   const fmt = useMoney();
+  const currency = useCurrency();
+  // Money strings are prefixed, never parsed: fmt() would route them through a float.
+  const money = (v?: string) => (v === undefined ? "-" : `${currency} ${groupMoney(v)}`);
   const displayName = user?.name || user?.email?.split("@")[0] || "—";
   const initial = displayName.charAt(0).toUpperCase();
 
@@ -207,24 +211,26 @@ export default function DashboardPage() {
       </div>
 
       {/* Metrics */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
         <StatCard
-          label="Revenue · MTD"
-          value={fmt(stats?.revenueMTD || 0)}
-          delta={{ value: "+12.4%", positive: true }}
-          caption="vs last month"
+          label="Invoice payments · MTD"
+          value={money(stats?.revenueMTD?.invoices)}
+          caption="paid against invoices"
           emphasis
+        />
+        <StatCard
+          label="Counter takings · MTD"
+          value={money(stats?.revenueMTD?.counter)}
+          caption="till sales, voids excluded"
         />
         <StatCard
           label="Expenses · MTD"
           value={fmt(stats?.expensesMTD || 0)}
-          delta={{ value: "−4.1%", positive: true }}
-          caption="vs last month"
+          caption="paid out this month"
         />
         <StatCard
           label="Outstanding"
           value={fmt(stats?.outstanding || 0)}
-          delta={{ value: "+2.8%", positive: false }}
           caption="receivable"
         />
         <StatCard
@@ -240,31 +246,16 @@ export default function DashboardPage() {
           <div className="flex items-start justify-between mb-5">
             <div>
               <p className="font-mono text-[0.62rem] tracking-[0.22em] uppercase text-ink-mute font-semibold mb-1">
-                Revenue
+                Invoice payments
               </p>
               <h2 className="font-display text-xl font-semibold uppercase tracking-tight text-ink">
-                Daily inflow
+                Monthly, last 6 months
               </h2>
-            </div>
-            <div className="flex border border-line rounded-[var(--radius)] overflow-hidden">
-              {["7D", "30D", "90D"].map((r, i) => (
-                <button
-                  key={r}
-                  className={
-                    "font-mono text-[0.7rem] tracking-wider px-3 py-1.5 border-r border-line last:border-0 " +
-                    (i === 1
-                      ? "bg-ink text-surface"
-                      : "bg-surface text-ink-soft hover:bg-surface-2")
-                  }
-                >
-                  {r}
-                </button>
-              ))}
             </div>
           </div>
           <ResponsiveContainer width="100%" height={260}>
             <AreaChart
-              data={stats?.trendData || []}
+              data={(stats?.trendData ?? []).map((t: { date: string; revenue: string }) => ({ ...t, exact: t.revenue, revenue: Number(t.revenue) }))}
               margin={{ top: 8, right: 0, left: -12, bottom: 0 }}
             >
               <defs>
@@ -308,8 +299,8 @@ export default function DashboardPage() {
                   fontSize: "12px",
                   fontFamily: "var(--font-mono)",
                 }}
-                formatter={(value) => [
-                  fmt(Number(value)),
+                formatter={(_value, _name, item) => [
+                  money((item?.payload as { exact?: string } | undefined)?.exact),
                   "Revenue",
                 ]}
               />

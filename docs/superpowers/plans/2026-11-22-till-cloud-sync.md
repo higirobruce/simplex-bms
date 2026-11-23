@@ -240,7 +240,8 @@ test("a shift naming a cashier from another org is refused", …)
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-test("a sale lands with its lines, tenders and one SALE movement per line", …)
+test("a sale lands with its lines, tenders and one SALE movement per PRODUCT", …)
+test("two lines of the same product make ONE movement with the summed qty", …)
 test("the movement's fromLocationId is the lane's location", …)
 test("re-posting the same sale creates no duplicate tender or movement", …)   // Review Focus 3
 test("a sale for an unknown shift is refused and nothing is written", …)
@@ -255,7 +256,7 @@ test("soldAt comes from the payload, not the server clock", …)
 
 - [ ] **Step 3: Implement the route**
 
-Upsert `Sale` on `(laneId, invcNo)`, `SaleLine` on `(saleId, itemSeq)`, replace `Tender` rows for the sale, and create one `StockMovement` per line with `type: SALE`, `referenceId` = the sale id, `fromLocationId` = the lane's location — the partial index from Task 1 makes a re-POST safe. A missing `Product` row is a 422, not a 500: the till can never fix it by retrying.
+Upsert `Sale` on `(laneId, invcNo)`, `SaleLine` on `(saleId, itemSeq)`, replace `Tender` rows for the sale, and create one `StockMovement` per **product** (the summed qty across that product's lines — per line would collide on the `(referenceId, productId)` index and silently under-decrement stock) with `type: SALE`, `referenceId` = the sale id, `fromLocationId` = the lane's location — the partial index from Task 1 makes a re-POST safe. A missing `Product` row is a 422, not a 500: the till can never fix it by retrying.
 
 - [ ] **Step 4: Run tests, then commit**
 

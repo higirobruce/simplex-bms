@@ -16,3 +16,10 @@ till/target/
 # Cross-built binaries pulled from CI; never committed (see
 # .github/workflows/till-windows.yml).
 /dist/
+
+# The till's local SQLite database. Created by running the lane or its
+# end-to-end test; it holds that machine's own shifts and sales, so it is
+# per-machine state, not source. The -wal and -shm siblings come and go.
+till/*.db
+till/*.db-wal
+till/*.db-shm

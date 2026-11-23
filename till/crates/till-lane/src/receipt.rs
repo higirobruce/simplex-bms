@@ -474,6 +474,7 @@ mod tests {
             item_cls_cd: "5020230602".into(),
             item_nm: name.into(),
             bcd: None,
+            product_id: None,
             qty: Qty::try_from_str(q).unwrap(),
             prc: Money::try_from_str(prc).unwrap(),
             tax_ty_cd: band,

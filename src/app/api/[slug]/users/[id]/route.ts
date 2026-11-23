@@ -18,7 +18,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const parsed = UserPatchSchema.safeParse(body);
     if (!parsed.success) return errorResponse(parsed.error.issues[0].message, 422);
 
-    const existing = await prisma.user.findFirst({ where: { id: params.id, orgId } });
+    const existing = await prisma.user.findFirst({ where: { id: params.id, orgId, role: { not: "CASHIER" } } });
     if (!existing) return errorResponse("User not found", 404);
 
     if (parsed.data.role && parsed.data.role !== "ADMIN" && existing.role === "ADMIN") {
@@ -52,7 +52,7 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     const { orgId, userId } = await requirePermission("users:write");
     if (params.id === userId) return errorResponse("You cannot delete your own account", 409);
 
-    const existing = await prisma.user.findFirst({ where: { id: params.id, orgId } });
+    const existing = await prisma.user.findFirst({ where: { id: params.id, orgId, role: { not: "CASHIER" } } });
     if (!existing) return errorResponse("User not found", 404);
 
     if (existing.role === "ADMIN") {

@@ -829,7 +829,8 @@ async function ringBaskets(opts: {
         },
         // No providerRef, no confirmed: mobile money is recorded, not confirmed, in v1.
         tenders: {
-          create: tenders.map((t) => ({
+          create: tenders.map((t, seq) => ({
+            seq,
             pmtTyCd: t.method,
             amount: t.amount.toFixed(2),
             orgId,

@@ -11,7 +11,7 @@ test("every RRA payment code 01-07 is representable as a TenderMethod", async ()
   });
   const all = ["CASH", "CREDIT", "CASH_CREDIT", "BANK_CHECK", "CARD", "MOBILE_MONEY", "OTHER"] as const;
   for (const m of all) {
-    const t = await prisma.tender.create({ data: { saleId: sale.id, pmtTyCd: m, amount: "0", orgId } });
+    const t = await prisma.tender.create({ data: { saleId: sale.id, seq: all.indexOf(m), pmtTyCd: m, amount: "0", orgId } });
     expect(t.pmtTyCd).toBe(m);
   }
 });

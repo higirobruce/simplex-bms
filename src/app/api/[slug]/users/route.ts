@@ -13,7 +13,8 @@ export async function GET(req: Request) {
     const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get("limit") || "50")));
     const search = url.searchParams.get("search") || "";
 
-    const where: any = { orgId };
+    // Cashiers are till-only accounts with synthetic emails: never part of the web-user surface.
+    const where: any = { orgId, role: { not: "CASHIER" } };
     if (search) {
       where.OR = [
         { name: { contains: search, mode: "insensitive" } },

@@ -26,6 +26,15 @@ mod lane;
 // Latency budgets and the timings `lane` records against them.
 mod latency;
 
+// Where the cloud address and lane token come from.
+mod config;
+
+// Drains the outbound queue to the cloud and pulls the cashier list.
+#[cfg(test)]
+mod e2e;
+mod sync;
+mod sync_status;
+
 mod demo;
 mod devices;
 mod ui;
@@ -63,6 +72,9 @@ struct Args {
     /// `--vsdc-offline`: start with the simulated VSDC unreachable, so the
     /// first sale hard stops. Shift+F12 switches it while the lane runs.
     vsdc_offline: bool,
+    /// `--set-token`: read a lane token from standard input, save it to the OS
+    /// credential store, and exit.
+    set_token: bool,
 }
 
 /// Reads the command line. An unknown flag is refused rather than ignored: a
@@ -72,12 +84,14 @@ fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         demo: false,
         db: None,
         vsdc_offline: false,
+        set_token: false,
     };
     let mut it = argv.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--demo" => args.demo = true,
             "--vsdc-offline" => args.vsdc_offline = true,
+            "--set-token" => args.set_token = true,
             "--db" => {
                 let path = it
                     .next()
@@ -86,7 +100,7 @@ fn parse_args<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             }
             other => {
                 return Err(format!(
-                    "Unknown option {other}. Known: --demo, --db <path>, --vsdc-offline."
+                    "Unknown option {other}. Known: --demo, --db <path>, --vsdc-offline, --set-token."
                 ));
             }
         }
@@ -114,13 +128,11 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
             .await
             .map_err(|e| format!("The demo database could not be opened ({e})."))?,
     };
-    store
-        .sync_catalogue(&demo::products())
-        .await
-        .map_err(|e| format!("The demo catalogue could not be loaded ({e})."))?;
-    let state = LaneState::new(store, demo::config())
+    seed_demo(&store, args.demo).await?;
+    let mut state = LaneState::new(store.clone(), demo::config())
         .await
         .map_err(|e| e.to_string())?;
+    start_sync(store, &mut state);
     eprintln!("{}", demo::cheat_sheet());
     if let Some(path) = &args.db {
         eprintln!("Data is kept in {} and survives a restart.", path.display());
@@ -134,6 +146,70 @@ async fn start(args: &Args) -> Result<LaneApp, String> {
     })
 }
 
+/// Loads the demo catalogue and cashiers, in demo mode only.
+///
+/// `--demo` (simulated VSDC, demo data) and `--db` (persist instead of memory)
+/// are orthogonal: a persistent demo is legitimate and is seeded. A non-demo
+/// till gets its cashiers and catalogue from the cloud and must NOT be seeded:
+/// `sync_cashiers` DELETES every cashier absent from the list it is handed, so
+/// seeding would wipe the real ones and open shifts as `demo-cashier`, which
+/// the cloud refuses, withholding every sale of the shift; and demo products
+/// in a real catalogue would be sellable though the cloud has never seen them.
+/// `start()` refuses non-demo today, so this guard protects the future real mode.
+async fn seed_demo(store: &till_store::Store, demo_mode: bool) -> Result<(), String> {
+    if !demo_mode {
+        return Ok(());
+    }
+    store
+        .sync_catalogue(&demo::products())
+        .await
+        .map_err(|e| format!("The demo catalogue could not be loaded ({e})."))?;
+    store
+        .sync_cashiers(&demo::cashiers())
+        .await
+        .map_err(|e| format!("The demo cashiers could not be loaded ({e})."))
+}
+
+/// Starts the cloud sync on the runtime (never the UI thread), if the lane has
+/// an address and a token. Without them the till still sells: sync is off, the
+/// queue just grows, and the reason goes to stderr (not to the cashier).
+fn start_sync(store: till_store::Store, state: &mut LaneState) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Cloud sync is off: {e}.");
+            return;
+        }
+    };
+    match sync::CloudSync::new(store, cfg) {
+        Ok(cloud) => {
+            state.set_sync_wake(cloud.waker());
+            state.set_sync_status(cloud.status_handle());
+            tokio::spawn(std::sync::Arc::new(cloud).run());
+        }
+        Err(e) => eprintln!("Cloud sync is off: {e}."),
+    }
+}
+
+/// `--set-token`: the token is read from stdin so it never lands in shell history.
+fn set_token_from_stdin() -> i32 {
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        eprintln!("Could not read the token from standard input.");
+        return 1;
+    }
+    match config::store_token(&line) {
+        Ok(()) => {
+            eprintln!("Lane token saved to the OS credential store.");
+            0
+        }
+        Err(e) => {
+            eprintln!("Could not save the token: {e}.");
+            1
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
@@ -142,6 +218,9 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    if args.set_token {
+        std::process::exit(set_token_from_stdin());
+    }
 
     // The UI owns the runtime. `LaneState`'s methods are `async` because the
     // store's API is, but egui's update loop is synchronous, so `ui` blocks on
@@ -176,7 +255,6 @@ fn main() -> eframe::Result {
                 &cc.egui_ctx,
                 ui::Session {
                     lane: "Lane 02".into(),
-                    cashier: "M. Uwase".into(),
                 },
             );
             Ok(Box::new(app))
@@ -241,5 +319,88 @@ mod tests {
         let a = parse(&["--db", "--demo"]).unwrap();
         assert_eq!(a.db.as_deref(), Some(std::path::Path::new("--demo")));
         assert!(!a.demo, "--demo was consumed as the path, so it is not set");
+    }
+
+    fn real_cashier(id: &str) -> till_store::Cashier {
+        till_store::Cashier {
+            id: id.into(),
+            name: "Real".into(),
+            pin_hash: "x".into(),
+            active: true,
+        }
+    }
+
+    async fn ids(store: &till_store::Store) -> Vec<String> {
+        store
+            .active_cashiers()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect()
+    }
+
+    fn temp_db() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "till-lane-seed-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    fn remove_db(path: &std::path::Path) {
+        for ext in ["", "-wal", "-shm"] {
+            let mut f = path.to_path_buf().into_os_string();
+            f.push(ext);
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    /// `start()` refuses non-demo, so `seed_demo` is tested directly with both
+    /// flag values. Non-demo must not touch a real till's cashiers.
+    #[tokio::test]
+    async fn non_demo_mode_does_not_seed_so_a_real_tills_cashiers_survive() {
+        let path = temp_db();
+        let store = till_store::Store::open(&path).await.unwrap();
+        store
+            .sync_cashiers(&[real_cashier("real-1")])
+            .await
+            .unwrap();
+        seed_demo(&store, false).await.unwrap();
+        assert_eq!(ids(&store).await, vec!["real-1".to_string()]);
+        assert!(store.search_by_name("milk", 5).await.unwrap().is_empty());
+        drop(store);
+        remove_db(&path);
+    }
+
+    /// `--demo --db` is a persistent demo: seeded, and the demo PIN signs in.
+    #[tokio::test]
+    async fn a_persistent_demo_is_seeded_and_the_demo_pin_signs_in() {
+        let path = temp_db();
+        let store = till_store::Store::open(&path).await.unwrap();
+        seed_demo(&store, true).await.unwrap();
+        assert_eq!(ids(&store).await, vec!["demo-cashier".to_string()]);
+        assert!(!store.search_by_name("milk", 5).await.unwrap().is_empty());
+        assert_eq!(
+            store
+                .verify_pin("demo-cashier", demo::DEMO_PIN)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("demo-cashier")
+        );
+        drop(store);
+        remove_db(&path);
+    }
+
+    #[tokio::test]
+    async fn the_in_memory_demo_is_seeded_with_the_demo_cashier_and_products() {
+        let store = till_store::Store::open_in_memory().await.unwrap();
+        seed_demo(&store, true).await.unwrap();
+        assert_eq!(ids(&store).await, vec!["demo-cashier".to_string()]);
+        assert!(!store.search_by_name("milk", 5).await.unwrap().is_empty());
     }
 }

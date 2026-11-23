@@ -61,7 +61,7 @@ test("a sale line item sequence is unique within its sale", async () => {
 test("mobile money is recorded unconfirmed and with no provider reference", async () => {
   const { saleId, orgId } = await seedTill();
   const t = await prisma.tender.create({
-    data: { saleId, pmtTyCd: "MOBILE_MONEY", amount: "5000", orgId },
+    data: { saleId, seq: 0, pmtTyCd: "MOBILE_MONEY", amount: "5000", orgId },
   });
   expect(t.confirmed).toBe(false);
   expect(t.providerRef).toBeNull();
@@ -71,15 +71,15 @@ test("all six RRA payment methods exist", async () => {
   const { saleId, orgId } = await seedTill();
   const all = ["CASH", "CREDIT", "CASH_CREDIT", "BANK_CHECK", "CARD", "MOBILE_MONEY"] as const;
   for (const m of all) {
-    const t = await prisma.tender.create({ data: { saleId, pmtTyCd: m, amount: "1", orgId } });
+    const t = await prisma.tender.create({ data: { saleId, seq: all.indexOf(m), pmtTyCd: m, amount: "1", orgId } });
     expect(t.pmtTyCd).toBe(m);
   }
 });
 
 test("a sale may carry several tenders that together exceed no constraint", async () => {
   const { saleId, orgId } = await seedTill();
-  await prisma.tender.create({ data: { saleId, pmtTyCd: "CASH", amount: "3000", orgId } });
-  await prisma.tender.create({ data: { saleId, pmtTyCd: "MOBILE_MONEY", amount: "2000", orgId } });
+  await prisma.tender.create({ data: { saleId, seq: 0, pmtTyCd: "CASH", amount: "3000", orgId } });
+  await prisma.tender.create({ data: { saleId, seq: 1, pmtTyCd: "MOBILE_MONEY", amount: "2000", orgId } });
   const ts = await prisma.tender.findMany({ where: { saleId } });
   expect(ts.length).toBeGreaterThanOrEqual(2);
 });
@@ -105,7 +105,7 @@ test("sales expose their lines and tenders through lines and tenders", async () 
   await prisma.saleLine.create({
     data: { saleId, productId, itemSeq: 1, qty: "1", prc: "1200", taxTyCd: "A", orgId },
   });
-  await prisma.tender.create({ data: { saleId, pmtTyCd: "CASH", amount: "1200", orgId } });
+  await prisma.tender.create({ data: { saleId, seq: 0, pmtTyCd: "CASH", amount: "1200", orgId } });
   const [s] = await prisma.sale.findMany({ where: { id: saleId }, include: { lines: true, tenders: true } });
   expect(s.lines).toHaveLength(1);
   expect(s.tenders).toHaveLength(1);

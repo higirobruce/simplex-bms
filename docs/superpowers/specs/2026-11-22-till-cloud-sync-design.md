@@ -183,11 +183,34 @@ One transaction per sale, so a half-written sale cannot be observed:
 1. `Sale` upsert on `(laneId, invcNo)`.
 2. `SaleLine` rows, upsert on `(saleId, itemSeq)` — the existing unique.
 3. `Tender` rows, replaced wholesale for the sale.
-4. `StockMovement` per line: `type: SALE` (the enum already has it,
-   `:43`), `productId`, `qty`, `fromLocationId` = the Lane's `locationId`,
-   `referenceId` = the sale id, so a movement is traceable to its sale and a
-   re-POST can be made idempotent on `(referenceId, productId)`.
-5. `Lane.lastInvcNo` advanced when the payload carries a higher one.
+4. `StockMovement` **per product, not per line**: `type: SALE` (the enum
+   already has it, `:43`), `productId`, the **summed** `qty` across every line
+   naming that product, `fromLocationId` = the Lane's `locationId`,
+   `referenceId` = the sale id.
+
+   Per product rather than per line because the index is keyed on
+   `(referenceId, productId)`: two lines of the same product — a cashier scans
+   an item, adds others, scans it again — would collide, and a
+   `skipDuplicates` write would silently drop the second and under-decrement
+   stock. That is the "inventory drifts silently" anti-goal above. Delivery-note
+   approval already aggregates the same way
+   (`delivery-notes/[id]/approve/route.ts:40`), so this matches the codebase
+   rather than introducing a second pattern. Every line is still stored in
+   `SaleLine`, so no detail is lost.
+5. **`StockLevel` decremented** for each product, in the same transaction.
+   This is not optional and not derivable: `StockLevel` is what the stock page
+   (`stock/route.ts:52`) and the low-stock counter read, nothing computes it
+   from `StockMovement`, and every other movement writer in the repo updates it
+   alongside — delivery-note approval, goods receipt and stock adjustment all
+   do. Without it a till sale records a movement while on-hand never moves, so
+   the inventory page shows nothing happening, which is the opposite of this
+   slice's purpose. It must be replay-safe: decrement only when the movement
+   row was actually inserted, so a retried POST does not decrement twice.
+6. **Line discounts persisted.** The payload carries `dcRt` and `dcAmt` per
+   line and the till applies both line and basket discounts. If `SaleLine`
+   keeps only the gross price, lines and `totAmt` disagree and the discount is
+   gone for good — ingest is one-shot, and the outbox row is marked sent.
+7. `Lane.lastInvcNo` advanced when the payload carries a higher one.
 
 Financial reporting needs no new tables: it is derived from `Sale` and `Tender`
 once they land.
@@ -348,10 +371,22 @@ work, and a stable hostname is cheaper.
 
 | Option | Stable hostname | Commercial use | Notes |
 |---|---|---|---|
-| **Neon free** (Postgres) | n/a | **Permitted** | 0.5–1 GB, scales to zero after ~5 min idle and wakes in under a second. Prisma needs **two** connection strings: a direct one for `migrate deploy`, a pooled one (`-pooler`, PgBouncer transaction mode) for the app — migrations do not work correctly through transaction pooling. |
+| **Neon free** (Postgres) | n/a | **Well supported, not contractually verified** — Neon's own FAQ and several 2026 comparisons say commercial use is allowed; a dedicated search of the formal terms did not surface the clause. Confirm before relying on it. | 0.5–1 GB, scales to zero after ~5 min idle and wakes in under a second. Prisma needs **two** connection strings: a direct one for `migrate deploy`, a pooled one (`-pooler`, PgBouncer transaction mode) for the app — migrations do not work correctly through transaction pooling. |
 | **Vercel Hobby** (app) | Yes, free `*.vercel.app` | **Not permitted** | Hobby is non-commercial only, and the definition is broad: any deployment "for the purpose of financial gain of anyone involved in any part of the production of the project, including a paid employee or consultant writing the code". A commercial POS does not qualify. Exceeding an allowance means waiting 30 days; overage cannot be bought. |
 | **Vercel Pro** (app) | Yes, free `*.vercel.app` | Permitted | ~$20/month. Needs no domain purchase, is always on, removes the Mac from the critical path, and makes the hostname stable by construction. Function max duration is **300 s**, so the 50-row catch-up batch is comfortable. |
 | **This Mac + named Cloudflare tunnel** | Only with a domain on Cloudflare | Permitted | Needs a domain (~$10/year); none is configured today. The Mac sleeping is tolerable because of the outbox, but it keeps a developer machine on the shop's critical path. |
+
+A fuller survey — every option checked against commercial-use terms, stable
+hostname, idle behaviour and region — is in
+`docs/reference/hosting/2026-11-22-free-hosting-options.md`. Its headline is
+that **no stack is fully free with commercial use confirmed at every layer**,
+and that **Netlify Free is the only app host with an explicit written
+commercial grant** — though its functions run in Ohio on the free plan, the
+site pauses when its monthly credits run out, and its Next 14 support was not
+confirmed. Cheapest always-on paid options: Render ~$7/month (Frankfurt) or
+Railway Hobby ~$5/month. Also recorded there: Render's free Postgres **deletes
+the database after 30 days**, and Cloudflare with OpenNext does not support
+Next 14.
 
 **Recommendation.** Put Postgres on **Neon free** — commercial use is permitted
 and it costs nothing. For the app, the honest options are **Vercel Pro** or the
